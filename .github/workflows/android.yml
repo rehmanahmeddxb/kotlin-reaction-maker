@@ -34,12 +34,14 @@ jobs:
           set -euo pipefail
           bash -euxo pipefail tools/ci-toolchain.sh 2>&1 | tee /tmp/tc-install.log
 
-      - name: Upload toolchain log (on failure)
+      - name: Print toolchain log (on failure)
         if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: toolchain-install-log
-          path: /tmp/tc-install.log
+        run: |
+          if [ -f /tmp/tc-install.log ]; then
+            grep -v '^[[:space:]]*$' /tmp/tc-install.log | sed 's/^/::error::/' | head -300
+          else
+            echo "::error::no toolchain log file (install step may have been skipped by cache)"
+          fi
 
       - name: Build APK
         env:
