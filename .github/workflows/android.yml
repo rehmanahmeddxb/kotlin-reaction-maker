@@ -1,0 +1,88 @@
+name: Build APK
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build signed APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Restore toolchain cache
+        id: tc-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/ahmed-tc
+          key: ahmed-tc-${{ runner.os }}-v1
+
+      - name: Install offline build toolchain
+        if: steps.tc-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          TC=/tmp/ahmed-tc
+          mkdir -p "$TC"
+
+          # Kotlin compiler 1.9.24 (bundles kotlin-stdlib.jar)
+          curl -fsSL -o /tmp/kotlinc.zip \
+            https://github.com/JetBrains/kotlin/releases/download/v1.9.24/kotlin-compiler-1.9.24.zip
+          unzip -q /tmp/kotlinc.zip -d "$TC"
+          mv "$TC"/kotlinc-* "$TC/kotlinc"
+          ln -sf "$TC/kotlinc/lib/kotlin-stdlib.jar" "$TC/kotlin-stdlib.jar"
+
+          # Android 11 (API 30) platform stub for compiling
+          curl -fsSL -o /tmp/platform30.zip \
+            https://dl.google.com/android/repository/platform-30_r03.zip
+          unzip -q /tmp/platform30.zip -d /tmp/sdk
+          cp /tmp/sdk/android-30/android.jar "$TC/android.jar"
+
+          # Build-tools 30.0.3: aapt2, d8.jar, apksigner.jar
+          curl -fsSL -o /tmp/build-tools.zip \
+            https://dl.google.com/android/repository/build-tools_r30.0.3-linux.zip
+          unzip -q /tmp/build-tools.zip -d /tmp/sdk/bt
+          cp "$(find /tmp/sdk/bt -name aapt2 -type f | head -1)" "$TC/aapt2"
+          chmod +x "$TC/aapt2"
+          cp "$(find /tmp/sdk/bt -name d8.jar | head -1)" "$TC/d8.jar"
+          cp "$(find /tmp/sdk/bt -name apksigner.jar | head -1)" "$TC/apksigner.jar"
+
+      - name: Build APK
+        env:
+          TC_ROOT: /tmp/ahmed-tc
+        run: ./build-apk.sh
+
+      - name: Verify APK signature & contents
+        shell: bash
+        run: |
+          java -jar /tmp/ahmed-tc/apksigner.jar verify --verbose \
+            artifacts/AhmedReactionStudio-1.0.0.apk
+          /tmp/ahmed-tc/aapt2 dump badging artifacts/AhmedReactionStudio-1.0.0.apk \
+            | grep -E "^package|^sdkVersion|^launchable-activity"
+          # every activity class present in the dex
+          python3 - <<'PY'
+          import zipfile
+          z = zipfile.ZipFile('artifacts/AhmedReactionStudio-1.0.0.apk')
+          dex = z.read('classes.dex')
+          for n in ['SplashActivity', 'HomeActivity', 'EditorActivity',
+                    'CameraActivity', 'DiagnosticsActivity']:
+              assert n.encode() in dex, 'missing ' + n
+          print('dex contains all 5 activities')
+          PY
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AhmedReactionStudio-1.0.0-apk
+          path: artifacts/AhmedReactionStudio-1.0.0.apk
+          if-no-files-found: error

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Splash background: deep studio gradient with a soft orange glow at the top -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="270"
+                android:startColor="#FF1A1E2B"
+                android:centerColor="#FF10131B"
+                android:endColor="#FF07080C" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="90"
+                android:startColor="#00FF5A2C"
+                android:centerColor="#14FF5A2C"
+                android:endColor="#38FF5A2C" />
+        </shape>
+    </item>
+</layer-list>
