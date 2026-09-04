@@ -5,6 +5,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   build:
     name: Build signed APK
@@ -38,9 +42,31 @@ jobs:
         if: failure()
         run: |
           if [ -f /tmp/tc-install.log ]; then
-            tail -30 /tmp/tc-install.log | sed 's/^/::error::/'
+            tail -40 /tmp/tc-install.log | sed 's/^/::error::/'
           else
             echo "::error::no toolchain log file (install step may have been skipped by cache)"
+          fi
+
+      - name: Post toolchain log to PR (on failure)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -f /tmp/tc-install.log ]; then
+            {
+              echo "### Toolchain install failed (workflow log tail)"
+              echo '```text'
+              tail -120 /tmp/tc-install.log
+              echo '```'
+            } > /tmp/tc-msg.md
+          else
+            echo "no /tmp/tc-install.log - install skipped (cache) or failed earlier" > /tmp/tc-msg.md
+          fi
+          NUM=$(gh pr list --head "$GITHUB_REF_NAME" --state open --json number -q '.[0].number' 2>/dev/null || true)
+          if [ -n "$NUM" ]; then
+            gh pr comment "$NUM" --body-file /tmp/tc-msg.md || true
+          else
+            echo "no open PR for $GITHUB_REF_NAME - skipping comment"
           fi
 
       - name: Build APK
