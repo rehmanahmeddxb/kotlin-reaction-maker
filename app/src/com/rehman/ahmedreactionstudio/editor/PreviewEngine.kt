@@ -9,6 +9,8 @@ import android.os.SystemClock
 import com.rehman.ahmedreactionstudio.core.Layer
 import com.rehman.ahmedreactionstudio.core.MediaKit
 import com.rehman.ahmedreactionstudio.core.Project
+import com.rehman.ahmedreactionstudio.core.gpu.GpuVideoDecoder
+import com.rehman.ahmedreactionstudio.core.gpu.GpuVideoPipeline
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -26,15 +28,15 @@ import kotlin.math.min
  *      paused  ? media = freeze                 (layer frozen, others keep going)
  *  - audio is optional playback of the same source tied to the layer state
  *
- * Smoothness rules learned the hard way (imported clips used to stutter):
- *  - ONE cached [MediaKit.FrameSource] per layer instead of re-opening the
- *    container for every frame,
- *  - decodes run on a worker pool and are COALESCED: a layer never has two
- *    requests in flight and the clock never waits for a decoder,
- *  - frames are decoded at the preview size, and the size adapts down when
- *    the device cannot keep up,
- *  - MediaPlayer.prepare()/seekTo() never run on the UI thread and re-anchoring
- *    is rate limited, because a blocking prepare is a visible freeze.
+ * Decode path (Option A — continuous HW decode, MX-Player style):
+ *  - each clip uses [GpuVideoDecoder]: MediaExtractor → MediaCodec → OES Surface
+ *    → GL blit → Bitmap, NOT MediaMetadataRetriever seek-grabs
+ *  - frames stream forward while playing; seeks only on scrub / big jumps
+ *  - decodes run on the shared GPU thread and are COALESCED per layer
+ *  - MediaPlayer.prepare()/seekTo() never run on the UI thread
+ *
+ * Fallback: if GPU open fails for a file, that layer uses a cached
+ * [MediaKit.FrameSource] so the app never goes blank.
  */
 class PreviewEngine(
     private val ctx: Context,
@@ -65,11 +67,14 @@ class PreviewEngine(
     private val clocks = HashMap<String, Clock>()
     private val players = HashMap<String, MediaPlayer>()
     private val frames = HashMap<String, Bitmap>()   // last decoded frame per media layer (main thread only)
-    private val sources = ConcurrentHashMap<String, MediaKit.FrameSource>()
+    private val gpuIds = ConcurrentHashMap.newKeySet<String>()
+    private val fallback = ConcurrentHashMap<String, MediaKit.FrameSource>()
     private val decoding = ConcurrentHashMap.newKeySet<String>()
     private val preparing = ConcurrentHashMap.newKeySet<String>()
     private val paths = HashMap<String, String>()
     private val lastSeekAt = HashMap<String, Long>()
+    /** layer ids that need a force-seek on the next decode (after scrub) */
+    private val forceSeek = ConcurrentHashMap.newKeySet<String>()
 
     /**
      * Layers whose frames are pushed from OUTSIDE (the live camera owns and
@@ -162,7 +167,8 @@ class PreviewEngine(
             pathOf(l)?.let { paths[l.id] = it }
         }
         // drop decoders of layers that are gone
-        for (id in ArrayList(sources.keys)) if (!live.contains(id)) releaseSource(id)
+        for (id in ArrayList(gpuIds)) if (!live.contains(id)) releaseSource(id)
+        for (id in ArrayList(fallback.keys)) if (!live.contains(id)) releaseSource(id)
     }
 
     fun detach() {
@@ -170,7 +176,8 @@ class PreviewEngine(
         stopSnapshots()
         releaseAllPlayers()
         recycleFrames()
-        for (id in ArrayList(sources.keys)) releaseSource(id)
+        for (id in ArrayList(gpuIds)) releaseSource(id)
+        for (id in ArrayList(fallback.keys)) releaseSource(id)
         clocks.clear()
         paths.clear()
     }
@@ -186,7 +193,10 @@ class PreviewEngine(
         masterMs = ms.coerceAtLeast(0L)
         val p = project()
         p.lastPlayheadMs = masterMs
-        for (l in p.layers) if (l.isClip()) clocks[l.id]?.seek(masterMs, l.speed)
+        for (l in p.layers) if (l.isClip()) {
+            clocks[l.id]?.seek(masterMs, l.speed)
+            forceSeek.add(l.id)
+        }
         syncPlayers(SystemClock.elapsedRealtime())
         refreshFrames()
     }
@@ -196,7 +206,7 @@ class PreviewEngine(
         for (l in p.layers) if (l.isClip()) {
             val c = clocks[l.id] ?: continue
             // an ended non-looping clip restarts from 0:00 on play-all
-            if (!l.loop && l.durMs > 0 && c.freeze >= l.durMs - 80) { c.freeze = 0L; l.pausedMediaMs = 0L }
+            if (!l.loop && l.durMs > 0 && c.freeze >= l.durMs - 80) { c.freeze = 0L; l.pausedMediaMs = 0L; forceSeek.add(l.id) }
             l.playing = true
             c.resume(masterMs)
         }
@@ -224,7 +234,10 @@ class PreviewEngine(
         } else {
             val c = clocks[l.id]
             // ended (non-loop) clip restarts from 0:00; paused clips resume
-            if (c != null && !l.loop && l.durMs > 0 && c.freeze >= l.durMs - 80) { c.freeze = 0L }
+            if (c != null && !l.loop && l.durMs > 0 && c.freeze >= l.durMs - 80) {
+                c.freeze = 0L
+                forceSeek.add(l.id)
+            }
             l.playing = true
             l.pausedMediaMs = 0L
             c?.resume(masterMs)
@@ -260,20 +273,33 @@ class PreviewEngine(
         return if (f.exists()) f.absolutePath else null
     }
 
-    private fun mediaFile(l: Layer): File? = pathOf(l)?.let { File(it) }
+    private fun ensureGpu(id: String, path: String): GpuVideoDecoder? {
+        return try {
+            val d = GpuVideoPipeline.getOrCreate(id, path)
+            gpuIds.add(id)
+            // drop any leftover software fallback for this id
+            fallback.remove(id)?.release()
+            d
+        } catch (_: Exception) {
+            null
+        }
+    }
 
-    private fun sourceFor(id: String, path: String): MediaKit.FrameSource {
-        val cached = sources[id]
+    private fun ensureFallback(id: String, path: String): MediaKit.FrameSource {
+        val cached = fallback[id]
         if (cached != null && cached.path == path) return cached
         cached?.release()
         val s = MediaKit.FrameSource(path)
-        sources[id] = s
+        fallback[id] = s
         return s
     }
 
     private fun releaseSource(id: String) {
-        sources.remove(id)?.let { try { it.release() } catch (_: Exception) { } }
+        gpuIds.remove(id)
+        forceSeek.remove(id)
         decoding.remove(id)
+        try { GpuVideoPipeline.releaseDecoder(id) } catch (_: Exception) { }
+        fallback.remove(id)?.let { try { it.release() } catch (_: Exception) { } }
     }
 
     // ---------- audio (never on the UI thread) ----------
@@ -387,6 +413,7 @@ class PreviewEngine(
         for (l in p.layers) if (l.isClip() && l.visible && !l.relPath.isNullOrBlank()) {
             any = true
             paths[l.id] = pathOf(l) ?: continue
+            forceSeek.add(l.id)
         }
         if (!any) { onFrameReady(masterMs); return }
         requestFrames(closest = true)
@@ -414,28 +441,80 @@ class PreviewEngine(
             val path = paths[id] ?: pathOf(l) ?: continue
             val t = mediaTimeOf(l)
             if (!decoding.add(id)) continue
-            exec.execute {
-                try {
-                    val src = sourceFor(id, path)
-                    val bmp = src.frameAt(t, maxPxFor(), closest)
-                    val cost = src.lastDecodeMs
-                    handler.post {
-                        if (avgDecodeMs <= 0f) avgDecodeMs = cost.toFloat()
-                        else avgDecodeMs = avgDecodeMs * 0.7f + cost * 0.3f
-                        if (bmp != null) publish(id, bmp)
+            val force = forceSeek.remove(id) || closest
+            val px = maxPxFor()
+            // GPU path prefers the dedicated GL thread; fallback uses the pool
+            val useGpu = gpuIds.contains(id) || !fallback.containsKey(id)
+            if (useGpu) {
+                GpuVideoPipeline.post {
+                    var ok = false
+                    var cost = 0L
+                    var bmp: Bitmap? = null
+                    try {
+                        val d = ensureGpu(id, path)
+                        if (d != null) {
+                            ok = d.advanceTo(t, px, forceSeek = force)
+                            cost = d.lastDecodeMs
+                            bmp = d.currentBitmap()
+                        }
+                    } catch (_: Exception) {
+                        ok = false
                     }
-                } catch (_: Exception) {
-                } finally {
-                    decoding.remove(id)
+                    if (!ok || bmp == null) {
+                        // soft-fail once into software fallback for this layer
+                        try {
+                            val src = ensureFallback(id, path)
+                            bmp = src.frameAt(t, px, closest = force)
+                            cost = src.lastDecodeMs
+                        } catch (_: Exception) { }
+                    }
+                    val out = bmp
+                    val c = cost
+                    handler.post {
+                        if (c > 0) {
+                            if (avgDecodeMs <= 0f) avgDecodeMs = c.toFloat()
+                            else avgDecodeMs = avgDecodeMs * 0.7f + c * 0.3f
+                        }
+                        // GPU bitmaps are owned by the decoder — never recycle them here
+                        if (out != null) publishGpu(id, out)
+                        decoding.remove(id)
+                    }
+                }
+            } else {
+                exec.execute {
+                    try {
+                        val src = ensureFallback(id, path)
+                        val bmp = src.frameAt(t, px, closest = force)
+                        val cost = src.lastDecodeMs
+                        handler.post {
+                            if (avgDecodeMs <= 0f) avgDecodeMs = cost.toFloat()
+                            else avgDecodeMs = avgDecodeMs * 0.7f + cost * 0.3f
+                            if (bmp != null) publishSoftware(id, bmp)
+                        }
+                    } catch (_: Exception) {
+                    } finally {
+                        decoding.remove(id)
+                    }
                 }
             }
         }
     }
 
-    private fun publish(id: String, bmp: Bitmap) {
+    /** GPU frames: decoder owns the bitmap; only swap the reference. */
+    private fun publishGpu(id: String, bmp: Bitmap) {
+        if (project().layerById(id) == null) return
+        frames[id] = bmp
+        newFrames.set(true)
+        onFrameReady(masterMs)
+    }
+
+    /** Software frames: we own them and recycle the previous. */
+    private fun publishSoftware(id: String, bmp: Bitmap) {
         if (project().layerById(id) == null) { bmp.recycle(); return }
         val prev = frames.put(id, bmp)
-        if (prev != null && prev !== bmp && !externalIds.contains(id)) prev.recycle()
+        if (prev != null && prev !== bmp && !externalIds.contains(id) && !gpuIds.contains(id)) {
+            try { prev.recycle() } catch (_: Exception) { }
+        }
         newFrames.set(true)
         onFrameReady(masterMs)
     }
@@ -466,9 +545,12 @@ class PreviewEngine(
         releaseSource(id)
         val external = externalIds.remove(id)
         handler.post {
-            frames.remove(id)?.let {
-                if (!external) try { it.recycle() } catch (_: Exception) { }
+            val prev = frames.remove(id)
+            // only recycle software / external-owned frames, never GPU-owned
+            if (prev != null && !external && !gpuIds.contains(id)) {
+                try { prev.recycle() } catch (_: Exception) { }
             }
+            newFrames.set(true)
         }
     }
 
@@ -496,6 +578,7 @@ class PreviewEngine(
     fun recycleFrames() {
         for ((id, b) in frames) {
             if (externalIds.contains(id)) continue
+            if (gpuIds.contains(id)) continue  // decoder owns it
             try { b.recycle() } catch (_: Exception) { }
         }
         frames.clear()
@@ -503,6 +586,7 @@ class PreviewEngine(
 
     fun release() {
         detach()
+        try { GpuVideoPipeline.releaseAll() } catch (_: Exception) { }
         exec.shutdown()
     }
 }

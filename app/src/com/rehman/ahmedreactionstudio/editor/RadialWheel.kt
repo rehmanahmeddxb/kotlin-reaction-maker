@@ -86,6 +86,14 @@ class RadialMenuView(context: Context) : FrameLayout(context) {
     companion object {
         /** petals per page before a "More…" petal appears */
         private const val PAGE = 8
+        /** keep petals + labels inside the overlay by this inset */
+        private const val EDGE_PAD_DP = 10f
+        /** space reserved under a petal for its 2-line label */
+        private const val LABEL_BELOW_DP = 28f
+        /** space reserved above a petal for optional badges */
+        private const val BADGE_ABOVE_DP = 14f
+        /** half-width of a petal label */
+        private const val LABEL_HALF_DP = 48f
     }
 
     init {
@@ -169,26 +177,90 @@ class RadialMenuView(context: Context) : FrameLayout(context) {
         }
 
         val n = items.size.coerceAtLeast(1)
-        val petalSize = (if (n > 8) 48f else 54f) * dp
-        val hubSize = 78 * dp
-        val minR = ((petalSize + 14 * dp) * n) / (2f * PI).toFloat()
-        val radius = max(122f * dp, minR)
+        val W = width.toFloat().coerceAtLeast(1f)
+        val H = height.toFloat().coerceAtLeast(1f)
+        val edge = EDGE_PAD_DP * dp
+        val labelBelow = LABEL_BELOW_DP * dp
+        val badgeAbove = BADGE_ABOVE_DP * dp
+        val labelHalf = LABEL_HALF_DP * dp
 
-        // centre the ring, fully on screen
-        val ext = radius + petalSize / 2f + 26 * dp
-        var x = if (anchorX >= 0) anchorX else width / 2f
-        var y = if (anchorY >= 0) anchorY else height / 2f
-        x = x.coerceIn(ext, (width - ext).coerceAtLeast(ext))
-        y = y.coerceIn(ext, (height - ext).coerceAtLeast(ext))
+        // Smaller petals on short screens / dense rings so the whole ring fits.
+        val shortSide = minOf(W, H)
+        val basePetal = when {
+            n > 8 -> 46f
+            shortSide < 520 * dp -> 46f
+            else -> 52f
+        }
+        val petalSize = basePetal * dp
+        val hubSize = (if (shortSide < 520 * dp) 68f else 74f) * dp
+
+        // Ideal ring radius from petal count, then shrink until EVERY petal
+        // (including label + badge) stays inside the overlay.
+        val minR = ((petalSize + 12 * dp) * n) / (2f * PI).toFloat()
+        var radius = max(100f * dp, minR)
+        // Hard ceiling: cannot exceed half the usable short side minus petal chrome
+        val maxR = (shortSide / 2f) - petalSize / 2f - max(labelBelow, badgeAbove) - edge - 8 * dp
+        if (maxR > petalSize) radius = minOf(radius, maxR)
+
+        // Place the hub. Prefer the finger/button anchor, but keep the full
+        // ring (petals + labels) on screen — not just the hub itself.
+        val petalReach = radius + petalSize / 2f
+        val needL = petalReach + max(labelHalf, petalSize / 2f) + edge
+        val needR = needL
+        val needT = petalReach + badgeAbove + edge
+        // hub title sits under the hub; petals on the bottom also need label room
+        val hubTitleExtra = 44 * dp
+        val needB = max(petalReach + labelBelow, hubSize / 2f + hubTitleExtra) + edge
+
+        var x = if (anchorX >= 0) anchorX else W / 2f
+        var y = if (anchorY >= 0) anchorY else H / 2f
+        val minX = needL.coerceAtMost(W / 2f)
+        val maxX = (W - needR).coerceAtLeast(minX)
+        val minY = needT.coerceAtMost(H / 2f)
+        val maxY = (H - needB).coerceAtLeast(minY)
+        x = x.coerceIn(minX, maxX)
+        y = y.coerceIn(minY, maxY)
+
+        // If the ring still can't fit at this radius (very small phone / split
+        // screen), shrink radius until the clamped hub can host it.
+        fun fits(r: Float, hx: Float, hy: Float): Boolean {
+            val reach = r + petalSize / 2f
+            return hx - reach - labelHalf >= edge &&
+                hx + reach + labelHalf <= W - edge &&
+                hy - reach - badgeAbove >= edge &&
+                hy + reach + labelBelow <= H - edge
+        }
+        var guard = 0
+        while (radius > 64 * dp && !fits(radius, x, y) && guard < 24) {
+            radius *= 0.92f
+            guard++
+            // re-clamp hub after shrink
+            val pr = radius + petalSize / 2f
+            val nl = pr + max(labelHalf, petalSize / 2f) + edge
+            val nt = pr + badgeAbove + edge
+            val nb = max(pr + labelBelow, hubSize / 2f + hubTitleExtra) + edge
+            x = x.coerceIn(nl.coerceAtMost(W / 2f), (W - nl).coerceAtLeast(nl.coerceAtMost(W / 2f)))
+            y = y.coerceIn(nt.coerceAtMost(H / 2f), (H - nb).coerceAtLeast(nt.coerceAtMost(H / 2f)))
+        }
         cx = x; cy = y
 
         buildHub(level, hubSize, fresh)
 
+        // Petal safe rect — every petal centre must stay inside this.
+        val pMinX = edge + max(petalSize / 2f, labelHalf)
+        val pMaxX = W - edge - max(petalSize / 2f, labelHalf)
+        val pMinY = edge + petalSize / 2f + badgeAbove
+        val pMaxY = H - edge - petalSize / 2f - labelBelow
+
         val startAngle = -PI / 2.0
         for ((i, it) in items.withIndex()) {
             val ang = startAngle + i * 2.0 * PI / n
-            val px = cx + (radius * cos(ang)).toFloat()
-            val py = cy + (radius * sin(ang)).toFloat()
+            var px = cx + (radius * cos(ang)).toFloat()
+            var py = cy + (radius * sin(ang)).toFloat()
+            // Final hard clamp so a petal never leaves the overlay (and stays
+            // clickable). Prefer sliding along the ring radius over vanishing.
+            px = px.coerceIn(pMinX, pMaxX.coerceAtLeast(pMinX))
+            py = py.coerceIn(pMinY, pMaxY.coerceAtLeast(pMinY))
             addPetal(it, px, py, petalSize, i, fresh)
         }
     }
@@ -196,6 +268,9 @@ class RadialMenuView(context: Context) : FrameLayout(context) {
     private fun buildHub(level: Level, hubSize: Float, fresh: Boolean) {
         val dp = UI.dpf(context, 1f)
         val size = hubSize.toInt()
+        val W = width.toFloat().coerceAtLeast(1f)
+        val H = height.toFloat().coerceAtLeast(1f)
+        val edge = EDGE_PAD_DP * dp
 
         val hub = FrameLayout(context)
         val g = GradientDrawable()
@@ -204,8 +279,9 @@ class RadialMenuView(context: Context) : FrameLayout(context) {
         g.setStroke(UI.dp(context, 2), if (stack.size > 1) UI.ACCENT2 else UI.ACCENT)
         hub.background = g
         ring.addView(hub, LayoutParams(size, size, Gravity.START or Gravity.TOP))
-        hub.x = cx - size / 2f
-        hub.y = cy - size / 2f
+        // keep hub fully on screen
+        hub.x = (cx - size / 2f).coerceIn(edge, (W - size - edge).coerceAtLeast(edge))
+        hub.y = (cy - size / 2f).coerceIn(edge, (H - size - edge).coerceAtLeast(edge))
 
         val icon = ImageView(context)
         // deeper than the root: the hub is a BACK button
@@ -220,31 +296,33 @@ class RadialMenuView(context: Context) : FrameLayout(context) {
             if (stack.size > 1) pop() else dismiss(true)
         }
 
-        // title under the hub
+        // title under the hub — clamped so it never runs off the bottom/sides
+        val titleW = (200 * dp).toInt()
         val title = TextView(context)
         title.text = level.title
-        title.textSize = 12.5f
+        title.textSize = 12f
         title.gravity = Gravity.CENTER
         title.maxLines = 1
         title.setTextColor(Color.WHITE)
         title.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
         title.setShadowLayer(6f, 0f, 2f, Color.BLACK)
-        ring.addView(title, LayoutParams((220 * dp).toInt(), LayoutParams.WRAP_CONTENT,
+        ring.addView(title, LayoutParams(titleW, LayoutParams.WRAP_CONTENT,
             Gravity.START or Gravity.TOP))
-        title.x = cx - 110 * dp
-        title.y = cy + hubSize / 2f + 7 * dp
+        title.x = (cx - titleW / 2f).coerceIn(edge, (W - titleW - edge).coerceAtLeast(edge))
+        title.y = (cy + hubSize / 2f + 6 * dp).coerceAtMost(H - 40 * dp)
 
+        val subW = (220 * dp).toInt()
         val sub = TextView(context)
         sub.text = if (stack.size > 1) "‹ Back to ${stack[stack.size - 2].title}" else level.subtitle
-        sub.textSize = 9.5f
+        sub.textSize = 9f
         sub.gravity = Gravity.CENTER
         sub.maxLines = 1
         sub.setTextColor(Color.argb(200, 235, 238, 245))
         sub.setShadowLayer(5f, 0f, 1f, Color.BLACK)
-        ring.addView(sub, LayoutParams((240 * dp).toInt(), LayoutParams.WRAP_CONTENT,
+        ring.addView(sub, LayoutParams(subW, LayoutParams.WRAP_CONTENT,
             Gravity.START or Gravity.TOP))
-        sub.x = cx - 120 * dp
-        sub.y = cy + hubSize / 2f + 24 * dp
+        sub.x = (cx - subW / 2f).coerceIn(edge, (W - subW - edge).coerceAtLeast(edge))
+        sub.y = (title.y + 18 * dp).coerceAtMost(H - 22 * dp)
 
         if (fresh) {
             for (v in listOf<View>(hub, title, sub)) {
@@ -296,17 +374,23 @@ class RadialMenuView(context: Context) : FrameLayout(context) {
             petal.addView(chev, clp)
         }
 
+        val W = width.toFloat().coerceAtLeast(1f)
+        val H = height.toFloat().coerceAtLeast(1f)
+        val edge = EDGE_PAD_DP * dp
+        val labelW = (96 * dp).toInt()
         val label = TextView(context)
         label.text = pt.label
-        label.textSize = 9.5f
+        label.textSize = 9f
         label.gravity = Gravity.CENTER
         label.maxLines = 2
         label.setTextColor(if (pt.danger) UI.DANGER else Color.argb(240, 255, 255, 255))
         label.setShadowLayer(4f, 0f, 1f, Color.BLACK)
-        ring.addView(label, LayoutParams((100 * dp).toInt(), LayoutParams.WRAP_CONTENT,
+        ring.addView(label, LayoutParams(labelW, LayoutParams.WRAP_CONTENT,
             Gravity.START or Gravity.TOP))
-        label.x = px - 50 * dp
-        label.y = py + size / 2f + 2 * dp
+        // clamp label fully on screen so text stays readable + the petal hit
+        // target above it is never paired with an off-screen caption
+        label.x = (px - labelW / 2f).coerceIn(edge, (W - labelW - edge).coerceAtLeast(edge))
+        label.y = (py + size / 2f + 2 * dp).coerceIn(edge, (H - 22 * dp).coerceAtLeast(edge))
 
         var badgeView: TextView? = null
         if (!pt.badge.isNullOrBlank()) {
@@ -325,8 +409,14 @@ class RadialMenuView(context: Context) : FrameLayout(context) {
             b.background = bg2
             ring.addView(b, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT,
                 Gravity.START or Gravity.TOP))
-            b.x = px + size / 2f - 14 * dp
-            b.y = py - size / 2f - 4 * dp
+            // measure after layout; approximate width for clamping
+            b.measure(
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
+            val bw = b.measuredWidth.toFloat().coerceAtLeast(28 * dp)
+            val bh = b.measuredHeight.toFloat().coerceAtLeast(14 * dp)
+            b.x = (px + size / 2f - 14 * dp).coerceIn(edge, (W - bw - edge).coerceAtLeast(edge))
+            b.y = (py - size / 2f - 4 * dp).coerceIn(edge, (H - bh - edge).coerceAtLeast(edge))
             badgeView = b
         }
 
@@ -342,22 +432,29 @@ class RadialMenuView(context: Context) : FrameLayout(context) {
                 }).start()
         }
 
+        // Final petal position — already centre-clamped by render(); also keep the
+        // view box itself fully on-screen so touch targets never leave the overlay.
+        val destX = (px - size / 2f).coerceIn(edge, (W - size - edge).coerceAtLeast(edge))
+        val destY = (py - size / 2f).coerceIn(edge, (H - size - edge).coerceAtLeast(edge))
+
         if (fresh) {
-            petal.x = cx - size / 2f
-            petal.y = cy - size / 2f
+            petal.x = (cx - size / 2f).coerceIn(edge, (W - size - edge).coerceAtLeast(edge))
+            petal.y = (cy - size / 2f).coerceIn(edge, (H - size - edge).coerceAtLeast(edge))
             petal.scaleX = 0.2f; petal.scaleY = 0.2f; petal.alpha = 0f
             label.alpha = 0f
             badgeView?.alpha = 0f
             val delay = 30L + index * 24L
-            petal.animate().x(px - size / 2f).y(py - size / 2f)
+            // Mild overshoot only — strong overshoot was throwing petals past
+            // the screen edge where they became invisible and un-clickable.
+            petal.animate().x(destX).y(destY)
                 .scaleX(1f).scaleY(1f).alpha(1f)
-                .setStartDelay(delay).setDuration(310)
-                .setInterpolator(OvershootInterpolator(1.55f)).start()
-            label.animate().alpha(1f).setStartDelay(delay + 130).setDuration(170).start()
-            badgeView?.animate()?.alpha(1f)?.setStartDelay(delay + 130)?.setDuration(170)?.start()
+                .setStartDelay(delay).setDuration(280)
+                .setInterpolator(OvershootInterpolator(1.12f)).start()
+            label.animate().alpha(1f).setStartDelay(delay + 120).setDuration(160).start()
+            badgeView?.animate()?.alpha(1f)?.setStartDelay(delay + 120)?.setDuration(160)?.start()
         } else {
-            petal.x = px - size / 2f
-            petal.y = py - size / 2f
+            petal.x = destX
+            petal.y = destY
         }
     }
 

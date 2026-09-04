@@ -12,6 +12,7 @@ import com.rehman.ahmedreactionstudio.core.LayerType
 import com.rehman.ahmedreactionstudio.core.MediaKit
 import com.rehman.ahmedreactionstudio.core.Project
 import com.rehman.ahmedreactionstudio.core.ProjectStore
+import com.rehman.ahmedreactionstudio.core.gpu.GpuVideoPipeline
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
@@ -21,8 +22,10 @@ import kotlin.math.roundToInt
 /**
  * Deterministic software exporter.
  *
- * Pipeline: project model -> frame at t (MediaMetadataRetriever + the shared
- * Compositor) -> ARGB bitmap -> NV12/I420 -> MediaCodec encoder -> MediaMuxer.
+ * Pipeline: project model -> frame at t (continuous MediaCodec GPU decode +
+ * the shared Compositor) -> ARGB bitmap -> NV12/I420 -> MediaCodec encoder
+ * -> MediaMuxer. Falls back to MediaMetadataRetriever only when a file cannot
+ * open on the HW path.
  *
  * Output codecs (user selectable):
  *   H.264 (AVC)  -> MP4 container   (.mp4)
@@ -302,31 +305,73 @@ object Exporter {
     }
 
     /**
-     * Sequential source frames for one layer. Holds ONE MediaMetadataRetriever
-     * for the whole export: re-opening the container per frame was the single
-     * biggest cost of an export run.
+     * Sequential source frames for one layer.
+     *
+     * Prefers continuous MediaCodec (same GPU path as the live preview) so
+     * export walks the file forward instead of seek-grabbing every frame.
+     * Falls back to a cached MediaMetadataRetriever when HW open fails.
      */
     private class Dec(val path: String, private val maxPx: Int) {
-        private val src = MediaKit.FrameSource(path)
+        private val gpuId = "export_" + Integer.toHexString(System.identityHashCode(this)) +
+            "_" + path.hashCode()
+        private var useGpu = true
+        private var soft: MediaKit.FrameSource? = null
         private var cacheTime = Long.MIN_VALUE
+        private var lastSoft: Bitmap? = null
         var current: Bitmap? = null
             private set
 
+        init {
+            try {
+                GpuVideoPipeline.getOrCreate(gpuId, path)
+            } catch (_: Exception) {
+                useGpu = false
+                soft = MediaKit.FrameSource(path)
+            }
+        }
+
         fun seekTo(mediaTimeMs: Long) {
             if (current != null && abs(mediaTimeMs - cacheTime) < 25) return
-            val b = src.frameAt(mediaTimeMs, maxPx)
+            if (useGpu) {
+                var got = false
+                GpuVideoPipeline.runSync(timeoutMs = 8_000L) {
+                    val d = GpuVideoPipeline.decoder(gpuId)
+                    if (d == null) {
+                        useGpu = false
+                        return@runSync
+                    }
+                    // forceSeek on large jumps; continuous advance otherwise
+                    val force = cacheTime == Long.MIN_VALUE ||
+                        abs(mediaTimeMs - cacheTime) > 200L ||
+                        mediaTimeMs + 40L < cacheTime
+                    got = d.advanceTo(mediaTimeMs, maxPx, forceSeek = force)
+                    if (got) {
+                        current = d.currentBitmap()
+                        cacheTime = mediaTimeMs
+                    }
+                }
+                if (got && current != null) return
+                // one-shot fallback for this frame
+                if (soft == null) soft = MediaKit.FrameSource(path)
+            }
+            val s = soft ?: return
+            val b = s.frameAt(mediaTimeMs, maxPx)
             if (b != null) {
-                val old = current
+                val old = lastSoft
+                lastSoft = b
                 current = b
                 cacheTime = mediaTimeMs
-                if (old != null && old !== b) old.recycle()
+                if (old != null && old !== b) try { old.recycle() } catch (_: Exception) { }
             }
         }
 
         fun close() {
-            try { current?.recycle() } catch (_: Exception) { }
+            try { GpuVideoPipeline.releaseDecoder(gpuId) } catch (_: Exception) { }
+            try { lastSoft?.recycle() } catch (_: Exception) { }
+            lastSoft = null
             current = null
-            src.release()
+            soft?.release()
+            soft = null
         }
     }
 

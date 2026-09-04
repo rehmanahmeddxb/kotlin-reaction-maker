@@ -61,14 +61,12 @@ object MediaKit {
         mime != null && (mime.startsWith("image/") || mime == "image/webp")
 
     /**
-     * A REUSABLE frame decoder for one media file.
+     * Software frame grabber (MediaMetadataRetriever) for one media file.
      *
-     * Opening a MediaMetadataRetriever parses the whole container (tens of ms
-     * on a phone) and the preview used to pay that for every single frame, on
-     * top of a full-resolution CLOSEST_SYNC decode — that is what made an
-     * imported clip stutter. Keeping ONE retriever per file and walking it
-     * forward with PREVIOUS_SYNC, decoded straight to the preview size, is an
-     * order of magnitude cheaper.
+     * Preview and export prefer continuous MediaCodec via
+     * [com.rehman.ahmedreactionstudio.core.gpu.GpuVideoDecoder]; this class is
+     * the fallback when a file cannot open on the HW path, and for one-shot
+     * probes / thumbnails.
      *
      * Not thread safe by contract: one layer, one caller — [frameAt] is
      * synchronized so an accidental second caller cannot corrupt it.
