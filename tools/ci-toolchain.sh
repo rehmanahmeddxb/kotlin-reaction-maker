@@ -12,9 +12,11 @@ if [ ! -x "$TC/kotlinc/bin/kotlinc" ]; then
   curl -fsSL --retry 3 -o /tmp/kotlinc.zip \
     https://github.com/JetBrains/kotlin/releases/download/v1.9.24/kotlin-compiler-1.9.24.zip
   unzip -q /tmp/kotlinc.zip -d "$TC"
-  # find the directory that contains bin/kotlinc (zip may be nested or flat)
+  # The official compiler zip extracts to a folder literally named kotlinc/.
+  # Handle nested (kotlin-compiler-1.9.24/) and flat (bin/ at root) layouts too.
   SRC=""
-  if [ -d "$TC/kotlin-compiler-1.9.24" ]; then SRC="$TC/kotlin-compiler-1.9.24"; fi
+  if [ -f "$TC/kotlinc/bin/kotlinc" ]; then SRC="$TC/kotlinc"; fi
+  if [ -z "$SRC" ] && [ -f "$TC/kotlin-compiler-1.9.24/bin/kotlinc" ]; then SRC="$TC/kotlin-compiler-1.9.24"; fi
   if [ -z "$SRC" ] && [ -f "$TC/bin/kotlinc" ]; then SRC="$TC"; fi
   if [ -z "$SRC" ]; then
     while IFS= read -r p; do SRC=$(dirname "$p"); break; done \
@@ -22,8 +24,10 @@ if [ ! -x "$TC/kotlinc/bin/kotlinc" ]; then
   fi
   test -n "$SRC"
   echo "kotlin source root: $SRC"
-  mkdir -p "$TC/kotlinc"
-  cp -R "$SRC/." "$TC/kotlinc/"
+  if [ "$SRC" != "$TC/kotlinc" ]; then
+    mkdir -p "$TC/kotlinc"
+    cp -R "$SRC/." "$TC/kotlinc/"
+  fi
   ln -sf "$TC/kotlinc/lib/kotlin-stdlib.jar" "$TC/kotlin-stdlib.jar"
 fi
 test -x "$TC/kotlinc/bin/kotlinc"
