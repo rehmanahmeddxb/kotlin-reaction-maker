@@ -153,7 +153,11 @@ class CameraActivity : Activity() {
         root.addView(top, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP))
 
-        val back = UI.chip(this, "‹ Close")
+        val back = UI.chip(this, "Close")
+        back.setCompoundDrawablesRelativeWithIntrinsicBounds(
+            com.rehman.ahmedreactionstudio.editor.Ic.get(
+                this, com.rehman.ahmedreactionstudio.R.drawable.ic_back, UI.FG), null, null, null)
+        back.compoundDrawablePadding = UI.dp(this, 4)
         back.setOnClickListener { finish() }
         top.addView(back)
 
@@ -223,12 +227,20 @@ class CameraActivity : Activity() {
         row.gravity = Gravity.CENTER
         bottom.addView(row)
 
-        switchBtn = UI.chip(this, "⇄ Camera")
+        switchBtn = UI.chip(this, "Camera")
+        switchBtn.setCompoundDrawablesRelativeWithIntrinsicBounds(
+            com.rehman.ahmedreactionstudio.editor.Ic.get(
+                this, com.rehman.ahmedreactionstudio.R.drawable.ic_switch, UI.FG), null, null, null)
+        switchBtn.compoundDrawablePadding = UI.dp(this, 4)
         switchBtn.setOnClickListener { toggleCamera() }
         row.addView(switchBtn)
         UI.margin(switchBtn, 0, 0, 10, 0, this)
 
-        torchBtn = UI.chip(this, "⚡ Flash")
+        torchBtn = UI.chip(this, "Flash")
+        torchBtn.setCompoundDrawablesRelativeWithIntrinsicBounds(
+            com.rehman.ahmedreactionstudio.editor.Ic.get(
+                this, com.rehman.ahmedreactionstudio.R.drawable.ic_flash, UI.FG), null, null, null)
+        torchBtn.compoundDrawablePadding = UI.dp(this, 4)
         torchBtn.setOnClickListener { toggleTorch() }
         row.addView(torchBtn)
         UI.margin(torchBtn, 0, 0, 10, 0, this)
@@ -476,11 +488,11 @@ class CameraActivity : Activity() {
     private fun updateTorchLabel() {
         when {
             torchSupported ->
-                torchBtn.text = if (torchOn) "⚡ Flash ON" else "⚡ Flash"
+                torchBtn.text = if (torchOn) "Flash ON" else "Flash"
             facing == CameraCharacteristics.LENS_FACING_FRONT ->
-                torchBtn.text = if (torchOn) "💡 Screen ON" else "💡 Screen light"
+                torchBtn.text = if (torchOn) "Screen ON" else "Screen light"
             else -> {
-                torchBtn.text = "⚡ No flash"
+                torchBtn.text = "No flash"
                 torchBtn.isEnabled = false
                 return
             }

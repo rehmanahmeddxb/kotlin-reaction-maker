@@ -5,16 +5,31 @@ framework APIs (`android.app`, `android.view`, `Camera2`, `MediaCodec`,
 `MediaMuxer`, OpenGL-free CPU compositor), packaged as
 `com.rehman.ahmedreactionstudio`.
 
+> **Architecture:** OBS-style source controls — see
+> [`docs/OBS_SOURCE_PLAN.md`](docs/OBS_SOURCE_PLAN.md). Sources are
+> first-class citizens: select one and its controls are one tap away,
+> never buried in settings. What you see is exactly what gets exported.
+
 - Animated splash screen (`SplashActivity`) then project home.
-- **Full-screen DSLR-style studio**: the composition canvas fills the whole
-  screen; every control floats OVER it (top bar + smart bottom dock that
-  slides up like a camera / VN / KineMaster quick-panel).
+- **Full-screen studio**: the composition canvas fills the whole screen;
+  every control floats OVER it (top bar, quick control bar, bottom dock).
+- **Sources, OBS-style**: every source gets a floating **Quick Control Bar**
+  (👁 hide · 🔇 mute · ⏯ source pause · 🔒 lock · fit · ◉ radial wheel · ⋮
+  advanced sheet), a **Source Dock** mini-mixer (per-row eye/mute toggles,
+  live status chips, drag-handle Z reordering) and a **contextual radial
+  wheel** that blooms with spring animations around the selected source.
+  Hide ≠ delete; pause = hold last frame; hidden sources keep their audio;
+  solo mutes everything else without destroying state.
+- **Fit mode per source**: Fill (cover) or Fit (whole frame, letterboxed) —
+  camera takes default to Fit, so a camera is never "cut out" of the canvas.
 - **Main canvas first**: an empty project asks what the background is —
   local video, **recorded camera**, **screen recording**, or image; anything
-  added afterwards is a PiP. Any layer can later be promoted to main canvas
-  (Adjust tab → “Set selected as main canvas”).
-- 16:9 / 9:16 / 1:1 canvases (16:9 default) with normalized geometry and
-  auto screen orientation.
+  added afterwards is a PiP. Any source can later be promoted to canvas
+  background (advanced sheet / Canvas tab).
+- 16:9 / 9:16 / 1:1 canvases (16:9 default) with normalized geometry,
+  auto screen orientation and a one-tap cycling aspect chip.
+- Canvas gestures: tap select, **double-tap = hide/show**, drag with snap,
+  8-handle resize, rotate knob, pinch scale+rotate.
 - Import **video in any decodable container (MP4, AVI, WebM, MKV, 3GP, MOV)**
   and images; text overlays. Un-decodable files are reported, not crashed on.
 - Camera2 fullscreen capture: front/back switch, **hardware flash on any lens
@@ -22,11 +37,8 @@ framework APIs (`android.app`, `android.view`, `Camera2`, `MediaCodec`,
   MP4 recording straight into the project.
 - **Screen recording** via MediaProjection (foreground service) as a main
   canvas or a PiP source.
-- Layer editor: handle-based drag/resize/rotate (the grabbed corner follows
-  the finger and the opposite edge stays anchored; media never changes aspect
-  ratio), aspect-correct PiP with corner/centre anchors that always stay on
-  canvas, Fill / Contain / PiP presets, visibility/lock, per-layer
-  play/pause, mute & volume, z-order, undo/redo, autosave + snapshot recovery.
+- Loop per source, per-source volume, opacity, z-order, undo/redo, autosave
+  + snapshot recovery; destructive operations are locked while exporting.
 - **Export codec picker: H.264 MP4, H.265/HEVC MP4, VP8 WebM, VP9 WebM**
   (only codecs the device actually encodes are offered), plus resolution /
   quality / frame-rate choices. AVI has no Android muxer, so it is import-only.
@@ -37,9 +49,10 @@ One rule set (`core/LayerFit.kt`) places every layer, and the same
 `Compositor` draws the preview and the export, so what you place is what you
 get:
 
-- **Main canvas** — the layer box *is* the canvas (1 × 1) and the compositor
-  cover-crops the frame into it. Full bleed in 16:9, 9:16 and 1:1, with the
-  selection frame and all eight handles on screen.
+- **Main canvas** — the layer box *is* the canvas (1 × 1). How the frame
+  fills it is per-source: `fit = fill` cover-crops (full bleed), `fit = fit`
+  letterboxes the **whole frame** inside the canvas (camera default — nothing
+  gets cut). The selection frame and all eight handles stay on screen.
 - **Overlays / PiP** — the box keeps the *source* aspect ratio, is fitted into
   the reaction-cam area and pinned to a corner, so a portrait camera take is
   never squashed into a landscape sliver. Dragging keeps at least 40 % of the
@@ -52,13 +65,17 @@ get:
 ## Layout
 
 - `app/src/.../ui` — `SplashActivity`, `HomeActivity`, `DiagnosticsActivity`
-- `app/src/.../editor` — `EditorActivity` (fullscreen overlay studio),
-  `StageView`, `PreviewEngine`
+- `app/src/.../editor` — `EditorActivity` (fullscreen OBS-style studio),
+  `StageView` (canvas gestures), `PreviewEngine`, `SourceDock` (mini mixer),
+  `RadialWheel` (animated contextual wheel), `Icons` (vector-icon toolkit)
 - `app/src/.../camera` — `CameraActivity` (Camera2 + MediaRecorder, crash-safe)
 - `app/src/.../capture` — `ScreenCaptureService` (MediaProjection screen record)
 - `app/src/.../export` — `Exporter` (H.264/H.265/VP8/VP9 MediaCodec pipeline)
-- `app/src/.../core` — project model, store, media probes, undo stack
-- `build-apk.sh` — dependency-free offline builder (kotlinc → d8 → aapt2 → apksigner)
+- `app/src/.../core` — project model, `SourceController` (command layer),
+  store, media probes, undo stack
+- `res/drawable/ic_*.xml` — Material-style vector icon set
+- `build-apk.sh` — dependency-free offline builder (aapt2 → R class →
+  kotlinc → d8 → apksigner)
 - `.github/workflows/android.yml` — CI that builds, verifies and uploads the APK
 
 ## Building

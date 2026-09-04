@@ -95,9 +95,14 @@ object Compositor {
                 ctx.p.alpha = alpha
                 canvas.save()
                 canvas.clipRect(ctx.rect)
-                // COVER: the frame always fills its box, so a full-canvas box
-                // is full-bleed and a source-aspect box shows the whole frame.
-                val sc = kotlin.math.max(boxW / effW, boxH / effH)
+                // Per-source fit mode (OBS plan §3):
+                //  FILL = COVER  — the frame fills its box (full-bleed mains,
+                //                  edges cropped when aspects differ)
+                //  FIT  = CONTAIN — the WHOLE frame is visible inside the box,
+                //                  letterboxed; this is what stops camera takes
+                //                  being "cut out" on a different-aspect canvas.
+                val sc = if (l.fit == Layer.FIT_FIT) kotlin.math.min(boxW / effW, boxH / effH)
+                         else kotlin.math.max(boxW / effW, boxH / effH)
                 val dw = effW * sc
                 val dh = effH * sc
                 val dx = cx - dw / 2f

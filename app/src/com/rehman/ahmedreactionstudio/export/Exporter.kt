@@ -236,8 +236,15 @@ object Exporter {
                         for (l in p.layers) {
                             if (!l.isVideoLike() || l.relPath.isNullOrBlank() || !l.visible) continue
                             val d = decoders[l.id] ?: continue
-                            val mediaTime = if (l.playing) (timeMs * l.speed).toLong()
+                            var mediaTime = if (l.playing) (timeMs * l.speed).toLong()
                             else l.pausedMediaMs
+                            // keep export identical to the preview (OBS plan §1):
+                            // looping sources wrap, non-looping sources HOLD their
+                            // last frame at the end instead of restarting
+                            if (l.durMs > 0) {
+                                mediaTime = if (l.loop) mediaTime % l.durMs
+                                else mediaTime.coerceAtMost(l.durMs - 33)
+                            }
                             d.seekTo(mediaTime.coerceAtLeast(0L))
                         }
                         Compositor.draw(ctx, canvas, w, h, p, bitmapFor, timeMs, null)

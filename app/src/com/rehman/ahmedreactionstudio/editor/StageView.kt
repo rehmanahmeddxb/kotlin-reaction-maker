@@ -51,6 +51,7 @@ class StageView @JvmOverloads constructor(
         fun onTransform()          // debounced autosave + UI refresh
         fun onTapEmpty()
         fun onChanged()            // immediate (gesture start) snapshot
+        fun onDoubleTap(l: Layer)  // quick action: hide / show (OBS plan §4.5)
     }
 
     companion object {
@@ -90,6 +91,9 @@ class StageView @JvmOverloads constructor(
     private var startMidX = 0f; private var startMidY = 0f
     private var moved = false
     private var undoPushed = false
+    private var lastTapUp = 0L
+    private var lastTapX = 0f
+    private var lastTapY = 0f
 
     override fun onMeasure(w: Int, h: Int) {
         setMeasuredDimension(specSize(w, 360), specSize(h, 360))
@@ -336,7 +340,28 @@ class StageView @JvmOverloads constructor(
                 }
                 return true
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+            MotionEvent.ACTION_UP -> {
+                if (moved) host?.onTransform()
+                else {
+                    // clean tap on a layer: double-tap = hide / show quick action
+                    val x = lx(e); val y = ly(e)
+                    val now = android.os.SystemClock.uptimeMillis()
+                    val hit = layerAt(x, y)
+                    if (hit != null && now - lastTapUp < 320L &&
+                        hypot(x - lastTapX, y - lastTapY) < UI.dpf(context, 36f)) {
+                        lastTapUp = 0L
+                        hp.onDoubleTap(hit)
+                    } else {
+                        lastTapUp = now
+                        lastTapX = x; lastTapY = y
+                    }
+                }
+                mode = Mode.NONE
+                startLayerId = null
+                invalidate()
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
                 if (moved) host?.onTransform()
                 mode = Mode.NONE
                 startLayerId = null
