@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Splash window theme: paints the brand gradient before the first frame
+         so there is no white flash on cold start. -->
+    <style name="Theme.AhmedSplash" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@drawable/splash_bg</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">#FF07080B</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowAnimationStyle">@null</item>
+    </style>
+</resources>

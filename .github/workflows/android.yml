@@ -1,0 +1,77 @@
+name: Build APK
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build signed APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Restore toolchain cache
+        id: tc-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/ahmed-tc
+          key: ahmed-tc-${{ runner.os }}-v1
+
+      - name: Install offline build toolchain
+        if: steps.tc-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -euxo pipefail tools/ci-toolchain.sh 2>&1 | tee /tmp/tc-install.log
+
+      - name: Print toolchain log (on failure)
+        if: failure()
+        run: |
+          if [ -f /tmp/tc-install.log ]; then
+            tail -40 /tmp/tc-install.log | sed 's/^/::error::/'
+          else
+            echo "::error::no toolchain log file (install step may have been skipped by cache)"
+          fi
+
+      - name: Build APK
+        env:
+          TC_ROOT: /tmp/ahmed-tc
+        run: ./build-apk.sh
+
+      - name: Verify APK signature & contents
+        shell: bash
+        run: |
+          java -jar /tmp/ahmed-tc/apksigner.jar verify --verbose \
+            artifacts/AhmedReactionStudio-1.0.0.apk
+          /tmp/ahmed-tc/aapt2 dump badging artifacts/AhmedReactionStudio-1.0.0.apk \
+            | grep -E "^package|^sdkVersion|^launchable-activity"
+          # every activity class present in the dex
+          python3 - <<'PY'
+          import zipfile
+          z = zipfile.ZipFile('artifacts/AhmedReactionStudio-1.0.0.apk')
+          dex = z.read('classes.dex')
+          for n in ['SplashActivity', 'HomeActivity', 'EditorActivity',
+                    'CameraActivity', 'DiagnosticsActivity']:
+              assert n.encode() in dex, 'missing ' + n
+          print('dex contains all 5 activities')
+          PY
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AhmedReactionStudio-1.0.0-apk
+          path: artifacts/AhmedReactionStudio-1.0.0.apk
+          if-no-files-found: error

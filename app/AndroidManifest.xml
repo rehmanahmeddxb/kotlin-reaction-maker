@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.rehman.ahmedreactionstudio"
+    android:versionCode="1"
+    android:versionName="1.0.0">
+
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <application
+        android:label="Ahmed Reaction Studio"
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="true"
+        android:supportsRtl="false"
+        android:hardwareAccelerated="true"
+        android:theme="@android:style/Theme.Material.NoActionBar">
+
+        <!-- Animated splash; launches the project home when the intro ends. -->
+        <activity
+            android:name="com.rehman.ahmedreactionstudio.ui.SplashActivity"
+            android:exported="true"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.AhmedSplash">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name="com.rehman.ahmedreactionstudio.ui.HomeActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
+        <activity
+            android:name="com.rehman.ahmedreactionstudio.editor.EditorActivity"
+            android:exported="false" />
+
+        <activity
+            android:name="com.rehman.ahmedreactionstudio.camera.CameraActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
+        <activity
+            android:name="com.rehman.ahmedreactionstudio.ui.DiagnosticsActivity"
+            android:exported="false" />
+    </application>
+</manifest>
