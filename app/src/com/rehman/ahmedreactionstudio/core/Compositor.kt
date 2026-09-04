@@ -24,6 +24,13 @@ object Compositor {
         val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG)
         val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
         val rect = RectF()
+        val dst = RectF()
+        /**
+         * StaticLayout is expensive to build, so it is memoised on the shape of
+         * the text (content + wrapped width + size). Rebuilding it 30x/second
+         * for every text layer was a steady source of GC hitches during
+         * playback; the cache is bounded so live typing can't grow it.
+         */
         val staticCache = HashMap<String, StaticLayout>()
         var measuredFontPx = 0f
     }
@@ -72,8 +79,8 @@ object Compositor {
         val cx = l.cx * W
         val cy = l.cy * H
 
-        canvas.save()
-        canvas.rotate(l.rotDeg, cx, cy)
+        val rotated = kotlin.math.abs(l.rotDeg) > 0.01f
+        if (rotated) { canvas.save(); canvas.rotate(l.rotDeg, cx, cy) }
         ctx.rect.set(cx - boxW / 2f, cy - boxH / 2f, cx + boxW / 2f, cy + boxH / 2f)
 
         if (l.type == LayerType.TEXT) {
@@ -83,23 +90,25 @@ object Compositor {
             if (b != null && !b.isRecycled) {
                 val (effW, effH) = if (l.srcW > 0) effectiveSize(l.srcW, l.srcH, l.srcRotation)
                 else Pair(b.width, b.height)
-                if (effW <= 0 || effH <= 0) { canvas.restore(); return }
+                if (effW <= 0 || effH <= 0) { if (rotated) canvas.restore(); return }
                 val alpha = (l.opacity * 255f).toInt().coerceIn(0, 255)
                 ctx.p.alpha = alpha
                 canvas.save()
                 canvas.clipRect(ctx.rect)
-                // cover (no distortion) by default
+                // COVER: the frame always fills its box, so a full-canvas box
+                // is full-bleed and a source-aspect box shows the whole frame.
                 val sc = kotlin.math.max(boxW / effW, boxH / effH)
                 val dw = effW * sc
                 val dh = effH * sc
                 val dx = cx - dw / 2f
                 val dy = cy - dh / 2f
-                canvas.drawBitmap(b, null, RectF(dx, dy, dx + dw, dy + dh), ctx.p)
+                ctx.dst.set(dx, dy, dx + dw, dy + dh)
+                canvas.drawBitmap(b, null, ctx.dst, ctx.p)
                 canvas.restore()
                 ctx.p.alpha = 255
             }
         }
-        canvas.restore()
+        if (rotated) canvas.restore()
     }
 
     private fun drawText(ctx: Ctx, canvas: Canvas, box: RectF, l: Layer, text: String) {
@@ -122,14 +131,22 @@ object Compositor {
             ctx.textPaint.setShadowLayer(sizePx * 0.12f, 0f, sizePx * 0.06f, 0x99000000.toInt())
         }
         val layouts = ArrayList<StaticLayout>(lines.size)
+        var totalH = 0
         for (para in lines) {
-            layouts.add(StaticLayout.Builder
-                .obtain(para, 0, para.length, ctx.textPaint, width)
-                .setAlignment(Layout.Alignment.ALIGN_CENTER)
-                .setIncludePad(false)
-                .build())
+            val key = "$para|${width}|${sizePx.toInt()}|${l.shadow}"
+            val sl: StaticLayout = ctx.staticCache[key] ?: run {
+                val built = StaticLayout.Builder
+                    .obtain(para, 0, para.length, ctx.textPaint, width)
+                    .setAlignment(Layout.Alignment.ALIGN_CENTER)
+                    .setIncludePad(false)
+                    .build()
+                if (ctx.staticCache.size > 96) ctx.staticCache.clear()
+                ctx.staticCache[key] = built
+                built
+            }
+            layouts.add(sl)
+            totalH += sl.height
         }
-        val totalH = layouts.sumOf { it.height }
         var y = box.centerY() - totalH / 2f
         for (sl in layouts) {
             canvas.save()
@@ -140,6 +157,5 @@ object Compositor {
         }
         ctx.textPaint.clearShadowLayer()
         ctx.textPaint.alpha = 255
-        ctx.staticCache.clear() // keep memory flat between frames
     }
 }
