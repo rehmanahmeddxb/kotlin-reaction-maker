@@ -15,7 +15,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
@@ -39,8 +39,10 @@ jobs:
           curl -fsSL -o /tmp/kotlinc.zip \
             https://github.com/JetBrains/kotlin/releases/download/v1.9.24/kotlin-compiler-1.9.24.zip
           unzip -q /tmp/kotlinc.zip -d "$TC"
-          mv "$TC"/kotlinc-* "$TC/kotlinc"
+          # the archive extracts to a folder named kotlin-compiler-1.9.24
+          mv "$(find "$TC" -maxdepth 1 -type d -name 'kotlin-compiler-*' | head -1)" "$TC/kotlinc"
           ln -sf "$TC/kotlinc/lib/kotlin-stdlib.jar" "$TC/kotlin-stdlib.jar"
+          test -x "$TC/kotlinc/bin/kotlinc"
 
           # Android 11 (API 30) platform stub for compiling
           curl -fsSL -o /tmp/platform30.zip \
@@ -56,6 +58,7 @@ jobs:
           chmod +x "$TC/aapt2"
           cp "$(find /tmp/sdk/bt -name d8.jar | head -1)" "$TC/d8.jar"
           cp "$(find /tmp/sdk/bt -name apksigner.jar | head -1)" "$TC/apksigner.jar"
+          test -x "$TC/aapt2" && test -f "$TC/d8.jar" && test -f "$TC/apksigner.jar"
 
       - name: Build APK
         env:
