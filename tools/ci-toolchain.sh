@@ -72,12 +72,28 @@ if [ ! -x "$TC/aapt2" ]; then
   fi
 fi
 if [ ! -x "$TC/aapt2" ]; then
-  # pip mirror (PyPI is a regular API host)
-  pip3 install --quiet aapt2 || true
-  cp "$(find "$HOME/.local/lib" /usr/lib/python3* /usr/local/lib/python3* \
-      -path '*aapt2/bin/Linux/aapt2' -type f 2>/dev/null | head -1)" "$TC/aapt2" || true
-  chmod +x "$TC/aapt2" || true
+  # GitHub mirror of the platform build-tools prebuilts (git protocol only)
+  rm -rf "$TC/btm"
+  git clone --depth 1 --filter=blob:none --sparse \
+    https://github.com/james34602/android_build_tools.git "$TC/btm" 2>/dev/null || true
+  (cd "$TC/btm" && git sparse-checkout set aapt2 2>/dev/null) || true
+  BTM_AAPT="$(find "$TC/btm" -name aapt2 -type f 2>/dev/null | head -1)"
+  if [ -n "$BTM_AAPT" ]; then
+    cp "$BTM_AAPT" "$TC/aapt2"
+    chmod +x "$TC/aapt2"
+  fi
 fi
+if [ ! -x "$TC/aapt2" ]; then
+  # pip mirror (PyPI); runner environments may be PEP-668 managed -> try venv
+  python3 -m venv /tmp/aaptvenv || true
+  if [ -x /tmp/aaptvenv/bin/pip ]; then
+    /tmp/aaptvenv/bin/pip install --quiet aapt2 || true
+    PIP_AAPT="$(find /tmp/aaptvenv -path '*aapt2/bin/Linux/aapt2' -type f 2>/dev/null | head -1)"
+    if [ -n "$PIP_AAPT" ]; then cp "$PIP_AAPT" "$TC/aapt2"; chmod +x "$TC/aapt2"; fi
+  fi
+fi
+# guard: an aapt2 that can't even print its version is useless on this host
+"$TC/aapt2" version >/dev/null 2>&1 || { echo "aapt2 binary missing or non-functional"; exit 1; }
 test -x "$TC/aapt2"
 test -s "$TC/d8.jar"
 test -s "$TC/apksigner.jar"
