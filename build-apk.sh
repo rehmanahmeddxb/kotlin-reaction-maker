@@ -36,6 +36,7 @@ AAPT2="${AAPT2:-$TC_ROOT/aapt2}"
 D8_JAR="${D8_JAR:-$TC_ROOT/d8.jar}"
 APKSIGNER_JAR="${APKSIGNER_JAR:-$TC_ROOT/apksigner.jar}"
 ANDROID_JAR="${ANDROID_JAR:-$TC_ROOT/android.jar}"
+ANDROID_JAR_D8="${ANDROID_JAR_D8:-$TC_ROOT/android-d8.jar}"
 STD_LIB="${STD_LIB:-$TC_ROOT/kotlin-stdlib.jar}"
 
 KS="${KS:-$TC_ROOT/ahmed.keystore}"
@@ -65,7 +66,10 @@ with zipfile.ZipFile(os.path.join(b, 'classes.jar'), 'w', zipfile.ZIP_DEFLATED) 
             p = os.path.join(root, f)
             z.write(p, os.path.relpath(p, os.path.join(b, 'classes')))
 PY
-java -cp "$D8_JAR" com.android.tools.r8.D8 --release --lib "$ANDROID_JAR" --min-api 26 \
+# d8 only needs the library jar for API-level resolution; the newer API
+# stub is compiled with Java 17 bytecode which old d8 can't parse, so feed
+# it the Java-8 API-30 stub while compiling sources against the newer one.
+java -cp "$D8_JAR" com.android.tools.r8.D8 --release --lib "$ANDROID_JAR_D8" --min-api 26 \
     --output "$BUILD/dex" "$BUILD/classes.jar" "$STD_LIB"
 
 echo "== 3/6 aapt2 resources =="

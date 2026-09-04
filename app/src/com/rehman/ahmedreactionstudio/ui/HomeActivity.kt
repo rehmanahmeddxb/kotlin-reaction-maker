@@ -162,14 +162,14 @@ class HomeActivity : Activity() {
             .setView(holder)
             .setPositiveButton("Create") { _, _ ->
                 val name = nameInput.text.toString()
-                val aspect = chips.entries.firstOrNull { it.value.isSelected }?.key ?: Aspect.R916
+                val aspect = chips.entries.firstOrNull { it.value.isSelected }?.key ?: Aspect.R169
                 val p = store.create(name, aspect)
                 openProject(p.id)
             }
             .setNegativeButton("Cancel", null)
             .show()
-        // default select portrait
-        chips[Aspect.R916]?.isSelected = true
+        // default select 16:9 landscape (classic YouTube reaction canvas)
+        chips[Aspect.R169]?.isSelected = true
         refreshChips(chips)
     }
 

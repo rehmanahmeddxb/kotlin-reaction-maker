@@ -23,28 +23,23 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Restore toolchain cache
-        id: tc-cache
-        uses: actions/cache@v4
-        with:
-          path: /tmp/ahmed-tc
-          key: ahmed-tc-${{ runner.os }}-v1
-
       - name: Install offline build toolchain
-        if: steps.tc-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          set -euo pipefail
-          bash -euxo pipefail tools/ci-toolchain.sh 2>&1 | tee /tmp/tc-install.log
+          set -uo pipefail
+          rm -rf /tmp/ahmed-tc
+          bash tools/ci-toolchain.sh 2>&1 | tee /tmp/tc-install.log
+          echo "--- toolchain inventory ---" | tee -a /tmp/tc-install.log
+          ls -la /tmp/ahmed-tc 2>&1 | tee -a /tmp/tc-install.log
+          echo "missing: $(comm -23 <(printf '%s\n' kotlinc/bin/kotlinc android.jar android-d8.jar d8.jar apksigner.jar aapt2 | sort) <(cd /tmp/ahmed-tc && find . -maxdepth 2 | sed 's|^\./||' | sort))" | tee -a /tmp/tc-install.log
 
-      - name: Print toolchain log (on failure)
-        if: failure()
-        run: |
-          if [ -f /tmp/tc-install.log ]; then
-            tail -40 /tmp/tc-install.log | sed 's/^/::error::/'
-          else
-            echo "::error::no toolchain log file (install step may have been skipped by cache)"
-          fi
+      - name: Upload toolchain log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: toolchain-log
+          path: /tmp/tc-install.log
+          if-no-files-found: ignore
 
       - name: Build APK
         env:
@@ -64,9 +59,9 @@ jobs:
           z = zipfile.ZipFile('artifacts/AhmedReactionStudio-1.0.0.apk')
           dex = z.read('classes.dex')
           for n in ['SplashActivity', 'HomeActivity', 'EditorActivity',
-                    'CameraActivity', 'DiagnosticsActivity']:
+                    'CameraActivity', 'DiagnosticsActivity', 'ScreenCaptureService']:
               assert n.encode() in dex, 'missing ' + n
-          print('dex contains all 5 activities')
+          print('dex contains all activities + screen capture service')
           PY
 
       - name: Upload APK artifact

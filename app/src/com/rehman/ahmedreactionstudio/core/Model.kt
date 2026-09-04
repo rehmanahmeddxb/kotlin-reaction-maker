@@ -18,6 +18,7 @@ enum class Aspect(val code: String, val canvasW: Int, val canvasH: Int, val labe
 enum class LayerType(val label: String) {
     VIDEO("Video"),
     CAMERA("Camera"),
+    SCREEN("Screen record"),
     IMAGE("Image"),
     TEXT("Text");
 
@@ -67,7 +68,7 @@ class Layer(
     var shadow: Boolean = true,
     var addedAt: Long = System.currentTimeMillis()
 ) {
-    fun isVideoLike(): Boolean = type == LayerType.VIDEO || type == LayerType.CAMERA
+    fun isVideoLike(): Boolean = type == LayerType.VIDEO || type == LayerType.CAMERA || type == LayerType.SCREEN
 
     fun clone(): Layer {
         val l = Layer(id, type, name, relPath, durMs, srcW, srcH, srcRotation, cx, cy, wN, hN,

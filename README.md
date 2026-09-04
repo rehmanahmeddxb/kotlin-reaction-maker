@@ -6,19 +6,37 @@ framework APIs (`android.app`, `android.view`, `Camera2`, `MediaCodec`,
 `com.rehman.ahmedreactionstudio`.
 
 - Animated splash screen (`SplashActivity`) then project home.
-- 16:9 / 9:16 / 1:1 projects with normalized canvas + auto orientation.
-- Import videos/images, Camera2 front/rear capture with torch + zoom,
-  text layers.
-- Layer-based editor: PiP drag/resize, visibility/lock, per-layer play/pause,
-  mute & volume, z-order, undo/redo, autosave + snapshot recovery.
-- H.264 MP4 export via MediaCodec (NV12 encoder-format preference).
+- **Full-screen DSLR-style studio**: the composition canvas fills the whole
+  screen; every control floats OVER it (top bar + smart bottom dock that
+  slides up like a camera / VN / KineMaster quick-panel).
+- **Main canvas first**: an empty project asks what the background is —
+  local video, **recorded camera**, **screen recording**, or image; anything
+  added afterwards is a PiP. Any layer can later be promoted to main canvas
+  (Adjust tab → “Set selected as main canvas”).
+- 16:9 / 9:16 / 1:1 canvases (16:9 default) with normalized geometry and
+  auto screen orientation.
+- Import **video in any decodable container (MP4, AVI, WebM, MKV, 3GP, MOV)**
+  and images; text overlays. Un-decodable files are reported, not crashed on.
+- Camera2 fullscreen capture: front/back switch, **hardware flash on any lens
+  that has one (front OR back)** + selfie screen-light fallback, zoom slider,
+  MP4 recording straight into the project.
+- **Screen recording** via MediaProjection (foreground service) as a main
+  canvas or a PiP source.
+- Layer editor: PiP drag/resize/rotate, Fill / Contain / PiP presets,
+  visibility/lock, per-layer play/pause, mute & volume, z-order,
+  undo/redo, autosave + snapshot recovery.
+- **Export codec picker: H.264 MP4, H.265/HEVC MP4, VP8 WebM, VP9 WebM**
+  (only codecs the device actually encodes are offered), plus resolution /
+  quality / frame-rate choices. AVI has no Android muxer, so it is import-only.
 
 ## Layout
 
 - `app/src/.../ui` — `SplashActivity`, `HomeActivity`, `DiagnosticsActivity`
-- `app/src/.../editor` — `EditorActivity`, `StageView`, `PreviewEngine`
-- `app/src/.../camera` — `CameraActivity` (Camera2 + MediaRecorder)
-- `app/src/.../export` — `Exporter` (H.264 MediaCodec pipeline)
+- `app/src/.../editor` — `EditorActivity` (fullscreen overlay studio),
+  `StageView`, `PreviewEngine`
+- `app/src/.../camera` — `CameraActivity` (Camera2 + MediaRecorder, crash-safe)
+- `app/src/.../capture` — `ScreenCaptureService` (MediaProjection screen record)
+- `app/src/.../export` — `Exporter` (H.264/H.265/VP8/VP9 MediaCodec pipeline)
 - `app/src/.../core` — project model, store, media probes, undo stack
 - `build-apk.sh` — dependency-free offline builder (kotlinc → d8 → aapt2 → apksigner)
 - `.github/workflows/android.yml` — CI that builds, verifies and uploads the APK
