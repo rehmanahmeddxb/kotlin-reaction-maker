@@ -7,6 +7,11 @@ set -euxo pipefail
 TC=/tmp/ahmed-tc
 mkdir -p "$TC"
 
+first_file() { # dir, name -> prints first match, safe under pipefail
+  while IFS= read -r f; do printf '%s\n' "$f"; return; done \
+    < <(find "$1" -name "$2" -type f 2>/dev/null)
+}
+
 echo "== [1/3] kotlin compiler =="
 if [ ! -x "$TC/kotlinc/bin/kotlinc" ]; then
   curl -fsSL --retry 3 -o /tmp/kotlinc.zip \
@@ -35,13 +40,18 @@ test -x "$TC/kotlinc/bin/kotlinc"
 
 echo "== [2/3] android platform 30 jar =="
 if [ ! -s "$TC/android.jar" ]; then
+  rm -rf /tmp/sdk
   curl -fsSL --retry 3 -o /tmp/platform30.zip \
     https://dl.google.com/android/repository/platform-30_r03.zip || true
   if [ -s /tmp/platform30.zip ] && unzip -tq /tmp/platform30.zip >/dev/null 2>&1; then
     unzip -q /tmp/platform30.zip -d /tmp/sdk
-    cp /tmp/sdk/android-30/android.jar "$TC/android.jar"
+  fi
+  AJ=$(first_file /tmp/sdk android.jar)
+  if [ -n "$AJ" ] && [ -s "$AJ" ]; then
+    cp "$AJ" "$TC/android.jar"
   else
-    echo "dl.google.com unavailable - cloning API-30 stub from GitHub mirror"
+    echo "platform zip missing android.jar - cloning API-30 stub from GitHub mirror"
+    rm -rf "$TC/aj"
     git clone --depth 1 --filter=blob:none --sparse \
       https://github.com/Reginer/aosp-android-jar.git "$TC/aj"
     (cd "$TC/aj" && git sparse-checkout set android-30)
@@ -51,10 +61,6 @@ fi
 test -s "$TC/android.jar"
 
 echo "== [3/3] build-tools (aapt2, d8.jar, apksigner.jar) =="
-first_file() { # dir, name -> prints first match, safe under pipefail
-  while IFS= read -r f; do printf '%s\n' "$f"; return; done \
-    < <(find "$1" -name "$2" -type f 2>/dev/null)
-}
 AAPT2_OK=0; D8_OK=0; AS_OK=0
 [ -x "$TC/aapt2" ] && AAPT2_OK=1
 [ -s "$TC/d8.jar" ] && D8_OK=1
