@@ -38,6 +38,15 @@ enum class LayerType(val label: String) {
  * A video/CAMERA layer keeps an independent playback state (`playing`).
  * `pausedMediaMs` is the media position the layer is frozen at while paused
  * (freeze is separate from master playback, per spec section 14).
+ *
+ * OBS-style source controls (see docs/OBS_SOURCE_PLAN.md):
+ *  - fit   : "fill" = COVER (frame fills its box, edges cropped) or
+ *            "fit"  = CONTAIN (whole frame visible, letterboxed in the box).
+ *            The "camera cuts out on canvas" bug was a world where only COVER
+ *            existed; fit is now a first-class per-source control.
+ *  - loop  : video wraps at its end, or holds its last frame (then auto-pauses)
+ *  - solo  : audio solo — while any source is soloed, every NON-soloed source
+ *            is effectively muted (computed state, nothing is overwritten)
  */
 class Layer(
     var id: String = UUID.randomUUID().toString(),
@@ -56,6 +65,9 @@ class Layer(
     var visible: Boolean = true,
     var locked: Boolean = false,
     var muted: Boolean = false,
+    var solo: Boolean = false,
+    var loop: Boolean = false,
+    var fit: String = FIT_FILL,
     var volume: Float = 1f,               // 0..1
     var opacity: Float = 1f,              // 0..1
     var playing: Boolean = true,          // independent layer pause semantics
@@ -79,8 +91,8 @@ class Layer(
 
     fun clone(): Layer {
         val l = Layer(id, type, name, relPath, durMs, srcW, srcH, srcRotation, cx, cy, wN, hN,
-            rotDeg, visible, locked, muted, volume, opacity, playing, pausedMediaMs, speed,
-            text, textColor, fontSizeN, shadow, addedAt)
+            rotDeg, visible, locked, muted, solo, loop, fit, volume, opacity, playing,
+            pausedMediaMs, speed, text, textColor, fontSizeN, shadow, addedAt)
         return l
     }
 
@@ -92,6 +104,7 @@ class Layer(
         o.put("cx", cx.toDouble()); o.put("cy", cy.toDouble())
         o.put("wN", wN.toDouble()); o.put("hN", hN.toDouble()); o.put("rotDeg", rotDeg.toDouble())
         o.put("visible", visible); o.put("locked", locked); o.put("muted", muted)
+        o.put("solo", solo); o.put("loop", loop); o.put("fit", fit)
         o.put("volume", volume.toDouble()); o.put("opacity", opacity.toDouble())
         o.put("playing", playing); o.put("pausedMediaMs", pausedMediaMs)
         o.put("speed", speed.toDouble())
@@ -104,8 +117,17 @@ class Layer(
     }
 
     companion object {
+        /** COVER: frame fills its box, cropped at the edges (full-bleed mains). */
+        const val FIT_FILL = "fill"
+        /** CONTAIN: whole frame visible, letterboxed inside the box (never cuts). */
+        const val FIT_FIT = "fit"
+
         fun fromJson(o: JSONObject): Layer {
             val t = LayerType.from(o.optString("type", "VIDEO"))
+            // Old projects have no "fit" key. Camera takes are exactly what
+            // users complained about being cropped, so they default to the
+            // never-cut CONTAIN mode; everything else keeps the old COVER look.
+            val defaultFit = if (t == LayerType.CAMERA) FIT_FIT else FIT_FILL
             val l = Layer(
                 id = o.optString("id", UUID.randomUUID().toString()),
                 type = t,
@@ -118,6 +140,9 @@ class Layer(
                 rotDeg = o.optDouble("rotDeg", 0.0).toFloat(),
                 visible = o.optBoolean("visible", true), locked = o.optBoolean("locked", false),
                 muted = o.optBoolean("muted", false),
+                solo = o.optBoolean("solo", false),
+                loop = o.optBoolean("loop", false),
+                fit = o.optString("fit", defaultFit),
                 volume = o.optDouble("volume", 1.0).toFloat(), opacity = o.optDouble("opacity", 1.0).toFloat(),
                 playing = o.optBoolean("playing", true), pausedMediaMs = o.optLong("pausedMediaMs"),
                 speed = o.optDouble("speed", 1.0).toFloat(),
@@ -194,9 +219,12 @@ class Project(
  * box, say) crops a portrait camera take down to a thin landscape sliver,
  * which is exactly the "overlay point looks wrong" bug.
  *
- * The compositor always draws a media layer with COVER into its box, so:
- *   - a box with the canvas aspect  -> full-bleed, cropped at the edges
- *   - a box with the source aspect  -> whole frame visible, never distorted
+ * The compositor draws a media layer into its box according to the layer's
+ * `fit` mode (OBS plan §3):
+ *   - fit = fill (COVER)  -> frame fills the box; a canvas-aspect box is
+ *     full-bleed, a different-aspect frame is cropped at the edges
+ *   - fit = fit (CONTAIN) -> whole frame visible, letterboxed in the box
+ * A box with the source aspect shows the whole frame in either mode.
  */
 object LayerFit {
 

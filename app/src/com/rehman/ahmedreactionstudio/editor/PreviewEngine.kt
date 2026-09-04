@@ -53,7 +53,8 @@ class PreviewEngine(
         }
         fun resume(master: Long) { resumeAt = master; wasPlaying = true }
         fun pause(master: Long) { freeze = media(master, 1f); wasPlaying = false }
-        fun seek(master: Long, speed: Float) { freeze = (master * speed).toLong(); resumeAt = master; wasPlaying = true }
+        /** scrub to master time WITHOUT changing the play/pause state */
+        fun seek(master: Long, speed: Float) { freeze = (master * speed).toLong(); resumeAt = master }
     }
 
     companion object {
@@ -99,6 +100,7 @@ class PreviewEngine(
                 masterMs += dt
                 val dur = project().durationMs()
                 if (dur > 0 && masterMs >= dur) masterMs %= dur
+                endOfMediaCheck()
                 syncPlayers(now)
                 if (snapshotLoop) requestFrames(closest = false)
                 if (now - lastAdapt > 1000L) { lastAdapt = now; adaptQuality() }
@@ -106,6 +108,33 @@ class PreviewEngine(
             onFrameReady(masterMs)
             handler.postDelayed(this, TICK_MS)
         }
+    }
+
+    /**
+     * OBS plan §2: a non-looping video that reaches its end HOLDS its last
+     * frame and auto-pauses (it never silently restarts). Pressing play on an
+     * ended source restarts it from 0:00 — handled in [toggleLayerPlay].
+     */
+    private fun endOfMediaCheck() {
+        val p = project()
+        for (l in p.layers) {
+            if (!l.isVideoLike() || !l.playing || l.loop || l.durMs <= 0L) continue
+            val t = clocks[l.id]?.media(masterMs, l.speed) ?: continue
+            if (t >= l.durMs) {
+                l.playing = false
+                l.pausedMediaMs = l.durMs
+                clocks[l.id]?.let { c -> c.wasPlaying = false; c.freeze = l.durMs }
+                playerOf(l.id)?.let { try { it.pause() } catch (_: Exception) { } }
+            }
+        }
+    }
+
+    /** audio-solo: while any source is soloed, every other source is muted */
+    private fun effectiveMuted(l: Layer): Boolean {
+        if (l.muted) return true
+        val p = project()
+        val anySolo = p.layers.any { it.solo }
+        return anySolo && !l.solo
     }
 
     fun attach(projectId: String) {
@@ -158,8 +187,11 @@ class PreviewEngine(
     fun playAll() {
         val p = project()
         for (l in p.layers) if (l.isVideoLike()) {
+            val c = clocks[l.id] ?: continue
+            // an ended non-looping clip restarts from 0:00 on play-all
+            if (!l.loop && l.durMs > 0 && c.freeze >= l.durMs - 80) { c.freeze = 0L; l.pausedMediaMs = 0L }
             l.playing = true
-            clocks[l.id]?.resume(masterMs)
+            c.resume(masterMs)
         }
         startTicker()
         refreshFrames()
@@ -183,18 +215,25 @@ class PreviewEngine(
             l.pausedMediaMs = clocks[l.id]?.freeze ?: 0L
             playerOf(l.id)?.let { try { it.pause() } catch (_: Exception) { } }
         } else {
+            val c = clocks[l.id]
+            // ended (non-loop) clip restarts from 0:00; paused clips resume
+            if (c != null && !l.loop && l.durMs > 0 && c.freeze >= l.durMs - 80) { c.freeze = 0L }
             l.playing = true
             l.pausedMediaMs = 0L
-            clocks[l.id]?.resume(masterMs)
+            c?.resume(masterMs)
             startTicker()
         }
         refreshFrames()
         return l.playing
     }
 
+    /**
+     * OBS rule: visibility is visual-only — a hidden-but-playing source still
+     * drives the master clock (and keeps its audio, see syncPlayers).
+     */
     fun anyPlaying(): Boolean {
         val p = project()
-        for (l in p.layers) if (l.isVideoLike() && l.playing && l.visible) return true
+        for (l in p.layers) if (l.isVideoLike() && l.playing) return true
         return false
     }
 
@@ -233,18 +272,19 @@ class PreviewEngine(
     // ---------- audio (never on the UI thread) ----------
 
     private fun ensureAudioPlayer(l: Layer) {
-        if (l.muted || !l.isVideoLike()) return
+        if (effectiveMuted(l) || !l.isVideoLike()) return
         if (players.containsKey(l.id) || preparing.contains(l.id)) return
         val path = paths[l.id] ?: pathOf(l) ?: return
         preparing.add(l.id)
         val id = l.id
         val vol = l.volume
+        val loop = l.loop
         exec.execute {
             var mp: MediaPlayer? = null
             try {
                 mp = MediaPlayer()
                 mp.setDataSource(path)
-                mp.isLooping = true
+                mp.isLooping = loop
                 mp.setVolume(vol, vol)
                 mp.prepare()
             } catch (_: Exception) {
@@ -258,7 +298,7 @@ class PreviewEngine(
                 val old = players.put(id, ready)
                 try { old?.release() } catch (_: Exception) { }
                 val lay = project().layerById(id)
-                if (lay == null || !lay.playing || !lay.visible || lay.muted) {
+                if (lay == null || !lay.playing || effectiveMuted(lay)) {
                     try { ready.pause() } catch (_: Exception) { }
                 } else {
                     try {
@@ -274,14 +314,21 @@ class PreviewEngine(
         val p = project()
         for (l in p.layers) {
             if (!l.isVideoLike()) continue
-            val playingNow = l.playing && l.visible && !l.muted
+            // audio follows play + mute/solo ONLY. Hiding a source does not
+            // silence it (OBS rule, plan §2).
+            val playingNow = l.playing && !effectiveMuted(l)
             val mp = players[l.id]
             if (playingNow) {
                 if (mp == null) { ensureAudioPlayer(l); continue }
+                try { mp.isLooping = l.loop } catch (_: Exception) { }
                 try {
                     if (!mp.isPlaying) {
-                        mp.seekTo(mediaTimeOf(l).toInt())
-                        mp.start()
+                        // don't restart a non-looping clip that already ended
+                        val t = mediaTimeOf(l)
+                        if (l.loop || l.durMs <= 0 || t < l.durMs - 80) {
+                            mp.seekTo(t.toInt())
+                            mp.start()
+                        }
                     } else if (now - (lastSeekAt[l.id] ?: 0L) > 1200L) {
                         // drift guard: re-anchor only when clearly off, and never
                         // more than about once a second (repeated seeks stutter)
@@ -312,8 +359,12 @@ class PreviewEngine(
 
     fun playerOf(id: String): MediaPlayer? = players[id]
 
-    /** media time (ms) of a layer right now */
-    fun mediaTimeOf(l: Layer): Long = clocks[l.id]?.media(masterMs, l.speed) ?: 0L
+    /** media time (ms) of a layer right now; looping clips wrap at their end */
+    fun mediaTimeOf(l: Layer): Long {
+        var t = clocks[l.id]?.media(masterMs, l.speed) ?: 0L
+        if (l.loop && l.durMs > 0) t %= l.durMs
+        return t
+    }
 
     fun setVolume(l: Layer, v: Float) {
         l.volume = v
