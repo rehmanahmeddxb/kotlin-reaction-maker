@@ -588,7 +588,9 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         rootFrame.getLocationOnScreen(rootLoc)
         val ax = (loc[0] + studioBtn.width / 2f) - rootLoc[0]
         val ay = (loc[1] + studioBtn.height / 2f) - rootLoc[1]
-        wheel.show(RadialMenus.root(this), ax, ay - UI.dpf(this, 60f))
+        // Anchor slightly above the Studio button; RadialMenuView clamps the
+        // whole ring (petals + labels) on-screen so nothing is cut off.
+        wheel.show(RadialMenus.root(this), ax, ay - UI.dpf(this, 28f))
     }
 
     /** Open a specific ring at a point (used by canvas long-press and ◉). */

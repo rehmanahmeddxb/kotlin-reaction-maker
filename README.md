@@ -57,10 +57,11 @@ get:
   the reaction-cam area and pinned to a corner, so a portrait camera take is
   never squashed into a landscape sliver. Dragging keeps at least 40 % of the
   layer on canvas.
-- **Preview decoding** — one cached `MediaMetadataRetriever` per clip, walked
-  forward at the stage's own resolution on a worker pool (adaptive: it drops
-  the decode size before it drops your frame rate), which is what keeps an
-  imported 4K clip playable.
+- **Preview decoding (GPU path)** — continuous hardware decode per clip:
+  `MediaExtractor` → `MediaCodec` → OES `SurfaceTexture` → GL blit → bitmap,
+  same model as MX Player / ExoPlayer (not seek-grab thumbnails). Falls back
+  to a cached `MediaMetadataRetriever` only when HW open fails. Adaptive
+  resolution keeps multi-layer previews fluid.
 
 ## Layout
 
