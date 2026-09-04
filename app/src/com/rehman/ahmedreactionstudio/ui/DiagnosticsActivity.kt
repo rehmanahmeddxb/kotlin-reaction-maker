@@ -14,6 +14,7 @@ import android.os.StatFs
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.rehman.ahmedreactionstudio.editor.EditorActivity
 import com.rehman.ahmedreactionstudio.util.UI
 import java.io.File
 
@@ -100,6 +101,27 @@ class DiagnosticsActivity : Activity() {
         // storage for exports
         val ex = getExternalFilesDir(null)
         row("App data dir", ex?.absolutePath ?: "internal")
+
+        // Preview path is the number that matters when playback looks bad:
+        // HW = hardware MediaCodec, SW = software retriever fallback.
+        val prefs = getSharedPreferences(EditorActivity.PREFS_EDITOR, MODE_PRIVATE)
+        val hudBtn = UI.btn(this,
+            if (prefs.getBoolean(EditorActivity.PREF_STATS_HUD, true))
+                "Preview stats overlay: ON" else "Preview stats overlay: OFF",
+            accent = false)
+        hudBtn.setOnClickListener {
+            val on = !prefs.getBoolean(EditorActivity.PREF_STATS_HUD, true)
+            prefs.edit().putBoolean(EditorActivity.PREF_STATS_HUD, on).apply()
+            hudBtn.text = if (on) "Preview stats overlay: ON" else "Preview stats overlay: OFF"
+        }
+        UI.margin(hudBtn, 0, 12, 0, 0, this)
+        col.addView(hudBtn)
+        val hudHint = UI.label(this,
+            "While a clip plays the editor shows “HW · fps · ms/f”. " +
+                "SW means that clip fell back to the software retriever and will stutter.",
+            dim = true, size = 11f)
+        UI.margin(hudHint, 0, 2, 0, 0, this)
+        col.addView(hudHint)
 
         UI.margin(col, 0, 0, 0, 12, this)
         val copy = UI.btn(this, "Copy diagnostics", accent = false)
