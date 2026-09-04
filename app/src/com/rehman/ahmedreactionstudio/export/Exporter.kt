@@ -126,6 +126,8 @@ object Exporter {
             var codec: MediaCodec? = null
             var muxer: MediaMuxer? = null
             var frameBitmap: Bitmap? = null
+            val heldDecoders = ArrayList<Dec>()
+            val heldImages = HashMap<String, Bitmap>()
             try {
                 val (w, h) = chooseSize(p.aspect.canvasW, p.aspect.canvasH, opts.maxDim)
                 val fps = opts.fps
@@ -166,7 +168,7 @@ object Exporter {
 
                 // decode sources
                 val decoders = HashMap<String, Dec>()
-                val imageCache = HashMap<String, Bitmap>()
+                val imageCache = heldImages
                 for (l in p.layers) {
                     if (l.type == LayerType.IMAGE && !l.relPath.isNullOrBlank()) {
                         try {
@@ -175,7 +177,11 @@ object Exporter {
                         } catch (_: Exception) { }
                     } else if (l.isVideoLike() && !l.relPath.isNullOrBlank()) {
                         val f = File(store.projectDir(p.id), l.relPath!!)
-                        if (f.exists()) decoders[l.id] = Dec(f.absolutePath, max(w, h))
+                        if (f.exists()) {
+                            val d = Dec(f.absolutePath, max(w, h))
+                            decoders[l.id] = d
+                            heldDecoders.add(d)
+                        }
                     }
                 }
                 val bitmapFor: (com.rehman.ahmedreactionstudio.core.Layer) -> Bitmap? = { l ->
@@ -280,26 +286,40 @@ object Exporter {
                 try { muxer?.stop() } catch (_: Exception) { }
                 try { muxer?.release() } catch (_: Exception) { }
                 try { frameBitmap?.recycle() } catch (_: Exception) { }
+                try { for (d in heldDecoders) d.close() } catch (_: Exception) { }
+                for (b in heldImages.values) { try { b.recycle() } catch (_: Exception) { } }
             }
             onProgress(100, "Done")
             onDone(res)
         }, "ahmed-export").start()
     }
 
+    /**
+     * Sequential source frames for one layer. Holds ONE MediaMetadataRetriever
+     * for the whole export: re-opening the container per frame was the single
+     * biggest cost of an export run.
+     */
     private class Dec(val path: String, private val maxPx: Int) {
+        private val src = MediaKit.FrameSource(path)
         private var cacheTime = Long.MIN_VALUE
         var current: Bitmap? = null
             private set
 
         fun seekTo(mediaTimeMs: Long) {
             if (current != null && abs(mediaTimeMs - cacheTime) < 25) return
-            val b = MediaKit.videoFrame(path, mediaTimeMs, maxPx)
+            val b = src.frameAt(mediaTimeMs, maxPx)
             if (b != null) {
                 val old = current
                 current = b
                 cacheTime = mediaTimeMs
                 if (old != null && old !== b) old.recycle()
             }
+        }
+
+        fun close() {
+            try { current?.recycle() } catch (_: Exception) { }
+            current = null
+            src.release()
         }
     }
 

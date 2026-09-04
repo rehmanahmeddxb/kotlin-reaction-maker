@@ -70,6 +70,13 @@ class Layer(
 ) {
     fun isVideoLike(): Boolean = type == LayerType.VIDEO || type == LayerType.CAMERA || type == LayerType.SCREEN
 
+    /**
+     * Text layers resize freely; media layers never change aspect ratio.
+     * (A helper rather than `type == LayerType.TEXT` because inside a View
+     * subclass the simple name `LayerType` resolves to `View.LayerType`.)
+     */
+    fun isText(): Boolean = type == LayerType.TEXT
+
     fun clone(): Layer {
         val l = Layer(id, type, name, relPath, durMs, srcW, srcH, srcRotation, cx, cy, wN, hN,
             rotDeg, visible, locked, muted, volume, opacity, playing, pausedMediaMs, speed,
@@ -177,24 +184,125 @@ class Project(
     }
 }
 
-/** New-layer defaults helper. */
-object LayerPresets {
-    fun fullscreen(type: LayerType, name: String, relPath: String?, durMs: Long, sw: Int, sh: Int, rot: Int): Layer {
-        val l = Layer(type = type, name = name, relPath = relPath, durMs = durMs, srcW = sw, srcH = sh, srcRotation = rot)
-        l.wN = 1f; l.hN = 1f; l.cx = 0.5f; l.cy = 0.5f
-        return l
+/**
+ * Every placement rule of the editor, in one place.
+ *
+ * Boxes are NORMALIZED and anisotropic: `wN` is a fraction of the canvas
+ * WIDTH while `hN` is a fraction of the canvas HEIGHT. A box that must keep
+ * the source's pixel aspect ratio therefore has to be derived through
+ * canvasW/canvasH every single time — doing it by eye (a fixed 0.44 x 0.31
+ * box, say) crops a portrait camera take down to a thin landscape sliver,
+ * which is exactly the "overlay point looks wrong" bug.
+ *
+ * The compositor always draws a media layer with COVER into its box, so:
+ *   - a box with the canvas aspect  -> full-bleed, cropped at the edges
+ *   - a box with the source aspect  -> whole frame visible, never distorted
+ */
+object LayerFit {
+
+    /** Source pixels as a decoded frame looks: rotation metadata applied. */
+    fun effective(srcW: Int, srcH: Int, rotation: Int): Pair<Int, Int> =
+        if ((rotation == 90 || rotation == 270) && srcW > 0 && srcH > 0) Pair(srcH, srcW)
+        else Pair(srcW, srcH)
+
+    /** Pixel aspect of the layer's source, falling back to the canvas aspect. */
+    fun sourceAspect(l: Layer, canvasW: Int, canvasH: Int): Float {
+        val (w, h) = effective(l.srcW, l.srcH, l.srcRotation)
+        if (w <= 0 || h <= 0) return canvasW.toFloat() / canvasH
+        return w.toFloat() / h
+    }
+
+    /** True when the layer already covers the whole canvas (it is the background). */
+    fun isFullBleed(l: Layer): Boolean = l.wN >= 0.985f && l.hN >= 0.985f
+
+    /**
+     * MAIN CANVAS: the box IS the canvas. The compositor cover-crops the frame,
+     * so the picture still fills every pixel — but the box no longer sticks out
+     * of the canvas, which keeps the selection frame and all 8 resize handles
+     * on screen and makes drag/resize behave.
+     */
+    fun fill(l: Layer) {
+        l.cx = 0.5f; l.cy = 0.5f; l.wN = 1f; l.hN = 1f; l.rotDeg = 0f
+    }
+
+    /** CONTAIN: the whole frame, undistorted, centred, optionally inset. */
+    fun contain(l: Layer, canvasW: Int, canvasH: Int, inset: Float = 1f) {
+        val sa = sourceAspect(l, canvasW, canvasH)
+        val ca = canvasW.toFloat() / canvasH
+        if (sa >= ca) { l.wN = 1f; l.hN = ca / sa } else { l.hN = 1f; l.wN = sa / ca }
+        l.wN *= inset; l.hN *= inset
+        l.cx = 0.5f; l.cy = 0.5f
     }
 
     /**
-     * PiP default: box is 44% of canvas width with a 3:4 box shape, centered in the
-     * lower third. canvasW/H are the logical canvas pixels so geometry is exact.
+     * Reaction-cam PiP: the SOURCE aspect ratio, fitted inside a
+     * [maxW] x [maxH] region of the canvas and pinned to [anchor] with a
+     * [margin] (all normalized), always fully inside the canvas.
      */
+    fun pip(
+        l: Layer,
+        canvasW: Int,
+        canvasH: Int,
+        anchor: String = "br",
+        maxW: Float = 0.36f,
+        maxH: Float = 0.42f,
+        margin: Float = 0.035f
+    ) {
+        val (ew, eh) = effective(l.srcW, l.srcH, l.srcRotation)
+        val w = if (ew > 0 && eh > 0) ew.toFloat() else canvasW.toFloat()
+        val h = if (ew > 0 && eh > 0) eh.toFloat() else canvasH.toFloat()
+        val s = minOf(maxW * canvasW / w, maxH * canvasH / h)
+        l.wN = (w * s) / canvasW
+        l.hN = (h * s) / canvasH
+        l.rotDeg = 0f
+        anchorTo(l, anchor, margin)
+    }
+
+    /** Corner / edge anchors with a normalized margin, clamped inside. */
+    fun anchorTo(l: Layer, anchor: String, margin: Float = 0.035f) {
+        val mx = margin; val my = margin
+        when (anchor) {
+            "tl" -> { l.cx = mx + l.wN / 2f; l.cy = my + l.hN / 2f }
+            "tc" -> { l.cx = 0.5f; l.cy = my + l.hN / 2f }
+            "tr" -> { l.cx = 1f - mx - l.wN / 2f; l.cy = my + l.hN / 2f }
+            "bl" -> { l.cx = mx + l.wN / 2f; l.cy = 1f - my - l.hN / 2f }
+            "bc" -> { l.cx = 0.5f; l.cy = 1f - my - l.hN / 2f }
+            "br" -> { l.cx = 1f - mx - l.wN / 2f; l.cy = 1f - my - l.hN / 2f }
+            else -> { l.cx = 0.5f; l.cy = 0.5f }
+        }
+        clampInside(l)
+    }
+
+    /**
+     * Keep at least [keep] of the layer visible on each axis, so a PiP can sit
+     * against an edge but can never be dragged off-canvas and lost.
+     */
+    fun clampInside(l: Layer, keep: Float = 0.4f) {
+        l.cx = clampAxis(l.cx, l.wN, keep)
+        l.cy = clampAxis(l.cy, l.hN, keep)
+    }
+
+    private fun clampAxis(v: Float, size: Float, keep: Float): Float {
+        val half = size / 2f
+        val lo = half - size * (1f - keep)
+        val hi = 1f - half + size * (1f - keep)
+        return if (lo >= hi) 0.5f else v.coerceIn(lo, hi)
+    }
+}
+
+/** Builds a new layer already placed by [LayerFit]. */
+object LayerPresets {
+    /** main-canvas candidate: full bleed */
+    fun fullscreen(type: LayerType, name: String, relPath: String?, durMs: Long, sw: Int, sh: Int, rot: Int): Layer {
+        val l = Layer(type = type, name = name, relPath = relPath, durMs = durMs, srcW = sw, srcH = sh, srcRotation = rot)
+        LayerFit.fill(l)
+        return l
+    }
+
+    /** overlay candidate: source aspect ratio, pinned to the reaction-cam corner */
     fun pipDefault(type: LayerType, name: String, relPath: String?, durMs: Long, sw: Int, sh: Int, rot: Int, canvasW: Int, canvasH: Int): Layer {
         val l = Layer(type = type, name = name, relPath = relPath, durMs = durMs, srcW = sw, srcH = sh, srcRotation = rot)
-        l.wN = 0.44f
-        l.hN = (l.wN * canvasW * 0.75f) / canvasH
-        l.cx = 0.5f
-        l.cy = 0.76f
+        LayerFit.pip(l, canvasW, canvasH)
         return l
     }
 }

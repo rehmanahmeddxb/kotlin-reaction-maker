@@ -31,7 +31,7 @@ import com.rehman.ahmedreactionstudio.camera.CameraActivity
 import com.rehman.ahmedreactionstudio.capture.ScreenCaptureService
 import com.rehman.ahmedreactionstudio.core.Aspect
 import com.rehman.ahmedreactionstudio.core.Layer
-import com.rehman.ahmedreactionstudio.core.LayerPresets
+import com.rehman.ahmedreactionstudio.core.LayerFit
 import com.rehman.ahmedreactionstudio.core.LayerType
 import com.rehman.ahmedreactionstudio.core.MediaKit
 import com.rehman.ahmedreactionstudio.core.Project
@@ -195,6 +195,7 @@ class EditorActivity : Activity(), StageView.Host {
 
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
+        stage.post { syncPreviewTarget() }
         stage.refresh()
     }
 
@@ -366,6 +367,7 @@ class EditorActivity : Activity(), StageView.Host {
         }
 
         setContentView(root)
+        stage.post { syncPreviewTarget() }
     }
 
     private fun onTab(key: String) {
@@ -522,8 +524,15 @@ class EditorActivity : Activity(), StageView.Host {
             "⤢ Fill canvas" to { withSel { presetFill(it) } },
             "▦ Contain" to { withSel { presetContain(it) } },
             "▢ PiP" to { withSel { presetPip(it) } })
+        addPanelSection(panelContent, "OVERLAY POSITION (always kept on canvas)")
         panelButtonRow(panelContent,
-            "◉ Center" to { withSel { presetCenter(it) } })
+            "◤ Top-left" to { withSel { presetAnchor(it, "tl") } },
+            "◉ Center" to { withSel { presetAnchor(it, "c") } },
+            "◥ Top-right" to { withSel { presetAnchor(it, "tr") } })
+        panelButtonRow(panelContent,
+            "◣ Bottom-left" to { withSel { presetAnchor(it, "bl") } },
+            "⬇ Bottom-center" to { withSel { presetAnchor(it, "bc") } },
+            "◢ Bottom-right" to { withSel { presetAnchor(it, "br") } })
 
         if (p.layers.isNotEmpty()) {
             addPanelSection(panelContent, "MAIN CANVAS LAYER")
@@ -544,8 +553,9 @@ class EditorActivity : Activity(), StageView.Host {
         p.aspect = a
         applyOrientationFor(a)
         markDirty()
+        stage.post { syncPreviewTarget() }
         stage.refresh()
-        UI.toast(this, "Canvas set to ${a.code}")
+        UI.toast(this, "Canvas set to ${a.code} — every layer keeps its own frame ratio")
     }
 
     // ---------------- smart panel: EXPORT ----------------
@@ -679,7 +689,17 @@ class EditorActivity : Activity(), StageView.Host {
             if (max > 0) seek.progress = (ms.toInt()).coerceAtMost(max)
         }
         playBtn.text = if (engine.anyPlaying()) "❚❚" else "▶"
-        stage.refresh()
+        // Repaint the composition only when a decoded frame actually landed.
+        // Redrawing the full canvas 30x/s while the decoder is behind burns the
+        // UI thread that the transport and the drag gestures need.
+        if (engine.consumeNewFrames()) stage.refresh()
+    }
+
+    /** decode preview frames at (roughly) the size they are drawn at */
+    private fun syncPreviewTarget() {
+        if (!this::stage.isInitialized || !engineReady()) return
+        val long = maxOf(stage.canvasW, stage.canvasH)
+        engine.targetMaxPx = long.coerceIn(480, 960)
     }
 
     private fun togglePlay() {
@@ -924,19 +944,12 @@ class EditorActivity : Activity(), StageView.Host {
                 val bmp = MediaKit.image(src.absolutePath)
                 l = Layer(type = type, name = name, relPath = rel,
                     srcW = bmp?.width ?: info.width, srcH = bmp?.height ?: info.height)
-                if (role == "main") fillCanvas(l, p) else fitNormalized(l, p)
             } else {
-                l = LayerPresets.fullscreen(type, name, rel, info.durMs, info.width, info.height, info.rotation)
-                if (role == "main") fillCanvas(l, p) else fitNormalized(l, p)
-            }
-            if (role != "main" && p.layers.isNotEmpty()) {
-                // PiP default box: lower-third reaction cam
-                l.wN = 0.44f
-                l.hN = (l.wN * p.aspect.canvasW * 0.78f) / p.aspect.canvasH
-                l.cx = 0.5f
-                l.cy = 0.78f
+                l = Layer(type = type, name = name, relPath = rel, durMs = info.durMs,
+                    srcW = info.width, srcH = info.height, srcRotation = info.rotation)
             }
             p.layers.add(l)
+            if (role == "main" || p.layers.size == 1) placeMain(l, p) else placePip(l, p)
             selectedId = l.id
         }
         try {
@@ -945,30 +958,37 @@ class EditorActivity : Activity(), StageView.Host {
         setSheetOpen(false)
     }
 
-    /** scale a layer so it COVERS the whole canvas (main-canvas/background fill) */
-    private fun fillCanvas(l: Layer, p: Project) {
-        l.cx = 0.5f; l.cy = 0.5f
-        if (l.srcW <= 0 || l.srcH <= 0) { l.wN = 1f; l.hN = 1f; return }
-        val (sw, sh) = if (l.srcRotation == 90 || l.srcRotation == 270) Pair(l.srcH, l.srcW)
-        else Pair(l.srcW, l.srcH)
-        val ca = p.aspect.canvasW.toFloat() / p.aspect.canvasH
-        val sa = sw.toFloat() / sh
-        // cover: layer box must be at least the canvas on both axes
-        if (sa >= ca) { l.hN = 1f; l.wN = (l.hN * sa) / ca }
-        else { l.wN = 1f; l.hN = (l.wN / sa) * ca }
-    }
+    /**
+     * MAIN CANVAS: the layer box becomes the canvas itself and the compositor
+     * cover-crops the frame into it. (The old code made the box *bigger* than
+     * the canvas to fake a cover — same picture, but the selection frame and
+     * every resize handle ended up off screen.)
+     */
+    private fun fillCanvas(l: Layer, p: Project) { LayerFit.fill(l) }
 
     /** contain-fit the layer box onto the canvas without distortion */
     private fun fitNormalized(l: Layer, p: Project) {
-        if (l.srcW <= 0 || l.srcH <= 0) { l.wN = 1f; l.hN = 1f; l.cx = 0.5f; l.cy = 0.5f; return }
-        val (sw, sh) = if (l.srcRotation == 90 || l.srcRotation == 270) Pair(l.srcH, l.srcW)
-        else Pair(l.srcW, l.srcH)
-        val ca = p.aspect.canvasW.toFloat() / p.aspect.canvasH
-        val sa = sw.toFloat() / sh
-        if (sa >= ca) { l.wN = 1f; l.hN = (l.wN / sa) * ca }
-        else { l.hN = 1f; l.wN = (l.hN * sa) / ca }
-        l.cx = 0.5f; l.cy = 0.5f
-        l.wN *= 0.96f; l.hN *= 0.96f
+        LayerFit.contain(l, p.aspect.canvasW, p.aspect.canvasH)
+    }
+
+    /** place a fresh layer as the background: full bleed, bottom of the z-order */
+    private fun placeMain(l: Layer, p: Project) {
+        LayerFit.fill(l)
+        p.layers.remove(l)
+        p.layers.add(0, l)
+    }
+
+    /**
+     * Place a fresh overlay: its OWN aspect ratio (never squashed), sized into
+     * the reaction-cam area and pinned inside the canvas bottom-right.
+     */
+    private fun placePip(l: Layer, p: Project) {
+        if (l.type == LayerType.TEXT) {
+            l.wN = 0.86f; l.hN = 0.28f
+            l.cx = 0.5f; l.cy = 0.5f
+        } else {
+            LayerFit.pip(l, p.aspect.canvasW, p.aspect.canvasH, anchor = "br")
+        }
     }
 
     private fun presetFill(l: Layer) {
@@ -979,17 +999,14 @@ class EditorActivity : Activity(), StageView.Host {
         pushUndo(); fitNormalized(l, proj!!); markDirty(); stage.refresh()
     }
 
-    private fun presetCenter(l: Layer) {
-        pushUndo(); l.cx = 0.5f; l.cy = 0.5f; markDirty(); stage.refresh()
+    /** snap the selected overlay to a canvas anchor, always fully on canvas */
+    private fun presetAnchor(l: Layer, anchor: String) {
+        pushUndo(); LayerFit.anchorTo(l, anchor); markDirty(); stage.refresh()
     }
 
     private fun presetPip(l: Layer) {
         pushUndo()
-        val p = proj!!
-        l.wN = 0.44f
-        l.hN = (l.wN * p.aspect.canvasW * 0.78f) / p.aspect.canvasH
-        l.cx = 0.5f
-        l.cy = 0.78f
+        LayerFit.pip(l, proj!!.aspect.canvasW, proj!!.aspect.canvasH, anchor = "br")
         markDirty(); stage.refresh()
     }
 

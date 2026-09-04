@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.SystemClock
 import java.io.File
 
 /** Probed metadata of one media file. */
@@ -60,33 +61,104 @@ object MediaKit {
         mime != null && (mime.startsWith("image/") || mime == "image/webp")
 
     /**
-     * Frame of a video at media-time ms. Keeps source rotation in the bitmap.
-     * Safe for any thread; caller must recycle/retain results.
+     * A REUSABLE frame decoder for one media file.
+     *
+     * Opening a MediaMetadataRetriever parses the whole container (tens of ms
+     * on a phone) and the preview used to pay that for every single frame, on
+     * top of a full-resolution CLOSEST_SYNC decode — that is what made an
+     * imported clip stutter. Keeping ONE retriever per file and walking it
+     * forward with PREVIOUS_SYNC, decoded straight to the preview size, is an
+     * order of magnitude cheaper.
+     *
+     * Not thread safe by contract: one layer, one caller — [frameAt] is
+     * synchronized so an accidental second caller cannot corrupt it.
      */
-    fun videoFrame(path: String, ms: Long, maxPx: Int = 1280): Bitmap? {
-        val r = MediaMetadataRetriever()
-        return try {
-            r.setDataSource(path)
-            val t = ms.coerceAtLeast(0L) * 1000L
-            val bmp = r.getFrameAtTime(t, MediaMetadataRetriever.OPTION_CLOSEST_SYNC) ?: return null
-            val rot = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
-            var out = bmp
-            if (rot != 0) {
-                val m = Matrix(); m.postRotate(rot.toFloat())
-                out = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
-                if (out !== bmp) bmp.recycle()
+    class FrameSource(val path: String) {
+        private var r: MediaMetadataRetriever? = null
+        private var rot = 0
+        private var broken = false
+
+        /** wall-clock cost of the most recent [frameAt] (0 = none yet) */
+        var lastDecodeMs = 0L
+            private set
+        /** true once the decoder returned a frame at least once */
+        var produced = false
+            private set
+
+        @Synchronized
+        private fun retriever(): MediaMetadataRetriever? {
+            if (broken) return null
+            r?.let { return it }
+            val x = try {
+                val nr = MediaMetadataRetriever()
+                nr.setDataSource(path)
+                rot = nr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+                    ?.toIntOrNull() ?: 0
+                nr
+            } catch (_: Exception) {
+                broken = true
+                null
             }
-            val scale = maxPx.toFloat() / kotlin.math.max(out.width, out.height)
-            if (scale < 1f) {
-                val m = Matrix(); m.postScale(scale, scale)
-                val small = Bitmap.createBitmap(out, 0, 0, out.width, out.height, m, true)
-                if (small !== out) out.recycle()
-                return small
-            }
-            out
-        } catch (_: Exception) { null } finally {
-            try { r.release() } catch (_: Exception) { }
+            r = x
+            return x
         }
+
+        /**
+         * Frame at [ms] of media time, longest side <= [maxPx] (0 = source size).
+         * [closest] trades speed for accuracy: playback wants PREVIOUS_SYNC,
+         * a scrub/seek wants CLOSEST_SYNC.
+         */
+        @Synchronized
+        fun frameAt(ms: Long, maxPx: Int, closest: Boolean = false): Bitmap? {
+            if (broken) return null
+            val rr = retriever() ?: return null
+            val t0 = SystemClock.elapsedRealtime()
+            val tUs = ms.coerceAtLeast(0L) * 1000L
+            val opt = if (closest) MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+            else MediaMetadataRetriever.OPTION_PREVIOUS_SYNC
+            var raw: Bitmap? = null
+            if (android.os.Build.VERSION.SDK_INT >= 27 && maxPx > 0) {
+                raw = try { rr.getScaledFrameAtTime(tUs, opt, maxPx, maxPx) } catch (_: Exception) { null }
+            }
+            if (raw == null) {
+                raw = try { rr.getFrameAtTime(tUs, opt) } catch (_: Exception) { null }
+            }
+            lastDecodeMs = SystemClock.elapsedRealtime() - t0
+            if (raw == null) return null
+            produced = true
+            return postProcess(raw, maxPx)
+        }
+
+        /** one Matrix pass for rotation + (fallback) downscale, no extra copies */
+        private fun postProcess(src: Bitmap, maxPx: Int): Bitmap {
+            val scale = if (maxPx > 0) maxPx.toFloat() / kotlin.math.max(src.width, src.height) else 1f
+            val needScale = scale < 0.999f
+            if (rot == 0 && !needScale) return src
+            val m = Matrix()
+            if (rot != 0) m.postRotate(rot.toFloat())
+            if (needScale) m.postScale(scale, scale)
+            val out = try {
+                Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
+            } catch (_: Exception) { null }
+            if (out != null && out !== src) src.recycle()
+            return out ?: src
+        }
+
+        @Synchronized
+        fun release() {
+            try { r?.release() } catch (_: Exception) { }
+            r = null
+            broken = true
+        }
+    }
+
+    /**
+     * One-shot frame of a video at media-time ms (opens and closes its own
+     * retriever). For repeated reads of the same file use [FrameSource].
+     */
+    fun videoFrame(path: String, ms: Long, maxPx: Int = 1280, closest: Boolean = false): Bitmap? {
+        val s = FrameSource(path)
+        return try { s.frameAt(ms, maxPx, closest) } finally { s.release() }
     }
 
     fun image(path: String, maxPx: Int = 2048): Bitmap? {

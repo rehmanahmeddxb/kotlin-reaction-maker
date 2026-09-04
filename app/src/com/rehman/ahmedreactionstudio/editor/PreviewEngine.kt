@@ -10,7 +10,10 @@ import com.rehman.ahmedreactionstudio.core.Layer
 import com.rehman.ahmedreactionstudio.core.MediaKit
 import com.rehman.ahmedreactionstudio.core.Project
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
 import kotlin.math.min
 
 /**
@@ -22,6 +25,16 @@ import kotlin.math.min
  *      playing ? media = freeze + (master - resumeAt) * speed
  *      paused  ? media = freeze                 (layer frozen, others keep going)
  *  - audio is optional playback of the same source tied to the layer state
+ *
+ * Smoothness rules learned the hard way (imported clips used to stutter):
+ *  - ONE cached [MediaKit.FrameSource] per layer instead of re-opening the
+ *    container for every frame,
+ *  - decodes run on a worker pool and are COALESCED: a layer never has two
+ *    requests in flight and the clock never waits for a decoder,
+ *  - frames are decoded at the preview size, and the size adapts down when
+ *    the device cannot keep up,
+ *  - MediaPlayer.prepare()/seekTo() never run on the UI thread and re-anchoring
+ *    is rate limited, because a blocking prepare is a visible freeze.
  */
 class PreviewEngine(
     private val ctx: Context,
@@ -43,18 +56,38 @@ class PreviewEngine(
         fun seek(master: Long, speed: Float) { freeze = (master * speed).toLong(); resumeAt = master; wasPlaying = true }
     }
 
+    companion object {
+        private const val TICK_MS = 33L
+        private const val MIN_DECODE_PX = 480
+    }
+
     private val clocks = HashMap<String, Clock>()
     private val players = HashMap<String, MediaPlayer>()
-    private val frames = HashMap<String, Bitmap>()   // last decoded frame per media layer
+    private val frames = HashMap<String, Bitmap>()   // last decoded frame per media layer (main thread only)
+    private val sources = ConcurrentHashMap<String, MediaKit.FrameSource>()
+    private val decoding = ConcurrentHashMap.newKeySet<String>()
+    private val preparing = ConcurrentHashMap.newKeySet<String>()
+    private val paths = HashMap<String, String>()
+    private val lastSeekAt = HashMap<String, Long>()
 
-    private val exec = Executors.newSingleThreadExecutor()
+    private val exec = Executors.newFixedThreadPool(2)
     private val handler = Handler(Looper.getMainLooper())
     private var masterMs = 0L
     private var lastTick = 0L
+    private var lastAdapt = 0L
     private var ticking = false
     private var snapshotLoop = false
-    private var decodeBusy = false
     private var projectId: String = ""
+
+    /** longest side the preview asks the decoder for; the editor sets it from the stage size */
+    @Volatile
+    var targetMaxPx = 720
+
+    /** adapts down while decoding cannot keep up, back up when it can */
+    @Volatile
+    private var adaptiveMaxPx = 0
+    private var avgDecodeMs = 0f
+    private val newFrames = AtomicBoolean(false)
 
     private val tick = object : Runnable {
         override fun run() {
@@ -67,9 +100,11 @@ class PreviewEngine(
                 val dur = project().durationMs()
                 if (dur > 0 && masterMs >= dur) masterMs %= dur
                 syncPlayers(now)
+                if (snapshotLoop) requestFrames(closest = false)
+                if (now - lastAdapt > 1000L) { lastAdapt = now; adaptQuality() }
             }
             onFrameReady(masterMs)
-            handler.postDelayed(this, 33L)
+            handler.postDelayed(this, TICK_MS)
         }
     }
 
@@ -78,13 +113,20 @@ class PreviewEngine(
         this.projectId = projectId
         val p = project()
         clocks.clear()
-        for (l in p.layers) if (l.isVideoLike()) {
+        paths.clear()
+        val live = HashSet<String>()
+        for (l in p.layers) {
+            live.add(l.id)
+            if (!l.isVideoLike()) continue
             val c = Clock()
             c.freeze = l.pausedMediaMs
             c.wasPlaying = l.playing
             c.resumeAt = 0L
             clocks[l.id] = c
+            pathOf(l)?.let { paths[l.id] = it }
         }
+        // drop decoders of layers that are gone
+        for (id in ArrayList(sources.keys)) if (!live.contains(id)) releaseSource(id)
     }
 
     fun detach() {
@@ -92,12 +134,17 @@ class PreviewEngine(
         stopSnapshots()
         releaseAllPlayers()
         recycleFrames()
+        for (id in ArrayList(sources.keys)) releaseSource(id)
         clocks.clear()
+        paths.clear()
     }
 
     private fun project(): Project = projectRef()
 
     fun master(): Long = masterMs
+
+    /** true once since the last call whenever a decoded frame landed */
+    fun consumeNewFrames(): Boolean = newFrames.getAndSet(false)
 
     fun seekTo(ms: Long) {
         masterMs = ms.coerceAtLeast(0L)
@@ -109,11 +156,10 @@ class PreviewEngine(
     }
 
     fun playAll() {
-        val now = SystemClock.elapsedRealtime()
         val p = project()
         for (l in p.layers) if (l.isVideoLike()) {
             l.playing = true
-            clocks[l.id]?.resume(if (l.playing) masterMs else 0L)
+            clocks[l.id]?.resume(masterMs)
         }
         startTicker()
         refreshFrames()
@@ -135,7 +181,7 @@ class PreviewEngine(
             l.playing = false
             clocks[l.id]?.pause(masterMs)
             l.pausedMediaMs = clocks[l.id]?.freeze ?: 0L
-            playerOf(l.id)?.pause()
+            playerOf(l.id)?.let { try { it.pause() } catch (_: Exception) { } }
         } else {
             l.playing = true
             l.pausedMediaMs = 0L
@@ -161,28 +207,66 @@ class PreviewEngine(
 
     private fun stopTicker() { ticking = false; handler.removeCallbacks(tick) }
 
-    private fun mediaFile(l: Layer): File? {
+    private fun pathOf(l: Layer): String? {
         val rel = l.relPath ?: return null
+        if (rel.isBlank()) return null
         val f = File(store.projectDir(projectId), rel)
-        return if (f.exists()) f else null
+        return if (f.exists()) f.absolutePath else null
     }
+
+    private fun mediaFile(l: Layer): File? = pathOf(l)?.let { File(it) }
+
+    private fun sourceFor(id: String, path: String): MediaKit.FrameSource {
+        val cached = sources[id]
+        if (cached != null && cached.path == path) return cached
+        cached?.release()
+        val s = MediaKit.FrameSource(path)
+        sources[id] = s
+        return s
+    }
+
+    private fun releaseSource(id: String) {
+        sources.remove(id)?.let { try { it.release() } catch (_: Exception) { } }
+        decoding.remove(id)
+    }
+
+    // ---------- audio (never on the UI thread) ----------
 
     private fun ensureAudioPlayer(l: Layer) {
         if (l.muted || !l.isVideoLike()) return
-        val f = mediaFile(l) ?: return
-        var mp = players[l.id]
-        if (mp == null) {
+        if (players.containsKey(l.id) || preparing.contains(l.id)) return
+        val path = paths[l.id] ?: pathOf(l) ?: return
+        preparing.add(l.id)
+        val id = l.id
+        val vol = l.volume
+        exec.execute {
+            var mp: MediaPlayer? = null
             try {
                 mp = MediaPlayer()
-                mp.setDataSource(f.absolutePath)
+                mp.setDataSource(path)
                 mp.isLooping = true
-                mp.setVolume(l.volume, l.volume)
+                mp.setVolume(vol, vol)
                 mp.prepare()
-                mp.setOnPreparedListener { it.start() }
-                players[l.id] = mp
-            } catch (_: Exception) { }
-        } else {
-            try { mp.setVolume(l.volume, l.volume) } catch (_: Exception) { }
+            } catch (_: Exception) {
+                try { mp?.release() } catch (_: Exception) { }
+                mp = null
+            }
+            val ready = mp
+            handler.post {
+                preparing.remove(id)
+                if (ready == null) return@post
+                val old = players.put(id, ready)
+                try { old?.release() } catch (_: Exception) { }
+                val lay = project().layerById(id)
+                if (lay == null || !lay.playing || !lay.visible || lay.muted) {
+                    try { ready.pause() } catch (_: Exception) { }
+                } else {
+                    try {
+                        ready.seekTo(mediaTimeOf(lay).toInt())
+                        ready.start()
+                    } catch (_: Exception) { }
+                }
+            }
         }
     }
 
@@ -190,23 +274,27 @@ class PreviewEngine(
         val p = project()
         for (l in p.layers) {
             if (!l.isVideoLike()) continue
-            val c = clocks[l.id] ?: continue
-            val playingNow = l.playing && l.visible
+            val playingNow = l.playing && l.visible && !l.muted
             val mp = players[l.id]
-            if (playingNow && !l.muted) {
-                if (mp == null || !mp.isPlaying) {
-                    ensureAudioPlayer(l)
-                    players[l.id]?.let { if (!it.isPlaying) { try { it.seekTo(c.media(masterMs, l.speed).toInt()); it.start() } catch (_: Exception) { } } }
-                } else {
-                    // drift guard: re-anchor only when > 400 ms off
-                    try {
-                        val target = c.media(masterMs, l.speed)
+            if (playingNow) {
+                if (mp == null) { ensureAudioPlayer(l); continue }
+                try {
+                    if (!mp.isPlaying) {
+                        mp.seekTo(mediaTimeOf(l).toInt())
+                        mp.start()
+                    } else if (now - (lastSeekAt[l.id] ?: 0L) > 1200L) {
+                        // drift guard: re-anchor only when clearly off, and never
+                        // more than about once a second (repeated seeks stutter)
+                        val target = mediaTimeOf(l)
                         val cur = mp.currentPosition.toLong()
-                        if (kotlin.math.abs(cur - target) > 400) mp.seekTo(target.toInt())
-                    } catch (_: Exception) { }
-                }
-            } else {
-                if (mp != null && mp.isPlaying) { try { mp.pause() } catch (_: Exception) { } }
+                        if (abs(cur - target) > 400) {
+                            mp.seekTo(target.toInt())
+                            lastSeekAt[l.id] = now
+                        }
+                    }
+                } catch (_: Exception) { }
+            } else if (mp != null) {
+                try { if (mp.isPlaying) mp.pause() } catch (_: Exception) { }
             }
         }
     }
@@ -218,6 +306,8 @@ class PreviewEngine(
     fun releaseAllPlayers() {
         for ((_, mp) in players) { try { mp.release() } catch (_: Exception) { } }
         players.clear()
+        preparing.clear()
+        lastSeekAt.clear()
     }
 
     fun playerOf(id: String): MediaPlayer? = players[id]
@@ -227,7 +317,7 @@ class PreviewEngine(
 
     fun setVolume(l: Layer, v: Float) {
         l.volume = v
-        players[l.id]?.setVolume(v, v)
+        try { players[l.id]?.setVolume(v, v) } catch (_: Exception) { }
     }
 
     // ---------- frame snapshots ----------
@@ -235,71 +325,87 @@ class PreviewEngine(
     /** Re-decode every visible video layer right now (used on seek / play / pause). */
     fun refreshFrames() {
         val p = project()
-        val jobs = ArrayList<Pair<Layer, Long>>()
-        for (l in p.layers) {
-            if (l.isVideoLike() && l.visible && !l.relPath.isNullOrBlank()) {
-                jobs.add(Pair(l, mediaTimeOf(l)))
-            }
+        var any = false
+        for (l in p.layers) if (l.isVideoLike() && l.visible && !l.relPath.isNullOrBlank()) {
+            any = true
+            paths[l.id] = pathOf(l) ?: continue
         }
-        if (jobs.isEmpty()) { onFrameReady(masterMs); return }
-        exec.execute {
-            for ((l, t) in jobs) {
-                decodeInto(l, t)
-            }
-            handler.post { onFrameReady(masterMs) }
-        }
+        if (!any) { onFrameReady(masterMs); return }
+        requestFrames(closest = true)
     }
 
-    /** Continuous low-rate snapshot loop while master is playing. */
+    /** Continuous decoding while the master clock runs. */
     fun startSnapshots() {
-        if (snapshotLoop) return
         snapshotLoop = true
-        handler.post { snapshotStep() }
+        startTicker()
     }
 
     fun stopSnapshots() { snapshotLoop = false }
 
-    private fun snapshotStep() {
-        if (!snapshotLoop) return
-        if (!anyPlaying()) { onFrameReady(masterMs); handler.postDelayed({ snapshotStep() }, 150L); return }
-        if (decodeBusy) { handler.postDelayed({ snapshotStep() }, 60L); return }
+    /**
+     * Queue one decode per layer for its current media time. In-flight layers
+     * are skipped, so a slow decoder degrades the frame rate instead of
+     * queueing up work and dragging the whole preview behind it.
+     */
+    private fun requestFrames(closest: Boolean) {
         val p = project()
-        val jobs = ArrayList<Pair<Layer, Long>>()
-        for (l in p.layers) if (l.isVideoLike() && l.playing && l.visible && !l.relPath.isNullOrBlank()) {
-            jobs.add(Pair(l, mediaTimeOf(l)))
-        }
-        if (jobs.isEmpty()) {
-            handler.postDelayed({ snapshotStep() }, 150L)
-            return
-        }
-        decodeBusy = true
-        exec.execute {
-            for ((l, t) in jobs) decodeInto(l, t)
-            decodeBusy = false
-            handler.post { onFrameReady(masterMs) }
-            handler.postDelayed({ snapshotStep() }, 66L)
-        }
-    }
-
-    private fun decodeInto(l: Layer, t: Long) {
-        val f = mediaFile(l) ?: return
-        val key = l.id
-        val wantMs = t.coerceAtLeast(0L)
-        val bmp = MediaKit.videoFrame(f.absolutePath, wantMs, if (project().layers.size > 2) 640 else 960)
-        if (bmp != null) {
-            handler.post {
-                if (project().layerById(key) != null) {
-                    val prev = frames.put(key, bmp)
-                    if (prev != null && prev !== bmp) prev.recycle()
-                } else {
-                    bmp.recycle()
+        for (l in p.layers) {
+            if (!l.isVideoLike() || !l.visible || l.relPath.isNullOrBlank()) continue
+            if (!closest && !l.playing) continue
+            val id = l.id
+            val path = paths[id] ?: pathOf(l) ?: continue
+            val t = mediaTimeOf(l)
+            if (!decoding.add(id)) continue
+            exec.execute {
+                try {
+                    val src = sourceFor(id, path)
+                    val bmp = src.frameAt(t, maxPxFor(), closest)
+                    val cost = src.lastDecodeMs
+                    handler.post {
+                        if (avgDecodeMs <= 0f) avgDecodeMs = cost.toFloat()
+                        else avgDecodeMs = avgDecodeMs * 0.7f + cost * 0.3f
+                        if (bmp != null) publish(id, bmp)
+                    }
+                } catch (_: Exception) {
+                } finally {
+                    decoding.remove(id)
                 }
             }
         }
     }
 
-    /** evict + recycle a layer's frame (main thread). */
+    private fun publish(id: String, bmp: Bitmap) {
+        if (project().layerById(id) == null) { bmp.recycle(); return }
+        val prev = frames.put(id, bmp)
+        if (prev != null && prev !== bmp) prev.recycle()
+        newFrames.set(true)
+        onFrameReady(masterMs)
+    }
+
+    private fun maxPxFor(): Int {
+        val base = targetMaxPx.coerceIn(MIN_DECODE_PX, 1920)
+        // while paused / scrubbing there is time to be crisp; while playing,
+        // staying fluid matters more than the last few pixels
+        val want = if (anyPlaying()) base else min(1280, (base * 1.4f).toInt())
+        val a = adaptiveMaxPx
+        // the adaptive throttle only ever applies to playback decoding
+        return if (anyPlaying() && a in MIN_DECODE_PX..base) a else want
+    }
+
+    /** Keep the preview fluid on slow decoders instead of dropping to 2 fps. */
+    private fun adaptQuality() {
+        val base = targetMaxPx.coerceIn(MIN_DECODE_PX, 1920)
+        val cur = if (adaptiveMaxPx in MIN_DECODE_PX..base) adaptiveMaxPx else base
+        adaptiveMaxPx = when {
+            avgDecodeMs > 95f -> (cur * 0.8f).toInt().coerceAtLeast(MIN_DECODE_PX)
+            avgDecodeMs in 1f..45f && cur < base -> (cur * 1.3f).toInt().coerceAtMost(base)
+            else -> cur
+        }
+    }
+
+    /** evict + recycle a layer's frame and decoder (main thread). */
     fun evict(id: String) {
+        releaseSource(id)
         handler.post {
             frames.remove(id)?.let { try { it.recycle() } catch (_: Exception) { } }
         }
@@ -310,6 +416,7 @@ class PreviewEngine(
     fun setFrame(l: Layer, bmp: Bitmap?) {
         if (bmp == null) return
         frames.put(l.id, bmp)
+        newFrames.set(true)
     }
 
     fun recycleFrames() {

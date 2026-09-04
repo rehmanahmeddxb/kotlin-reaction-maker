@@ -22,12 +22,32 @@ framework APIs (`android.app`, `android.view`, `Camera2`, `MediaCodec`,
   MP4 recording straight into the project.
 - **Screen recording** via MediaProjection (foreground service) as a main
   canvas or a PiP source.
-- Layer editor: PiP drag/resize/rotate, Fill / Contain / PiP presets,
-  visibility/lock, per-layer play/pause, mute & volume, z-order,
-  undo/redo, autosave + snapshot recovery.
+- Layer editor: handle-based drag/resize/rotate (the grabbed corner follows
+  the finger and the opposite edge stays anchored; media never changes aspect
+  ratio), aspect-correct PiP with corner/centre anchors that always stay on
+  canvas, Fill / Contain / PiP presets, visibility/lock, per-layer
+  play/pause, mute & volume, z-order, undo/redo, autosave + snapshot recovery.
 - **Export codec picker: H.264 MP4, H.265/HEVC MP4, VP8 WebM, VP9 WebM**
   (only codecs the device actually encodes are offered), plus resolution /
   quality / frame-rate choices. AVI has no Android muxer, so it is import-only.
+
+## Canvas & layer geometry
+
+One rule set (`core/LayerFit.kt`) places every layer, and the same
+`Compositor` draws the preview and the export, so what you place is what you
+get:
+
+- **Main canvas** — the layer box *is* the canvas (1 × 1) and the compositor
+  cover-crops the frame into it. Full bleed in 16:9, 9:16 and 1:1, with the
+  selection frame and all eight handles on screen.
+- **Overlays / PiP** — the box keeps the *source* aspect ratio, is fitted into
+  the reaction-cam area and pinned to a corner, so a portrait camera take is
+  never squashed into a landscape sliver. Dragging keeps at least 40 % of the
+  layer on canvas.
+- **Preview decoding** — one cached `MediaMetadataRetriever` per clip, walked
+  forward at the stage's own resolution on a worker pool (adaptive: it drops
+  the decode size before it drops your frame rate), which is what keeps an
+  imported 4K clip playable.
 
 ## Layout
 
