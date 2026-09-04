@@ -8,6 +8,7 @@ on:
 permissions:
   contents: read
   issues: write
+  pull-requests: write
 
 jobs:
   build:
@@ -43,6 +44,12 @@ jobs:
         run: |
           if [ -f /tmp/tc-install.log ]; then
             tail -40 /tmp/tc-install.log | sed 's/^/::error::/'
+            {
+              echo "### Toolchain install log tail"
+              echo '```text'
+              tail -200 /tmp/tc-install.log
+              echo '```'
+            } > "$GITHUB_STEP_SUMMARY"
           else
             echo "::error::no toolchain log file (install step may have been skipped by cache)"
           fi
