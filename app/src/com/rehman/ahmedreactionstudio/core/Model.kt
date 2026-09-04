@@ -73,6 +73,12 @@ class Layer(
     var playing: Boolean = true,          // independent layer pause semantics
     var pausedMediaMs: Long = 0L,
     var speed: Float = 1f,
+    // LIVE CAMERA fields: a CAMERA layer with live = true has no relPath —
+    // its frames are pushed into the PreviewEngine by LiveCamera, so the
+    // camera composites on the canvas like any other source (no modal screen).
+    var live: Boolean = false,
+    var camFacing: Int = FACING_FRONT,
+    var mirror: Boolean = true,
     // TEXT layer fields
     var text: String = "",
     var textColor: Int = 0xFFFFFFFF.toInt(),
@@ -81,6 +87,12 @@ class Layer(
     var addedAt: Long = System.currentTimeMillis()
 ) {
     fun isVideoLike(): Boolean = type == LayerType.VIDEO || type == LayerType.CAMERA || type == LayerType.SCREEN
+
+    /** A live camera feed on the canvas (frames pushed, nothing on disk). */
+    fun isLive(): Boolean = live && type == LayerType.CAMERA
+
+    /** Clip-backed sources: the ones the clock, audio and exporter can seek. */
+    fun isClip(): Boolean = isVideoLike() && !isLive()
 
     /**
      * Text layers resize freely; media layers never change aspect ratio.
@@ -92,7 +104,8 @@ class Layer(
     fun clone(): Layer {
         val l = Layer(id, type, name, relPath, durMs, srcW, srcH, srcRotation, cx, cy, wN, hN,
             rotDeg, visible, locked, muted, solo, loop, fit, volume, opacity, playing,
-            pausedMediaMs, speed, text, textColor, fontSizeN, shadow, addedAt)
+            pausedMediaMs, speed, live, camFacing, mirror,
+            text, textColor, fontSizeN, shadow, addedAt)
         return l
     }
 
@@ -108,6 +121,9 @@ class Layer(
         o.put("volume", volume.toDouble()); o.put("opacity", opacity.toDouble())
         o.put("playing", playing); o.put("pausedMediaMs", pausedMediaMs)
         o.put("speed", speed.toDouble())
+        if (type == LayerType.CAMERA) {
+            o.put("live", live); o.put("camFacing", camFacing); o.put("mirror", mirror)
+        }
         if (type == LayerType.TEXT) {
             o.put("text", text); o.put("textColor", textColor.toLong())
             o.put("fontSizeN", fontSizeN.toDouble()); o.put("shadow", shadow)
@@ -121,6 +137,10 @@ class Layer(
         const val FIT_FILL = "fill"
         /** CONTAIN: whole frame visible, letterboxed inside the box (never cuts). */
         const val FIT_FIT = "fit"
+
+        /** camera facing, mirroring CameraCharacteristics.LENS_FACING_* values */
+        const val FACING_BACK = 1
+        const val FACING_FRONT = 0
 
         fun fromJson(o: JSONObject): Layer {
             val t = LayerType.from(o.optString("type", "VIDEO"))
@@ -146,6 +166,9 @@ class Layer(
                 volume = o.optDouble("volume", 1.0).toFloat(), opacity = o.optDouble("opacity", 1.0).toFloat(),
                 playing = o.optBoolean("playing", true), pausedMediaMs = o.optLong("pausedMediaMs"),
                 speed = o.optDouble("speed", 1.0).toFloat(),
+                live = o.optBoolean("live", false),
+                camFacing = o.optInt("camFacing", FACING_FRONT),
+                mirror = o.optBoolean("mirror", true),
                 text = o.optString("text", ""),
                 textColor = o.optInt("textColor", 0xFFFFFFFF.toInt()),
                 fontSizeN = o.optDouble("fontSizeN", 0.08).toFloat(),

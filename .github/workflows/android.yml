@@ -93,15 +93,32 @@ jobs:
           for n in ['SplashActivity', 'HomeActivity', 'EditorActivity',
                     'CameraActivity', 'DiagnosticsActivity', 'ScreenCaptureService']:
               assert n.encode() in dex, 'missing ' + n
-          # Guard the two features the app is repeatedly reported to be missing,
-          # so a stale/regressed build can NEVER be published as "latest":
-          #   - the radial petal wheel (RadialWheelView + makePetal bloom)
-          #   - the camera preview fit (updatePreviewTransform keeps the feed
-          #     inside the surface instead of being cut off)
-          for feature in ['RadialWheelView', 'makePetal', 'updatePreviewTransform']:
-              assert feature.encode() in dex, 'FEATURE MISSING FROM APK: ' + feature
+          # Guard the features the app is repeatedly reported to be missing, so
+          # a stale/regressed build can NEVER be published as "latest".
+          #
+          # NOTE: these are dex symbol names — renaming a class here without
+          # updating this list is what makes this step fail. Keep them in sync
+          # with the real types (RadialWheelView/makePetal were the pre-nesting
+          # names; the wheel is now RadialMenuView with addPetal).
+          features = {
+              # the radial menu must ship, and it must be the NESTED one:
+              # Level/submenu are what make petals open sub-petals rather than
+              # just firing an action and closing
+              'RadialMenuView': 'radial menu view',
+              'addPetal': 'radial petal bloom',
+              'RadialMenus': 'the menu tree (sources/add/controls/mixing/...)',
+              'submenu': 'nested sub-petals',
+              # the camera must be usable as a LIVE canvas source, not only as
+              # a separate fullscreen recorder
+              'LiveCamera': 'live camera source',
+              'reconcileLiveCamera': 'camera/layer-list reconciler',
+              # camera preview fit (feed inside the surface, never cut off)
+              'updatePreviewTransform': 'camera preview fit',
+          }
+          for sym, what in features.items():
+              assert sym.encode() in dex, f'FEATURE MISSING FROM APK: {sym} ({what})'
           print('dex contains all activities, screen capture service, '
-                'radial petal wheel and camera preview-fit')
+                'the nested radial menu and the live camera source')
           PY
 
       - name: Speed check (build timing + APK stats)
