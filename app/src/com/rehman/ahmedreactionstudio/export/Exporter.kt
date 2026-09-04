@@ -8,7 +8,6 @@ import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import com.rehman.ahmedreactionstudio.core.Compositor
-import com.rehman.ahmedreactionstudio.core.Layer
 import com.rehman.ahmedreactionstudio.core.LayerType
 import com.rehman.ahmedreactionstudio.core.MediaKit
 import com.rehman.ahmedreactionstudio.core.Project
@@ -20,25 +19,49 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 
 /**
- * Deterministic H.264 exporter.
+ * Deterministic software exporter.
  *
- * Pipeline (software compositor, spec section 39):
- *   project model -> frame at t (MediaMetadataRetriever + shared Compositor)
- *   -> ARGB bitmap -> NV12/I420 -> MediaCodec AVC encoder (byte-buffer mode)
- *   -> MediaMuxer -> MP4.
+ * Pipeline: project model -> frame at t (MediaMetadataRetriever + the shared
+ * Compositor) -> ARGB bitmap -> NV12/I420 -> MediaCodec encoder -> MediaMuxer.
  *
- * The exact same Compositor draws the on-screen preview, so export geometry
- * always matches what the user saw in the editor.
+ * Output codecs (user selectable):
+ *   H.264 (AVC)  -> MP4 container   (.mp4)
+ *   H.265 (HEVC) -> MP4 container   (.mp4)   when the device has an encoder
+ *   VP8          -> WebM container  (.webm)
+ *   VP9          -> WebM container  (.webm)
  *
- * Audio muxing is intentionally deferred: the master plan's own MVP list
- * ("first usable MVP", section 111) puts the audio mixer in a later stage.
+ * AVI is accepted on IMPORT (the framework decodes any installed codec); the
+ * framework provides no AVI muxer, so AVI export is not offered.
  */
 object Exporter {
+
+    /** codecs the export dialog can offer */
+    enum class Codec(val mime: String, val label: String, val ext: String, val webm: Boolean) {
+        H264(MediaFormat.MIMETYPE_VIDEO_AVC, "H.264 / AVC", "mp4", false),
+        H265(MediaFormat.MIMETYPE_VIDEO_HEVC, "H.265 / HEVC", "mp4", false),
+        VP8(MediaFormat.MIMETYPE_VIDEO_VP8, "VP8 (WebM)", "webm", true),
+        VP9(MediaFormat.MIMETYPE_VIDEO_VP9, "VP9 (WebM)", "webm", true);
+
+        companion object {
+            /** codecs actually supported by an encoder on this device */
+            fun available(): List<Codec> {
+                val mimes = HashSet<String>()
+                try {
+                    for (ci in MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos) {
+                        if (!ci.isEncoder) continue
+                        for (t in ci.supportedTypes) mimes.add(t)
+                    }
+                } catch (_: Exception) { }
+                return entries.filter { mimes.contains(it.mime) }
+            }
+        }
+    }
 
     data class Options(
         val fps: Int = 30,
         val maxDim: Int = 720,
         val quality: Int = 1,          // 0 fast, 1 balanced, 2 high
+        val codec: Codec = Codec.H264,
         val outFile: File
     )
 
@@ -59,24 +82,32 @@ object Exporter {
         return Pair(r8(w).coerceAtLeast(160), r8(h).coerceAtLeast(160))
     }
 
-    /** pick a hardware AVC encoder when possible; prefer NV12/I420 byte layouts */
-    private fun pickEncoder(): Pair<String, Int> {
-        val wanted = intArrayOf(
+    /**
+     * Pick an encoder for [mime]; prefer hardware, accept software as fallback.
+     * Returns (codec name, color format). VPx encoders only support flexible
+     * COLOR_FormatSurface (0x7F000789) for byte-buffer feeds, so we handle that.
+     */
+    private fun pickEncoder(mime: String): Pair<String, Int> {
+        val yuv = intArrayOf(
             MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar,   // 21 NV12
-            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar        // 19 I420
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar,        // 19 I420
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible       // 0x7F000789
         )
-        for (ci in MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos) {
-            if (!ci.isEncoder || !ci.supportedTypes.contains(MediaFormat.MIMETYPE_VIDEO_AVC)) continue
-            try {
-                val caps = ci.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
-                for (f in wanted) if (caps.colorFormats.contains(f)) return Pair(ci.name, f)
-            } catch (_: Exception) { }
+        val infos = try {
+            MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
+                .filter { it.isEncoder && it.supportedTypes.contains(mime) }
+        } catch (_: Exception) { emptyList() }
+        // hardware first, then software
+        val ordered = infos.sortedBy { ci ->
+            val name = ci.name.lowercase()
+            if (name.startsWith("omx.") || name.startsWith("c2.")) {
+                if (name.contains("google") || name.contains("c2.android") || name.contains("sw")) 1 else 0
+            } else 1
         }
-        for (ci in MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos) {
-            if (!ci.isEncoder || !ci.supportedTypes.contains(MediaFormat.MIMETYPE_VIDEO_AVC)) continue
+        for (ci in ordered) {
             try {
-                val caps = ci.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
-                for (f in wanted) if (caps.colorFormats.contains(f)) return Pair(ci.name, f)
+                val caps = ci.getCapabilitiesForType(mime)
+                for (f in yuv) if (caps.colorFormats.contains(f)) return Pair(ci.name, f)
             } catch (_: Exception) { }
         }
         return Pair("", -1)
@@ -103,17 +134,18 @@ object Exporter {
                 val durationMs = p.durationMs()
                 val totalFrames = (durationMs * fps / 1000L).toInt().coerceAtLeast(1)
 
-                onProgress(1, "Choosing H.264 encoder")
-                val (encName, colorFmt) = pickEncoder()
+                onProgress(1, "Choosing ${opts.codec.label} encoder")
+                val (encName, colorFmt) = pickEncoder(opts.codec.mime)
                 if (encName.isEmpty() || colorFmt < 0) {
-                    res = Result(false, "No compatible H.264 encoder on this device.", null)
+                    res = Result(false, "No compatible ${opts.codec.label} encoder on this device.", null)
                     onProgress(100, "Done")
                     onDone(res)
                     return@Thread
                 }
-                val nv12 = colorFmt == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar
+                // NV12 packing for SemiPlanar; I420 packing for Planar; Flexible treated as NV12
+                val nv12 = colorFmt != MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar
 
-                val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h)
+                val format = MediaFormat.createVideoFormat(opts.codec.mime, w, h)
                 format.setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFmt)
                 format.setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
                 format.setInteger(MediaFormat.KEY_FRAME_RATE, fps)
@@ -121,7 +153,9 @@ object Exporter {
                 codec = MediaCodec.createByCodecName(encName)
                 codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                 codec.start()
-                muxer = MediaMuxer(opts.outFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+                val muxerFmt = if (opts.codec.webm) MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM
+                else MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
+                muxer = MediaMuxer(opts.outFile.absolutePath, muxerFmt)
                 val info = MediaCodec.BufferInfo()
                 var trackIdx = -1
                 var muxerStarted = false
@@ -144,7 +178,7 @@ object Exporter {
                         if (f.exists()) decoders[l.id] = Dec(f.absolutePath, max(w, h))
                     }
                 }
-                val bitmapFor: (Layer) -> Bitmap? = { l ->
+                val bitmapFor: (com.rehman.ahmedreactionstudio.core.Layer) -> Bitmap? = { l ->
                     when {
                         l.type == LayerType.IMAGE -> imageCache[l.id]
                         l.isVideoLike() -> decoders[l.id]?.current
@@ -162,21 +196,21 @@ object Exporter {
                 /** drains one or more output buffers; true when EOS was consumed */
                 fun drainOnce(): Boolean {
                     while (true) {
-                        val outIdx = codec!!.dequeueOutputBuffer(info, 3000)
+                        val outIdx = codec.dequeueOutputBuffer(info, 3000)
                         when {
                             outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                                trackIdx = muxer!!.addTrack(codec!!.outputFormat)
-                                if (!muxerStarted) { muxer!!.start(); muxerStarted = true }
+                                trackIdx = muxer.addTrack(codec.outputFormat)
+                                if (!muxerStarted) { muxer.start(); muxerStarted = true }
                             }
                             outIdx == MediaCodec.INFO_TRY_AGAIN_LATER -> return false
                             outIdx >= 0 -> {
                                 if (trackIdx >= 0 && muxerStarted) {
-                                    codec!!.getOutputBuffer(outIdx)?.let {
-                                        muxer!!.writeSampleData(trackIdx, it, info)
+                                    codec.getOutputBuffer(outIdx)?.let {
+                                        muxer.writeSampleData(trackIdx, it, info)
                                     }
                                 }
                                 val eos = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
-                                codec!!.releaseOutputBuffer(outIdx, false)
+                                codec.releaseOutputBuffer(outIdx, false)
                                 if (eos) return true
                             }
                         }
@@ -201,12 +235,12 @@ object Exporter {
                             d.seekTo(mediaTime.coerceAtLeast(0L))
                         }
                         Compositor.draw(ctx, canvas, w, h, p, bitmapFor, timeMs, null)
-                        val inIdx = codec!!.dequeueInputBuffer(20_000)
+                        val inIdx = codec.dequeueInputBuffer(20_000)
                         if (inIdx >= 0) {
-                            val buf = codec!!.getInputBuffer(inIdx)
+                            val buf = codec.getInputBuffer(inIdx)
                             if (buf != null) {
                                 val bytes = writeYuv(buf, frameBitmap!!, w, h, nv12)
-                                codec!!.queueInputBuffer(inIdx, 0, bytes, ptsUs, 0)
+                                codec.queueInputBuffer(inIdx, 0, bytes, ptsUs, 0)
                             }
                         }
                         ptsUs += frameUs
@@ -214,14 +248,14 @@ object Exporter {
                         val prog = frameIdx * 100 / totalFrames
                         if (prog != lastProgress) {
                             lastProgress = prog
-                            onProgress(prog, "Encoding frame $frameIdx / $totalFrames")
+                            onProgress(prog, "Encoding frame $frameIdx / $totalFrames (${opts.codec.label})")
                         }
                         drainOnce()
                         stall = 0
                     } else if (!eosQueued) {
-                        val inIdx = codec!!.dequeueInputBuffer(20_000)
+                        val inIdx = codec.dequeueInputBuffer(20_000)
                         if (inIdx >= 0) {
-                            codec!!.queueInputBuffer(inIdx, 0, 0, ptsUs,
+                            codec.queueInputBuffer(inIdx, 0, 0, ptsUs,
                                 MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             eosQueued = true
                         }
@@ -229,7 +263,7 @@ object Exporter {
                         if (drainOnce()) eosDone = true
                         else {
                             stall++
-                            if (stall > 20000) break   // safety: no infinite retries (spec 47)
+                            if (stall > 20000) break   // safety: no infinite retries
                         }
                     }
                 }
@@ -267,14 +301,9 @@ object Exporter {
                 if (old != null && old !== b) old.recycle()
             }
         }
-
-        fun release() {
-            try { current?.recycle() } catch (_: Exception) { }
-            current = null
-        }
     }
 
-    /** ARGB bitmap -> I420 (nv12=false) or NV12 (nv12=true); returns bytes used */
+    /** ARGB bitmap -> I420 (nv12=false) or NV12/NV12-flexible (nv12=true); returns bytes used */
     private fun writeYuv(dst: java.nio.ByteBuffer, bmp: Bitmap, w: Int, h: Int, nv12: Boolean): Int {
         val px = IntArray(w * h)
         bmp.getPixels(px, 0, w, 0, 0, w, h)

@@ -156,12 +156,12 @@ object UI {
      * share it. MediaStore content URIs are shareable without FileProvider, and
      * grantable read permission covers the chooser target (API 29+).
      */
-    fun publishToGallery(act: Activity, file: java.io.File, onDone: (android.net.Uri?) -> Unit) {
+    fun publishToGallery(act: Activity, file: java.io.File, mime: String = "video/mp4", onDone: (android.net.Uri?) -> Unit) {
         try {
             if (android.os.Build.VERSION.SDK_INT >= 29) {
                 val values = android.content.ContentValues().apply {
                     put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, file.name)
-                    put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
+                    put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime)
                     put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
                         "Movies/AhmedReactionStudio")
                     put(android.provider.MediaStore.Video.Media.IS_PENDING, 1)
@@ -184,9 +184,9 @@ object UI {
         }
     }
 
-    fun shareUri(act: Activity, uri: android.net.Uri) {
+    fun shareUri(act: Activity, uri: android.net.Uri, mime: String = "video/mp4") {
         try {
-            val i = Intent(Intent.ACTION_SEND).setType("video/mp4")
+            val i = Intent(Intent.ACTION_SEND).setType(mime)
             i.putExtra(Intent.EXTRA_STREAM, uri)
             i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             act.startActivity(Intent.createChooser(i, "Share video"))

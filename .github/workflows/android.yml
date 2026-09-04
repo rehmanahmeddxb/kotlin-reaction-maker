@@ -28,7 +28,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/ahmed-tc
-          key: ahmed-tc-${{ runner.os }}-v1
+          key: ahmed-tc-${{ runner.os }}-v2
 
       - name: Install offline build toolchain
         if: steps.tc-cache.outputs.cache-hit != 'true'
@@ -64,9 +64,9 @@ jobs:
           z = zipfile.ZipFile('artifacts/AhmedReactionStudio-1.0.0.apk')
           dex = z.read('classes.dex')
           for n in ['SplashActivity', 'HomeActivity', 'EditorActivity',
-                    'CameraActivity', 'DiagnosticsActivity']:
+                    'CameraActivity', 'DiagnosticsActivity', 'ScreenCaptureService']:
               assert n.encode() in dex, 'missing ' + n
-          print('dex contains all 5 activities')
+          print('dex contains all activities + screen capture service')
           PY
 
       - name: Upload APK artifact

@@ -10,6 +10,9 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:label="Ahmed Reaction Studio"
@@ -38,7 +41,8 @@
 
         <activity
             android:name="com.rehman.ahmedreactionstudio.editor.EditorActivity"
-            android:exported="false" />
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden" />
 
         <activity
             android:name="com.rehman.ahmedreactionstudio.camera.CameraActivity"
@@ -48,5 +52,10 @@
         <activity
             android:name="com.rehman.ahmedreactionstudio.ui.DiagnosticsActivity"
             android:exported="false" />
+
+        <service
+            android:name="com.rehman.ahmedreactionstudio.capture.ScreenCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
     </application>
 </manifest>
