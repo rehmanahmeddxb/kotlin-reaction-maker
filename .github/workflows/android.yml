@@ -57,6 +57,24 @@ jobs:
           path: /tmp/build-apk.log
           if-no-files-found: ignore
 
+      # If the build dies (e.g. SIGKILL/137), surface the last phase lines and
+      # the runner's memory/disk state as check annotations — they are
+      # readable through the GitHub API even when log/artifact downloads fail.
+      - name: Report build failure diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo "runner: $(nproc) CPUs, $(free -m | awk '/Mem:/ {print $2 " MB total, " $7 " MB available"}')"
+            echo "disk: $(df -h /tmp | awk 'NR==2 {print $4 " free on /tmp"}')"
+            echo "--- last build phases ---"
+            grep -E '^\[' /tmp/build-apk.log | tail -n 8 || true
+            echo "--- tail of build output ---"
+            tail -n 10 /tmp/build-apk.log || true
+          } | while IFS= read -r line; do
+            printf '::error title=build-diag::%s\n' "$line"
+          done
+
       - name: Verify APK signature & contents
         shell: bash
         run: |
