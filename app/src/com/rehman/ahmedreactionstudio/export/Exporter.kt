@@ -87,7 +87,7 @@ object Exporter {
      * Returns (codec name, color format). VPx encoders only support flexible
      * COLOR_FormatSurface (0x7F000789) for byte-buffer feeds, so we handle that.
      */
-    private fun pickEncoder(mime: String): Pair<String, Int> {
+    internal fun pickEncoder(mime: String): Pair<String, Int> {
         val yuv = intArrayOf(
             MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar,   // 21 NV12
             MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar,        // 19 I420
@@ -331,7 +331,7 @@ object Exporter {
     }
 
     /** ARGB bitmap -> I420 (nv12=false) or NV12/NV12-flexible (nv12=true); returns bytes used */
-    private fun writeYuv(dst: java.nio.ByteBuffer, bmp: Bitmap, w: Int, h: Int, nv12: Boolean): Int {
+    internal fun writeYuv(dst: java.nio.ByteBuffer, bmp: Bitmap, w: Int, h: Int, nv12: Boolean): Int {
         val px = IntArray(w * h)
         bmp.getPixels(px, 0, w, 0, 0, w, h)
         val ySize = w * h

@@ -3,6 +3,7 @@ package com.rehman.ahmedreactionstudio.editor
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.ProgressDialog
+import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
@@ -11,12 +12,15 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.media.MediaScannerConnection
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.view.Gravity
 import android.view.View
@@ -43,6 +47,7 @@ import com.rehman.ahmedreactionstudio.core.SourceController
 import com.rehman.ahmedreactionstudio.core.UndoStack
 import com.rehman.ahmedreactionstudio.core.applyLayersJson
 import com.rehman.ahmedreactionstudio.core.layersJsonOf
+import com.rehman.ahmedreactionstudio.export.CompositionRecorder
 import com.rehman.ahmedreactionstudio.export.Exporter
 import com.rehman.ahmedreactionstudio.ui.DiagnosticsActivity
 import com.rehman.ahmedreactionstudio.util.UI
@@ -121,6 +126,21 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     private val exportCancel = AtomicBoolean(false)
     private var exportRunning = false
 
+    // ===== composite (multi-source) recording — the RECORD button =====
+    private lateinit var recordBtn: TextView
+    private var recorder: CompositionRecorder? = null
+    private var recording = false
+    private val recordHandler = Handler(Looper.getMainLooper())
+    private val recordTick = object : Runnable {
+        override fun run() {
+            if (!recording) return
+            recorder?.renderAndSubmit()
+            recordHandler.postDelayed(this, 33L)
+        }
+    }
+    /** on-the-fly decode cache so IMAGE sources render during recording */
+    private val recordImageCache = HashMap<String, Bitmap>()
+
     // role assigned to the next imported media: "main" canvas or "pip"
     private var pendingRole = "main"
     private var pendingCameraRole = "main"
@@ -170,6 +190,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         updateName()
         engine.refreshFrames()
         updateEmptyState()
+        updateRecordButton()
     }
 
     private fun applyOrientationFor(a: Aspect) {
@@ -210,6 +231,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     }
 
     override fun onStop() {
+        // don't lose a composite recording if the user leaves mid-take
+        if (recording) stopCompositeRecording(showUi = false)
         if (engineReady()) engine.stopSnapshots()
         // release the camera whenever we leave the foreground; it is restarted
         // in onResume so another app can use the camera meanwhile
@@ -218,6 +241,11 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     }
 
     override fun onDestroy() {
+        recorder?.abort()
+        recorder = null
+        recordHandler.removeCallbacksAndMessages(null)
+        for (b in recordImageCache.values) try { b.recycle() } catch (_: Exception) { }
+        recordImageCache.clear()
         stopLiveCamera(evict = true)
         saveHandler.removeCallbacksAndMessages(null)
         flushSave()
@@ -481,6 +509,25 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         launchRow.gravity = Gravity.CENTER
         launchRow.setPadding(UI.dp(this, 6), UI.dp(this, 2), UI.dp(this, 6), UI.dp(this, 10))
         sheet.addView(launchRow)
+
+        // ===== composite RECORD button (local file + camera on the canvas) =====
+        recordBtn = TextView(this)
+        recordBtn.gravity = Gravity.CENTER
+        recordBtn.setTextColor(Color.WHITE)
+        recordBtn.textSize = 13f
+        recordBtn.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        recordBtn.setPadding(UI.dp(this, 16), 0, UI.dp(this, 16), 0)
+        recordBtn.text = "●  START RECORDING"
+        recordBtn.background = Ic.pill(this, Color.argb(240, 200, 34, 34), 26f,
+            Color.argb(160, 255, 130, 130))
+        recordBtn.visibility = View.GONE
+        recordBtn.setOnClickListener {
+            if (recording) stopCompositeRecording() else startCompositeRecording()
+        }
+        val rblp = LinearLayout.LayoutParams(UI.dp(this, 150), UI.dp(this, 50))
+        rblp.setMargins(0, 0, UI.dp(this, 10), 0)
+        recordBtn.layoutParams = rblp
+        launchRow.addView(recordBtn)
 
         studioBtn = LinearLayout(this)
         studioBtn.orientation = LinearLayout.HORIZONTAL
@@ -1185,6 +1232,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         rebuildDock()
         updateEmptyState()
         updateName()
+        updateRecordButton()
     }
 
     private fun markDirty() {
@@ -1601,6 +1649,185 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
                     }
                 }
             })
+    }
+
+    // ================= COMPOSITE RECORDING (local file + camera) =================
+
+    /**
+     * The RECORD button shows when a live camera AND a clip (local video /
+     * screen record / camera take) are both on the canvas — the setup the user
+     * asked for. Recording the composite makes no sense without at least one of
+     * each, so the button stays hidden otherwise.
+     */
+    private fun updateRecordButton() {
+        if (!this::recordBtn.isInitialized) return
+        val p = proj ?: return
+        val hasLive = p.layers.any { it.isLive() }
+        val hasClip = p.layers.any { it.isClip() }
+        recordBtn.visibility = if ((hasLive && hasClip) || recording) View.VISIBLE else View.GONE
+        recordBtn.text = if (recording) "■  STOP & SAVE" else "●  START RECORDING"
+        recordBtn.background = if (recording)
+            Ic.pill(this, Color.argb(240, 200, 34, 34), 26f, Color.argb(180, 255, 120, 120))
+        else
+            Ic.pill(this, Color.argb(240, 255, 90, 44), 26f, Color.argb(140, 255, 200, 160))
+    }
+
+    /** Frame supplier for the recorder: engine frames + lazily decoded images. */
+    private fun recordFrameOf(l: Layer): Bitmap? {
+        if (l.type != LayerType.IMAGE) return engine.frameOf(l)
+        recordImageCache[l.id]?.let { return it }
+        val rel = l.relPath ?: return null
+        val bmp = MediaKit.image(File(store.projectDir(projectId), rel).absolutePath) ?: return null
+        recordImageCache[l.id] = bmp
+        return bmp
+    }
+
+    private fun startCompositeRecording() {
+        if (recording) return
+        if (exportRunning) { UI.toast(this, "Locked while exporting"); return }
+        val p = proj!!
+        if (!p.layers.any { it.isLive() }) { UI.toast(this, "Add the live camera first"); return }
+        if (!p.layers.any { it.isClip() }) { UI.toast(this, "Add a local video first"); return }
+        // start every source from the top, in sync
+        engine.seekTo(0L)
+        engine.playAll()
+        engine.startSnapshots()
+        val (w, h) = Exporter.chooseSize(p.aspect.canvasW, p.aspect.canvasH, 720)
+        val tmp = File(cacheDir, "rec_${System.currentTimeMillis()}.mp4")
+        val rec = CompositionRecorder({ this.proj!! }, { l -> recordFrameOf(l) }, { engine.master() })
+        val ok = rec.start(tmp, w, h, 30, Exporter.Codec.H264) { err ->
+            runOnUiThread { UI.toast(this, "Record error: $err") }
+        }
+        if (!ok) { UI.toast(this, "Could not start recording"); return }
+        recorder = rec
+        recording = true
+        updateRecordButton()
+        setSheet(null)
+        recordHandler.removeCallbacks(recordTick)
+        recordHandler.post(recordTick)
+        UI.toast(this, "Recording the composition — tap STOP to save")
+    }
+
+    private fun stopCompositeRecording(showUi: Boolean = true) {
+        if (!recording) return
+        recording = false
+        recordHandler.removeCallbacks(recordTick)
+        engine.pauseAll()
+        engine.stopSnapshots()
+        val rec = recorder
+        recorder = null
+        updateRecordButton()
+        rec?.finish { f ->
+            runOnUiThread {
+                recordImageCache.clear()
+                if (f != null && f.exists() && f.length() > 0) {
+                    saveRecordingToPublic(f, showUi)
+                } else if (showUi) {
+                    UI.toast(this, "Recording failed or was too short")
+                }
+            }
+        }
+    }
+
+    /** Copy the finished take to a public folder named after the app, then offer to view it. */
+    private fun saveRecordingToPublic(src: File, showUi: Boolean) {
+        val p = proj
+        val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+            .format(java.util.Date())
+        val name = "AhmedReaction_${p?.name?.replace(" ", "_") ?: "project"}_$stamp.mp4"
+        val size = src.length()
+        var path: String? = null
+        var uri: Uri? = null
+        if (Build.VERSION.SDK_INT >= 29) {
+            // scoped storage: public Movies/<app> folder, visible in every file manager
+            uri = publishViaMediaStore(src, name)
+            if (uri == null) {
+                // fallback: app-external Movies folder
+                val dir = File(getExternalFilesDir(Environment.DIRECTORY_MOVIES), "AhmedReactionStudio")
+                dir.mkdirs()
+                val dest = File(dir, name)
+                src.copyTo(dest, overwrite = true)
+                path = dest.absolutePath
+            }
+        } else {
+            // legacy: a folder named after the app at the SD card root
+            try {
+                val dir = File(Environment.getExternalStorageDirectory(), "AhmedReactionStudio")
+                dir.mkdirs()
+                val dest = File(dir, name)
+                src.copyTo(dest, overwrite = true)
+                MediaScannerConnection.scanFile(this, arrayOf(dest.absolutePath),
+                    arrayOf("video/mp4"), null)
+                path = dest.absolutePath
+                uri = legacyContentUri(dest)
+            } catch (e: Exception) {
+                path = null
+                UI.toast(this, "Could not write to the SD card: ${e.message}")
+            }
+        }
+        try { src.delete() } catch (_: Exception) { }
+        if (showUi) showRecordedDialog(path, uri, size)
+    }
+
+    private fun publishViaMediaStore(src: File, name: String): Uri? {
+        return try {
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+                put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "Movies/AhmedReactionStudio")
+                put(MediaStore.Video.Media.IS_PENDING, 1)
+            }
+            val resolver = contentResolver
+            val ins = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+            if (ins != null) {
+                resolver.openOutputStream(ins)?.use { out -> src.inputStream().copyTo(out) }
+                values.clear()
+                values.put(MediaStore.Video.Media.IS_PENDING, 0)
+                resolver.update(ins, values, null, null)
+            }
+            ins
+        } catch (_: Exception) { null }
+    }
+
+    private fun legacyContentUri(f: File): Uri? {
+        return try {
+            val values = ContentValues().apply {
+                put(MediaStore.Video.Media.DATA, f.absolutePath)
+                put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                put(MediaStore.Video.Media.DISPLAY_NAME, f.name)
+            }
+            contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+        } catch (_: Exception) { null }
+    }
+
+    private fun showRecordedDialog(path: String?, uri: Uri?, size: Long) {
+        val where = path ?: "Movies/AhmedReactionStudio"
+        AlertDialog.Builder(this)
+            .setTitle("Recording saved")
+            .setMessage("${UI.niceBytes(size)} · saved to\n$where")
+            .setPositiveButton("View") { _, _ -> viewRecording(uri, path) }
+            .setNeutralButton("Share") { _, _ ->
+                when {
+                    uri != null -> UI.shareUri(this, uri, "video/mp4")
+                    path != null -> UI.shareUri(this, Uri.fromFile(File(path)), "video/mp4")
+                    else -> UI.toast(this, "Saved to $where")
+                }
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun viewRecording(uri: Uri?, path: String?) {
+        try {
+            val viewUri = uri ?: (path?.let { Uri.fromFile(File(it)) } ?: return)
+            val i = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(viewUri, "video/mp4")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(i)
+        } catch (e: Exception) {
+            UI.toast(this, "No video player found — the file is saved at ${path ?: "Movies/AhmedReactionStudio"}")
+        }
     }
 
     // ================= LIVE CAMERA ON THE CANVAS =================

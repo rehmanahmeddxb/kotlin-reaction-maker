@@ -459,8 +459,11 @@ class StageView @JvmOverloads constructor(
 
     /**
      * True handle dragging: the grabbed corner/edge follows the finger while the
-     * OPPOSITE side stays anchored, in the layer's own rotated frame. Media
-     * layers keep their aspect ratio, so a camera PiP can never be squashed.
+     * OPPOSITE side stays anchored, in the layer's own rotated frame.
+     *
+     * CORNER handles scale the whole box proportionally, so a camera PiP can
+     * never be squashed. EDGE handles stretch ONLY that side — width or height
+     * changes independently, so dragging a side handle distorts just that axis.
      */
     private fun resizeTo(l: Layer, x: Float, y: Float) {
         val startWpx = (startWN * cw).coerceAtLeast(1f)
@@ -485,12 +488,11 @@ class StageView @JvmOverloads constructor(
         val minPx = UI.dpf(context, 24f)
         var newW = if (hsx != 0f) abs(px).coerceAtLeast(minPx) else startWpx
         var newH = if (hsy != 0f) abs(py).coerceAtLeast(minPx) else startHpx
-        if (!l.isText()) {
-            val k = when {
-                hsx != 0f && hsy != 0f -> (newW / startWpx + newH / startHpx) / 2f
-                hsx != 0f -> newW / startWpx
-                else -> newH / startHpx
-            }
+        // Corner handles (both axes) keep a media layer's aspect ratio; edge
+        // handles (one axis) stretch only that side, so width/height move
+        // independently and the box can be freely distorted along an edge.
+        if (!l.isText() && hsx != 0f && hsy != 0f) {
+            val k = (newW / startWpx + newH / startHpx) / 2f
             newW = startWpx * k
             newH = startHpx * k
         }
