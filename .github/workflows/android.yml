@@ -31,42 +31,15 @@ jobs:
         if: steps.tc-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          set -euxo pipefail
-          TC=/tmp/ahmed-tc
-          mkdir -p "$TC"
+          set -euo pipefail
+          bash -euxo pipefail tools/ci-toolchain.sh 2>&1 | tee /tmp/tc-install.log
 
-          # Kotlin compiler 1.9.24 (bundles kotlin-stdlib.jar)
-          curl -fsSL -o /tmp/kotlinc.zip \
-            https://github.com/JetBrains/kotlin/releases/download/v1.9.24/kotlin-compiler-1.9.24.zip
-          unzip -q /tmp/kotlinc.zip -d "$TC"
-          # the archive extracts to a folder named kotlin-compiler-1.9.24
-          mv "$(find "$TC" -maxdepth 1 -type d -name 'kotlin-compiler-*' | head -1)" "$TC/kotlinc"
-          ln -sf "$TC/kotlinc/lib/kotlin-stdlib.jar" "$TC/kotlin-stdlib.jar"
-          test -x "$TC/kotlinc/bin/kotlinc"
-          echo "::notice::kotlin ready"
-
-          # Android 11 (API 30) platform stub for compiling
-          curl -fsSL -o /tmp/platform30.zip \
-            https://dl.google.com/android/repository/platform-30_r03.zip
-          unzip -q /tmp/platform30.zip -d /tmp/sdk
-          cp /tmp/sdk/android-30/android.jar "$TC/android.jar"
-          test -f "$TC/android.jar"
-          echo "::notice::android.jar ready"
-
-          # Build-tools 30.0.3: aapt2, d8.jar, apksigner.jar
-          curl -fsSL -o /tmp/build-tools.zip \
-            https://dl.google.com/android/repository/build-tools_r30.0.3-linux.zip
-          unzip -q /tmp/build-tools.zip -d /tmp/sdk/bt
-          AAPT2=$(find /tmp/sdk/bt -name aapt2 -type f | head -1)
-          D8=$(find /tmp/sdk/bt -name d8.jar | head -1)
-          AS=$(find /tmp/sdk/bt -name apksigner.jar | head -1)
-          test -n "$AAPT2$D8$AS" || { echo "::error::missing in build-tools: aapt2=$AAPT2 d8=$D8 apksigner=$AS"; find /tmp/sdk/bt -maxdepth 3 | head -30; exit 1; }
-          cp "$AAPT2" "$TC/aapt2"
-          chmod +x "$TC/aapt2"
-          cp "$D8" "$TC/d8.jar"
-          cp "$AS" "$TC/apksigner.jar"
-          test -x "$TC/aapt2" && test -f "$TC/d8.jar" && test -f "$TC/apksigner.jar"
-          echo "::notice::build-tools ready"
+      - name: Upload toolchain log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: toolchain-install-log
+          path: /tmp/tc-install.log
 
       - name: Build APK
         env:
