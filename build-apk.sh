@@ -95,7 +95,30 @@ PY
 say "== 3/7 compile Kotlin =="
 find app/src -name '*.kt' > "$BUILD/sources.txt"
 echo "$BUILD/R.kt" >> "$BUILD/sources.txt"
-"$KOTLINC" -jvm-target 1.8 -classpath "$ANDROID_JAR" -d "$BUILD/classes" @"$BUILD/sources.txt"
+# The bundled kotlinc launcher starts its JVM with only -Xmx256M unless
+# JAVA_OPTS is set. On memory-pressured CI runners that intermittently gets
+# OOM-killed mid-compile (exit 137) — the app compiles fine, but the runner
+# reaps the process and NO apk is produced. Give the compiler a real heap and
+# disable the daemon so the build is deterministic, then retry once with an
+# even larger heap if the first attempt is killed.
+export JAVA_OPTS="${KOTLINC_JAVA_OPTS:--Xmx2g -Xms256m -XX:+UseParallelGC -XX:MaxMetaspaceSize=512m}"
+kotlin_compile() {
+    local heap="$1"
+    JAVA_OPTS="-Xmx${heap} -Xms256m -XX:+UseParallelGC -XX:MaxMetaspaceSize=512m" \
+        "$KOTLINC" -jvm-target 1.8 \
+        -classpath "$ANDROID_JAR" -d "$BUILD/classes" @"$BUILD/sources.txt"
+}
+if ! kotlin_compile 2g; then
+    say "!! kotlinc failed or was killed — retrying once with a larger heap (4g)"
+    rm -rf "$BUILD/classes"
+    kotlin_compile 4g
+fi
+# Fail loudly if the compile produced nothing (killed process can exit 0-ish
+# through a pipe on some shells); the whole point is to never ship a stale apk.
+if [ ! -d "$BUILD/classes" ] || [ -z "$(find "$BUILD/classes" -name '*.class' -print -quit)" ]; then
+    echo "FATAL: Kotlin compilation produced no .class files — aborting so a stale APK is never shipped." >&2
+    exit 1
+fi
 
 say "== 4/7 dex with d8 =="
 python3 - "$BUILD" <<'PY'

@@ -93,7 +93,15 @@ jobs:
           for n in ['SplashActivity', 'HomeActivity', 'EditorActivity',
                     'CameraActivity', 'DiagnosticsActivity', 'ScreenCaptureService']:
               assert n.encode() in dex, 'missing ' + n
-          print('dex contains all activities + screen capture service')
+          # Guard the two features the app is repeatedly reported to be missing,
+          # so a stale/regressed build can NEVER be published as "latest":
+          #   - the radial petal wheel (RadialWheelView + makePetal bloom)
+          #   - the camera preview fit (updatePreviewTransform keeps the feed
+          #     inside the surface instead of being cut off)
+          for feature in ['RadialWheelView', 'makePetal', 'updatePreviewTransform']:
+              assert feature.encode() in dex, 'FEATURE MISSING FROM APK: ' + feature
+          print('dex contains all activities, screen capture service, '
+                'radial petal wheel and camera preview-fit')
           PY
 
       - name: Speed check (build timing + APK stats)
