@@ -47,7 +47,10 @@ import com.rehman.ahmedreactionstudio.core.SourceController
 import com.rehman.ahmedreactionstudio.core.UndoStack
 import com.rehman.ahmedreactionstudio.core.applyLayersJson
 import com.rehman.ahmedreactionstudio.core.layersJsonOf
+import com.rehman.ahmedreactionstudio.export.AudioDecode
+import com.rehman.ahmedreactionstudio.export.ClipAudio
 import com.rehman.ahmedreactionstudio.export.CompositionRecorder
+import com.rehman.ahmedreactionstudio.export.DecodedClip
 import com.rehman.ahmedreactionstudio.export.Exporter
 import com.rehman.ahmedreactionstudio.ui.DiagnosticsActivity
 import com.rehman.ahmedreactionstudio.util.UI
@@ -84,6 +87,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         const val REQ_SCREEN_CAPTURE = 44
         const val REQ_APP_PERMS = 45
         const val REQ_CAMERA_PERM = 46
+        const val REQ_RECORD_PERM = 47
     }
 
     private lateinit var store: ProjectStore
@@ -1339,6 +1343,11 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
                 PackageManager.PERMISSION_GRANTED) addLiveCamera()
             else UI.toast(this, "Camera permission is needed to put the camera on the canvas")
         }
+        if (code == REQ_RECORD_PERM) {
+            if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED) startCompositeRecording()
+            else UI.toast(this, "Mic permission denied — recording will mix the clip audio only")
+        }
     }
 
     private fun launchProjection() {
@@ -1688,14 +1697,56 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         val p = proj!!
         if (!p.layers.any { it.isLive() }) { UI.toast(this, "Add the live camera first"); return }
         if (!p.layers.any { it.isClip() }) { UI.toast(this, "Add a local video first"); return }
+        // the mic is the reaction audio — ask for it up front if not yet granted
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) !=
+            PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), REQ_RECORD_PERM)
+            return
+        }
+
+        // every clip's audio, honouring mute + solo exactly like the mixer
+        val audio = ArrayList<ClipAudio>()
+        for (l in p.layers) {
+            if (!l.isClip() || l.relPath.isNullOrBlank()) continue
+            if (ctrl.effectiveMuted(l)) continue
+            val f = File(store.projectDir(projectId), l.relPath!!)
+            if (f.exists()) audio.add(ClipAudio(f.absolutePath, l.volume, l.loop, l.durMs))
+        }
+        val micEnabled = true
+
+        // decode clip audio off the UI thread BEFORE playback starts, so the
+        // recorded audio and video stay aligned from the very first frame
+        val progress = ProgressDialog(this).apply {
+            setTitle("Preparing audio")
+            setMessage("Mixing the clip sound and microphone…")
+            setCancelable(false)
+            show()
+        }
+        Thread {
+            val decoded = ArrayList<DecodedClip>()
+            for (a in audio) {
+                try { AudioDecode.toPcmMono(a.path)?.let { decoded.add(DecodedClip(a, it.data)) } }
+                catch (_: Exception) { }
+            }
+            runOnUiThread {
+                progress.dismiss()
+                beginCompositeRecording(decoded, micEnabled)
+            }
+        }.start()
+    }
+
+    private fun beginCompositeRecording(decoded: List<DecodedClip>, micEnabled: Boolean) {
+        if (recording) return
+        val p = proj!!
         // start every source from the top, in sync
         engine.seekTo(0L)
         engine.playAll()
         engine.startSnapshots()
+
         val (w, h) = Exporter.chooseSize(p.aspect.canvasW, p.aspect.canvasH, 720)
         val tmp = File(cacheDir, "rec_${System.currentTimeMillis()}.mp4")
         val rec = CompositionRecorder({ this.proj!! }, { l -> recordFrameOf(l) }, { engine.master() })
-        val ok = rec.start(tmp, w, h, 30, Exporter.Codec.H264) { err ->
+        val ok = rec.start(tmp, w, h, 30, Exporter.Codec.H264, decoded, micEnabled) { err ->
             runOnUiThread { UI.toast(this, "Record error: $err") }
         }
         if (!ok) { UI.toast(this, "Could not start recording"); return }
@@ -1705,7 +1756,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         setSheet(null)
         recordHandler.removeCallbacks(recordTick)
         recordHandler.post(recordTick)
-        UI.toast(this, "Recording the composition — tap STOP to save")
+        UI.toast(this, if (micEnabled || decoded.isNotEmpty())
+            "Recording with audio — tap STOP to save" else "Recording — tap STOP to save")
     }
 
     private fun stopCompositeRecording(showUi: Boolean = true) {
