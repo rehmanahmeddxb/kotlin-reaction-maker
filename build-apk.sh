@@ -46,11 +46,20 @@ KS_ALIAS="${KS_ALIAS:-app}"
 export JAVA_HOME
 export PATH="$JAVA_HOME/bin:$PATH"
 
+# Timestamped, memory-aware phase logging: if a CI runner ever kills a step
+# (e.g. exit 137), the uploaded build log pinpoints exactly which phase died
+# and how much RAM was left at the time.
+say() {
+    local avail
+    avail="$(awk '/MemAvailable/ { printf "%d MB", $2/1024 }' /proc/meminfo 2>/dev/null || echo '?')"
+    echo "[$(date -u +%H:%M:%S)] $* (mem available: $avail)"
+}
+
 BUILD="build_out"
 rm -rf "$BUILD"
 mkdir -p "$BUILD/dex" "$BUILD/gen" "artifacts"
 
-echo "== 1/7 aapt2 resources + generated R class =="
+say "== 1/7 aapt2 resources + generated R class =="
 "$AAPT2" compile --dir res -o "$BUILD/res.zip"
 "$AAPT2" link -I "$ANDROID_JAR" \
     --manifest app/AndroidManifest.xml \
@@ -58,7 +67,7 @@ echo "== 1/7 aapt2 resources + generated R class =="
     --java "$BUILD/gen" \
     -o "$BUILD/base.apk" "$BUILD/res.zip"
 
-echo "== 2/7 convert R.java -> R.kt (the jdk4py runtime has no javac) =="
+say "== 2/7 convert R.java -> R.kt (the jdk4py runtime has no javac) =="
 python3 - "$BUILD" <<'PY'
 import sys, os, re, glob
 b = sys.argv[1]
@@ -83,12 +92,12 @@ open(out, 'w').write('\n'.join(lines) + '\n')
 print(f'R.kt written for package {pkg}')
 PY
 
-echo "== 3/7 compile Kotlin =="
+say "== 3/7 compile Kotlin =="
 find app/src -name '*.kt' > "$BUILD/sources.txt"
 echo "$BUILD/R.kt" >> "$BUILD/sources.txt"
 "$KOTLINC" -jvm-target 1.8 -classpath "$ANDROID_JAR" -d "$BUILD/classes" @"$BUILD/sources.txt"
 
-echo "== 4/7 dex with d8 =="
+say "== 4/7 dex with d8 =="
 python3 - "$BUILD" <<'PY'
 import sys, zipfile, os
 b = sys.argv[1]
@@ -106,7 +115,7 @@ PY
 java -cp "$D8_JAR" com.android.tools.r8.D8 --release --lib "$ANDROID_JAR_D8" --min-api 26 \
     --output "$BUILD/dex" "$BUILD/classes.jar" "$STD_LIB"
 
-echo "== 5/7 assemble apk =="
+say "== 5/7 assemble apk =="
 python3 - "$BUILD" "$APP_NAME" "$VER" "$PKG" <<'PY'
 import sys, zipfile, os
 b, name, ver, pkg = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
@@ -119,7 +128,7 @@ with zipfile.ZipFile(os.path.join(b, 'unsigned.apk'), 'w', zipfile.ZIP_DEFLATED)
 print('unsigned.apk entries:', list(zipfile.ZipFile(os.path.join(b, 'unsigned.apk')).namelist()))
 PY
 
-echo "== 6/7 sign (v1+v2) =="
+say "== 6/7 sign (v1+v2) =="
 if [ ! -f "$KS" ]; then
   keytool -genkeypair -keystore "$KS" -alias "$KS_ALIAS" -keyalg RSA -keysize 2048 \
     -validity 10950 -storepass "$KS_PASS" -keypass "$KS_PASS" \
@@ -130,7 +139,7 @@ java -jar "$APKSIGNER_JAR" sign --ks "$KS" --ks-key-alias "$KS_ALIAS" \
     --v1-signing-enabled true --v2-signing-enabled true \
     --out "artifacts/$APP_NAME-$VER.apk" "$BUILD/unsigned.apk"
 
-echo "== 7/7 verify =="
+say "== 7/7 verify =="
 java -jar "$APKSIGNER_JAR" verify --print-certs "artifacts/$APP_NAME-$VER.apk" | head -6
 ls -la "artifacts/$APP_NAME-$VER.apk"
 echo "BUILD OK"

@@ -42,9 +42,20 @@ jobs:
           if-no-files-found: ignore
 
       - name: Build APK
+        shell: bash
         env:
           TC_ROOT: /tmp/ahmed-tc
-        run: ./build-apk.sh
+        run: |
+          set -o pipefail
+          ./build-apk.sh 2>&1 | tee /tmp/build-apk.log
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: /tmp/build-apk.log
+          if-no-files-found: ignore
 
       - name: Verify APK signature & contents
         shell: bash
