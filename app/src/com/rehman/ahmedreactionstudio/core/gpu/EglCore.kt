@@ -84,7 +84,12 @@ class OesSurfaceTarget {
     val texId: Int
     val surfaceTexture: SurfaceTexture
     val surface: Surface
-    private val stMatrix = FloatArray(16)
+    /**
+     * Identity, not zeros: the decoder may blit before the first
+     * getTransformMatrix, and an all-zero matrix would collapse every texcoord
+     * to (0,0) and paint the whole frame with a single corner pixel.
+     */
+    private val stMatrix = FloatArray(16).also { android.opengl.Matrix.setIdentityM(it, 0) }
     @Volatile var frameAvailable = false
         private set
 
@@ -92,20 +97,38 @@ class OesSurfaceTarget {
         texId = GlUtil.createOesTexture()
         surfaceTexture = SurfaceTexture(texId)
         surfaceTexture.setOnFrameAvailableListener {
+            // NOTE: this callback is posted to the looper of the thread that
+            // created the SurfaceTexture — which is the GL thread. Listeners
+            // therefore NEVER fire while a decode runnable is executing on that
+            // thread, so nothing may block waiting on this flag.
             frameAvailable = true
         }
         surface = Surface(surfaceTexture)
     }
 
-    /** Pull the latest frame into the OES texture; returns the ST matrix. */
+    /** true once since the last [updateTexImage] call */
+    fun consumeFrameAvailable(): Boolean {
+        if (!frameAvailable) return false
+        frameAvailable = false
+        return true
+    }
+
+    /**
+     * Pull the latest frame into the OES texture and return the ST matrix.
+     *
+     * Called unconditionally right after the codec releases an output buffer:
+     * [SurfaceTexture.updateTexImage] acquires the newest queued buffer
+     * directly, so it works synchronously on the GL thread. Waiting on the
+     * onFrameAvailable listener instead never succeeds (see [frameAvailable])
+     * and used to cost up to 16 ms of sleep plus one frame of extra latency
+     * on every single preview frame.
+     */
     fun updateTexImage(): FloatArray {
-        if (frameAvailable) {
-            try {
-                surfaceTexture.updateTexImage()
-                surfaceTexture.getTransformMatrix(stMatrix)
-            } catch (_: Exception) { }
-            frameAvailable = false
-        }
+        try {
+            surfaceTexture.updateTexImage()
+            surfaceTexture.getTransformMatrix(stMatrix)
+        } catch (_: Exception) { }
+        frameAvailable = false
         return stMatrix
     }
 

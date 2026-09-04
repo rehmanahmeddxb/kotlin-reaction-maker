@@ -60,8 +60,16 @@ class PreviewEngine(
     }
 
     companion object {
-        private const val TICK_MS = 33L
-        private const val MIN_DECODE_PX = 480
+        /**
+         * ~60 Hz. The master clock and the transport stay smooth, and the
+         * decoder's own pacing check makes a tick that has no new frame due
+         * essentially free — it returns the frame it already published instead
+         * of re-decoding it.
+         */
+        private const val TICK_MS = 16L
+        private const val MIN_DECODE_PX = 240
+        /** playback opens at this fraction of the layer's ideal size */
+        private const val START_SCALE = 0.8f
     }
 
     private val clocks = HashMap<String, Clock>()
@@ -73,6 +81,14 @@ class PreviewEngine(
     private val preparing = ConcurrentHashMap.newKeySet<String>()
     private val paths = HashMap<String, String>()
     private val lastSeekAt = HashMap<String, Long>()
+    /**
+     * Software fallback is a last resort, not a life sentence. One transient
+     * GPU hiccup used to demote a layer to MediaMetadataRetriever forever —
+     * which is most of what "the preview is rubbish" felt like. Keep retrying
+     * the hardware path with a short back-off.
+     */
+    private val softStreak = ConcurrentHashMap<String, Int>()
+    private val gpuRetryAt = ConcurrentHashMap<String, Long>()
     /** layer ids that need a force-seek on the next decode (after scrub) */
     private val forceSeek = ConcurrentHashMap.newKeySet<String>()
 
@@ -96,11 +112,27 @@ class PreviewEngine(
     @Volatile
     var targetMaxPx = 720
 
+    /**
+     * On-screen size (longest side, device pixels) of one layer, used to decode
+     * each clip at the size the compositor will actually DRAW it. Optional:
+     * when null every layer falls back to [targetMaxPx].
+     */
+    var layerTargetPx: ((Layer) -> Int)? = null
+
     /** adapts down while decoding cannot keep up, back up when it can */
     @Volatile
-    private var adaptiveMaxPx = 0
+    private var adaptiveScale = START_SCALE
     private var avgDecodeMs = 0f
     private val newFrames = AtomicBoolean(false)
+
+    // ---------- preview health (surface it in the editor, don't guess) ----------
+    private var fpsCount = 0
+    private var fpsSince = 0L
+    /** decodes that actually reported a cost during the current window */
+    private var costCount = 0
+    @Volatile private var previewFps = 0f
+    /** layers currently stuck on the software retriever instead of MediaCodec */
+    private val softNow = ConcurrentHashMap.newKeySet<String>()
 
     private val tick = object : Runnable {
         override fun run() {
@@ -108,13 +140,22 @@ class PreviewEngine(
             val now = SystemClock.elapsedRealtime()
             val dt = min(now - lastTick, 120L)
             lastTick = now
+            if (now - fpsSince >= 500L) {
+                previewFps = fpsCount * 1000f / (now - fpsSince).coerceAtLeast(1L)
+                fpsCount = 0
+                fpsSince = now
+            }
             if (anyPlaying()) {
                 masterMs += dt
                 val dur = project().durationMs()
                 if (dur > 0 && masterMs >= dur) masterMs %= dur
                 endOfMediaCheck()
                 syncPlayers(now)
-                if (snapshotLoop) requestFrames(closest = false)
+                // snapshotLoop alone was not enough: playing a SINGLE layer
+                // from the source dock never called startSnapshots(), so the
+                // clip drew one frame and then froze. Any playing source needs
+                // continuous decode.
+                if (snapshotLoop || anyPlaying()) requestFrames(closest = false)
                 if (now - lastAdapt > 1000L) { lastAdapt = now; adaptQuality() }
             }
             onFrameReady(masterMs)
@@ -189,6 +230,17 @@ class PreviewEngine(
     /** true once since the last call whenever a decoded frame landed */
     fun consumeNewFrames(): Boolean = newFrames.getAndSet(false)
 
+    /**
+     * Live preview health for the editor HUD. This exists because "the preview
+     * is garbage" is untestable from the outside: the number that matters is
+     * whether a clip is on the hardware MediaCodec path or has been pushed onto
+     * the (10-20x slower) MediaMetadataRetriever fallback.
+     */
+    fun stats(): String {
+        val path = if (softNow.isEmpty()) "HW" else "SW×${softNow.size}"
+        return "$path · ${previewFps.toInt()} fps · ${avgDecodeMs.toInt()} ms/f"
+    }
+
     fun seekTo(ms: Long) {
         masterMs = ms.coerceAtLeast(0L)
         val p = project()
@@ -202,6 +254,7 @@ class PreviewEngine(
     }
 
     fun playAll() {
+        adaptiveScale = START_SCALE
         val p = project()
         for (l in p.layers) if (l.isClip()) {
             val c = clocks[l.id] ?: continue
@@ -298,6 +351,9 @@ class PreviewEngine(
         gpuIds.remove(id)
         forceSeek.remove(id)
         decoding.remove(id)
+        softStreak.remove(id)
+        gpuRetryAt.remove(id)
+        softNow.remove(id)
         try { GpuVideoPipeline.releaseDecoder(id) } catch (_: Exception) { }
         fallback.remove(id)?.let { try { it.release() } catch (_: Exception) { } }
     }
@@ -442,18 +498,21 @@ class PreviewEngine(
             val t = mediaTimeOf(l)
             if (!decoding.add(id)) continue
             val force = forceSeek.remove(id) || closest
-            val px = maxPxFor()
+            val px = maxPxFor(l)
             // GPU path prefers the dedicated GL thread; fallback uses the pool
-            val useGpu = gpuIds.contains(id) || !fallback.containsKey(id)
+            val useGpu = gpuIds.contains(id) ||
+                !fallback.containsKey(id) ||
+                SystemClock.elapsedRealtime() >= (gpuRetryAt[id] ?: 0L)
             if (useGpu) {
                 GpuVideoPipeline.post {
                     var ok = false
                     var cost = 0L
                     var bmp: Bitmap? = null
+                    var soft = false
                     try {
                         val d = ensureGpu(id, path)
                         if (d != null) {
-                            ok = d.advanceTo(t, px, forceSeek = force)
+                            ok = d.advanceTo(t, px, forceSeek = force, paced = true)
                             cost = d.lastDecodeMs
                             bmp = d.currentBitmap()
                         }
@@ -461,22 +520,37 @@ class PreviewEngine(
                         ok = false
                     }
                     if (!ok || bmp == null) {
-                        // soft-fail once into software fallback for this layer
+                        // soft-fail into the retriever fallback for this frame
                         try {
                             val src = ensureFallback(id, path)
                             bmp = src.frameAt(t, px, closest = force)
                             cost = src.lastDecodeMs
+                            soft = true
                         } catch (_: Exception) { }
                     }
                     val out = bmp
                     val c = cost
+                    val isSoft = soft
+                    if (isSoft) {
+                        val n = (softStreak[id] ?: 0) + 1
+                        softStreak[id] = n
+                        gpuRetryAt[id] = SystemClock.elapsedRealtime() + n.coerceAtMost(6) * 1000L
+                    } else {
+                        softStreak.remove(id)
+                        gpuRetryAt.remove(id)
+                    }
                     handler.post {
                         if (c > 0) {
+                            costCount++
                             if (avgDecodeMs <= 0f) avgDecodeMs = c.toFloat()
                             else avgDecodeMs = avgDecodeMs * 0.7f + c * 0.3f
                         }
-                        // GPU bitmaps are owned by the decoder — never recycle them here
-                        if (out != null) publishGpu(id, out)
+                        if (out != null) {
+                            if (isSoft) publishSoftware(id, out)
+                            // GPU bitmaps are owned by the decoder; publishGpu
+                            // must not recycle them
+                            else publishGpu(id, out)
+                        }
                         decoding.remove(id)
                     }
                 }
@@ -500,43 +574,77 @@ class PreviewEngine(
         }
     }
 
-    /** GPU frames: decoder owns the bitmap; only swap the reference. */
+    /**
+     * GPU frames: the decoder owns the bitmap, so the reference is swapped and
+     * never recycled. If the reference is unchanged the tick produced the very
+     * same frame (the decoder's pacing check held it), and the stage is NOT
+     * invalidated — otherwise a 60 Hz clock would force 60 pointless redraws of
+     * an identical composition every second.
+     */
     private fun publishGpu(id: String, bmp: Bitmap) {
         if (project().layerById(id) == null) return
-        frames[id] = bmp
+        val prev = frames.put(id, bmp)
+        if (prev === bmp) return
+        softNow.remove(id)
+        fpsCount++
         newFrames.set(true)
         onFrameReady(masterMs)
     }
 
-    /** Software frames: we own them and recycle the previous. */
+    /** Software frames: we own them, so the previous one is recycled. */
     private fun publishSoftware(id: String, bmp: Bitmap) {
         if (project().layerById(id) == null) { bmp.recycle(); return }
         val prev = frames.put(id, bmp)
-        if (prev != null && prev !== bmp && !externalIds.contains(id) && !gpuIds.contains(id)) {
+        if (prev === bmp) return
+        softNow.add(id)
+        fpsCount++
+        if (prev != null && !externalIds.contains(id) && !decoderOwns(id, prev)) {
             try { prev.recycle() } catch (_: Exception) { }
         }
         newFrames.set(true)
         onFrameReady(masterMs)
     }
 
-    private fun maxPxFor(): Int {
-        val base = targetMaxPx.coerceIn(MIN_DECODE_PX, 1920)
+    /** true when the layer's GPU decoder still owns [bmp] as a frame buffer */
+    private fun decoderOwns(id: String, bmp: Bitmap): Boolean =
+        try { GpuVideoPipeline.decoder(id)?.owns(bmp) == true } catch (_: Exception) { false }
+
+    /**
+     * Decode size for ONE layer.
+     *
+     * Every clip is decoded at the size the compositor will actually draw it,
+     * not at a single global "preview resolution". A reaction PiP occupying
+     * ~300 px of a 1080 px canvas used to be decoded at 960 px — about 10x more
+     * pixels than could ever be shown, and every one of them paid for decode,
+     * GL read-back and a bitmap copy. Per-layer sizing is the largest single
+     * cut in per-frame work in the whole preview path.
+     */
+    private fun maxPxFor(l: Layer): Int {
+        val hint = layerTargetPx?.invoke(l) ?: targetMaxPx
+        val base = min(hint, targetMaxPx).coerceIn(MIN_DECODE_PX, 1920)
         // while paused / scrubbing there is time to be crisp; while playing,
         // staying fluid matters more than the last few pixels
-        val want = if (anyPlaying()) base else min(1280, (base * 1.4f).toInt())
-        val a = adaptiveMaxPx
-        // the adaptive throttle only ever applies to playback decoding
-        return if (anyPlaying() && a in MIN_DECODE_PX..base) a else want
+        if (!anyPlaying()) return min(1440, (base * 1.35f).toInt()).coerceAtLeast(base)
+        return (base * adaptiveScale).toInt().coerceIn(MIN_DECODE_PX, base)
     }
 
-    /** Keep the preview fluid on slow decoders instead of dropping to 2 fps. */
+    /**
+     * Keep the preview fluid on slow devices instead of dropping to 2 fps.
+     * Playback opens slightly soft and only climbs to full size while the
+     * decoder is comfortably ahead of the clock, so a weak phone never opens a
+     * project straight into a stuttering preview.
+     */
     private fun adaptQuality() {
-        val base = targetMaxPx.coerceIn(MIN_DECODE_PX, 1920)
-        val cur = if (adaptiveMaxPx in MIN_DECODE_PX..base) adaptiveMaxPx else base
-        adaptiveMaxPx = when {
-            avgDecodeMs > 95f -> (cur * 0.8f).toInt().coerceAtLeast(MIN_DECODE_PX)
-            avgDecodeMs in 1f..45f && cur < base -> (cur * 1.3f).toInt().coerceAtMost(base)
-            else -> cur
+        // A window with no real decode means every frame was served by the
+        // decoder's pacing check — cheap by definition. Recover from an earlier
+        // slow frame instead of leaving the preview stuck at reduced quality.
+        val measured = costCount > 0
+        costCount = 0
+        adaptiveScale = when {
+            !measured && adaptiveScale < 1f -> (adaptiveScale * 1.2f).coerceAtMost(1f)
+            avgDecodeMs > 55f -> (adaptiveScale * 0.8f).coerceAtLeast(0.4f)
+            avgDecodeMs in 0.5f..24f && adaptiveScale < 1f -> (adaptiveScale * 1.2f).coerceAtMost(1f)
+            else -> adaptiveScale
         }
     }
 

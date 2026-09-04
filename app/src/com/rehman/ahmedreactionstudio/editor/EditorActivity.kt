@@ -88,7 +88,13 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         const val REQ_APP_PERMS = 45
         const val REQ_CAMERA_PERM = 46
         const val REQ_RECORD_PERM = 47
+
+        /** editor prefs file + key for the preview health overlay */
+        const val PREFS_EDITOR = "editor"
+        const val PREF_STATS_HUD = "stats_hud"
     }
+
+    private fun editorPrefs() = getSharedPreferences(PREFS_EDITOR, MODE_PRIVATE)
 
     private lateinit var store: ProjectStore
     private var proj: Project? = null
@@ -107,6 +113,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     private lateinit var sheet: LinearLayout
     private lateinit var dockContainer: LinearLayout
     private lateinit var recChip: TextView
+    private lateinit var statsHud: TextView
     private lateinit var wheel: RadialMenuView
     private lateinit var dock: SourceDock
     override lateinit var ctrl: SourceController
@@ -320,6 +327,31 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
         rlp.topMargin = UI.dp(this, 58)
         root.addView(recChip, rlp)
+
+        // ===== preview health HUD =====
+        // "The preview stutters" is impossible to diagnose blind. This shows the
+        // two numbers that matter: whether clips are on the hardware MediaCodec
+        // path (HW) or have been pushed onto the MediaMetadataRetriever
+        // fallback (SW), and the preview frame rate. Tap to hide; the
+        // Diagnostics screen turns it back on.
+        statsHud = TextView(this)
+        statsHud.textSize = 10.5f
+        statsHud.typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        statsHud.setTextColor(Color.WHITE)
+        statsHud.setPadding(UI.dp(this, 10), UI.dp(this, 4), UI.dp(this, 10), UI.dp(this, 4))
+        statsHud.background = Ic.pill(this, Color.argb(165, 8, 10, 14), 12f,
+            Color.argb(55, 255, 255, 255))
+        statsHud.visibility = View.GONE
+        statsHud.setOnClickListener {
+            editorPrefs().edit().putBoolean(PREF_STATS_HUD, false).apply()
+            statsHud.visibility = View.GONE
+        }
+        val shlp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START)
+        shlp.topMargin = UI.dp(this, 58)
+        shlp.marginStart = UI.dp(this, 10)
+        shlp.leftMargin = UI.dp(this, 10)
+        root.addView(statsHud, shlp)
 
         // ===== floating quick control bar (above the dock) =====
         val qWrap = HorizontalScrollView(this)
@@ -1116,12 +1148,32 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     // ================= engine ticks =================
 
+    private var lastUiTickMs = 0L
+    private var lastHudMs = 0L
+
     private fun onTick(ms: Long) {
-        if (!this::playBtn.isInitialized) return
-        if (!scrubbing) {
+        if (!this::playBtn.isInitialized || !this::statsHud.isInitialized) return
+        // The master clock ticks at ~60 Hz; the transport only needs ~20 Hz.
+        // Throttling keeps TextView.setText / SeekBar progress off the main
+        // thread's critical path so it cannot steal time from the stage draw.
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (!scrubbing && now - lastUiTickMs >= 50L) {
+            lastUiTickMs = now
             timeLabel.text = UI.fmtTime(ms)
             val max = seek.max
-            if (max > 0) seek.progress = (ms.toInt()).coerceAtMost(max)
+            if (max > 0) seek.progress = ms.toInt().coerceAtMost(max)
+        }
+        // HUD refreshes at ~2 Hz — it reports the engine's own 500 ms window
+        if (now - lastHudMs >= 500L) {
+            lastHudMs = now
+            val show = editorPrefs().getBoolean(PREF_STATS_HUD, true) &&
+                (engine.anyPlaying() || recording)
+            if (show) {
+                statsHud.text = engine.stats()
+                statsHud.visibility = View.VISIBLE
+            } else if (statsHud.visibility != View.GONE) {
+                statsHud.visibility = View.GONE
+            }
         }
         // reflect play state on the transport button + quick bar when it changes
         // (also catches a non-looping source auto-pausing on its last frame)
@@ -1148,6 +1200,15 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         if (!this::stage.isInitialized || !engineReady()) return
         val long = maxOf(stage.canvasW, stage.canvasH)
         engine.targetMaxPx = long.coerceIn(480, 960)
+        // Decode each clip at the size it is actually drawn at. The closure
+        // reads the stage on every call, so it stays correct after a rotate,
+        // an aspect change or a layer resize without any extra plumbing.
+        engine.layerTargetPx = { l ->
+            val boxLong = maxOf(l.wN * stage.canvasW, l.hN * stage.canvasH)
+            // headroom: a layer dragged larger keeps looking sharp for the
+            // one frame it takes the decoder to notice
+            (boxLong * 1.25f).toInt().coerceIn(240, 1440)
+        }
     }
 
     private fun togglePlay() {
