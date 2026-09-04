@@ -38,7 +38,7 @@ jobs:
         if: failure()
         run: |
           if [ -f /tmp/tc-install.log ]; then
-            grep -v '^[[:space:]]*$' /tmp/tc-install.log | sed 's/^/::error::/' | head -300
+            tail -30 /tmp/tc-install.log | sed 's/^/::error::/'
           else
             echo "::error::no toolchain log file (install step may have been skipped by cache)"
           fi
