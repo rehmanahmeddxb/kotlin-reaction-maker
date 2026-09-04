@@ -28,7 +28,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/ahmed-tc
-          key: ahmed-tc-${{ runner.os }}-v2
+          key: ahmed-tc-${{ runner.os }}-v3
 
       - name: Install offline build toolchain
         if: steps.tc-cache.outputs.cache-hit != 'true'
