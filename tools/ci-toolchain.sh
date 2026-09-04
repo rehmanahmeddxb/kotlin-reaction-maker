@@ -60,41 +60,31 @@ if [ ! -s "$TC/apksigner.jar" ]; then
   cp "$TC/paks/libs/apksigner/apksigner.jar" "$TC/apksigner.jar"
 fi
 
-if [ ! -x "$TC/aapt2" ]; then
-  # first try the google CDN (works on open runners)
+if ! "$TC/aapt2" version >/dev/null 2>&1; then
+  rm -f "$TC/aapt2"
+  # source 1: google CDN build-tools (works on open runners)
   curl -fsSL --retry 2 -o /tmp/build-tools.zip \
     https://dl.google.com/android/repository/build-tools_r30.0.3-linux.zip || true
   if [ -s /tmp/build-tools.zip ] && unzip -tq /tmp/build-tools.zip >/dev/null 2>&1; then
     rm -rf /tmp/sdk/bt
     unzip -q /tmp/build-tools.zip -d /tmp/sdk/bt
-    cp "$(find /tmp/sdk/bt -name aapt2 -type f | head -1)" "$TC/aapt2"
-    chmod +x "$TC/aapt2"
+    AAPT_CANDIDATE="$(find /tmp/sdk/bt -name aapt2 -type f -path '*linux*' | head -1)"
+    [ -n "$AAPT_CANDIDATE" ] && cp "$AAPT_CANDIDATE" "$TC/aapt2"
   fi
 fi
-if [ ! -x "$TC/aapt2" ]; then
-  # GitHub mirror of the platform build-tools prebuilts (git protocol only)
-  rm -rf "$TC/btm"
-  git clone --depth 1 --filter=blob:none --sparse \
-    https://github.com/james34602/android_build_tools.git "$TC/btm" 2>/dev/null || true
-  (cd "$TC/btm" && git sparse-checkout set aapt2 2>/dev/null) || true
-  BTM_AAPT="$(find "$TC/btm" -name aapt2 -type f 2>/dev/null | head -1)"
-  if [ -n "$BTM_AAPT" ]; then
-    cp "$BTM_AAPT" "$TC/aapt2"
-    chmod +x "$TC/aapt2"
-  fi
+if ! "$TC/aapt2" version >/dev/null 2>&1; then
+  rm -f "$TC/aapt2"
+  # source 2: PyPI aapt2 wheel ships the prebuilt Linux binary; use a venv
+  # so PEP-668 externally-managed runners (Ubuntu 24) can still install it
+  python3 -m venv /tmp/aaptvenv
+  /tmp/aaptvenv/bin/pip install --quiet --upgrade pip
+  /tmp/aaptvenv/bin/pip install --quiet aapt2==0.2.1
+  PIP_AAPT="$(find /tmp/aaptvenv -path '*aapt2/bin/Linux/aapt2' -type f 2>/dev/null | head -1)"
+  [ -n "$PIP_AAPT" ] && cp "$PIP_AAPT" "$TC/aapt2"
 fi
-if [ ! -x "$TC/aapt2" ]; then
-  # pip mirror (PyPI); runner environments may be PEP-668 managed -> try venv
-  python3 -m venv /tmp/aaptvenv || true
-  if [ -x /tmp/aaptvenv/bin/pip ]; then
-    /tmp/aaptvenv/bin/pip install --quiet aapt2 || true
-    PIP_AAPT="$(find /tmp/aaptvenv -path '*aapt2/bin/Linux/aapt2' -type f 2>/dev/null | head -1)"
-    if [ -n "$PIP_AAPT" ]; then cp "$PIP_AAPT" "$TC/aapt2"; chmod +x "$TC/aapt2"; fi
-  fi
-fi
+if [ -f "$TC/aapt2" ]; then chmod +x "$TC/aapt2" || true; fi
 # guard: an aapt2 that can't even print its version is useless on this host
 "$TC/aapt2" version >/dev/null 2>&1 || { echo "aapt2 binary missing or non-functional"; exit 1; }
-test -x "$TC/aapt2"
 test -s "$TC/d8.jar"
 test -s "$TC/apksigner.jar"
 "$TC/aapt2" version
