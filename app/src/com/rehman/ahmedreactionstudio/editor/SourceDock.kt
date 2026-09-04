@@ -88,7 +88,7 @@ class SourceDock(
         row.addView(eye)
 
         // --- mute (only meaningful for video-like sources) ---
-        if (l.isVideoLike()) {
+        if (l.isClip()) {
             val mute = IconBtn(act)
             mute.layoutParams = IconBtn.sized(act, 38)
             val effMuted = l.muted || mutedBySolo(l)
@@ -134,8 +134,9 @@ class SourceDock(
         row.addView(col)
 
         // --- badges ---
+        if (l.isLive()) row.addView(badge("LIVE", UI.OK))
         if (l.solo) row.addView(badge("SOLO", UI.ACCENT2))
-        if (l.loop && l.isVideoLike()) row.addView(badge("LOOP", UI.OK))
+        if (l.loop && l.isClip()) row.addView(badge("LOOP", UI.OK))
         if (l.locked) row.addView(badge("LOCK", Color.argb(200, 255, 200, 120)))
 
         // --- drag handle ---
@@ -160,7 +161,8 @@ class SourceDock(
     private fun statusOf(l: Layer): String {
         val bits = ArrayList<String>()
         if (!l.visible) bits.add("HIDDEN")
-        if (l.isVideoLike()) {
+        if (l.isLive()) bits.add("LIVE CAMERA ON CANVAS")
+        if (l.isClip()) {
             if (mutedBySolo(l) && !l.muted) bits.add("MUTED BY SOLO")
             else if (l.muted) bits.add("MUTED")
             if (!l.playing) bits.add("PAUSED")
@@ -168,7 +170,8 @@ class SourceDock(
         if (l.locked) bits.add("LOCKED")
         if (l.fit == Layer.FIT_FIT && !l.isText()) bits.add("FIT")
         if (bits.isEmpty()) {
-            return if (l.isVideoLike()) "Visible · Sound on · Playing"
+            return if (l.isLive()) "Live camera · framing on the canvas"
+            else if (l.isClip()) "Visible · Sound on · Playing"
             else if (l.isText()) "Text overlay" else "Visible"
         }
         return bits.joinToString(" · ")
@@ -177,7 +180,7 @@ class SourceDock(
     private fun statusColor(l: Layer): Int = when {
         !l.visible -> Color.argb(170, 255, 255, 255)
         mutedBySolo(l) || l.muted -> UI.DANGER
-        l.isVideoLike() && !l.playing -> UI.ACCENT2
+        l.isClip() && !l.playing -> UI.ACCENT2
         else -> Color.argb(140, 255, 255, 255)
     }
 

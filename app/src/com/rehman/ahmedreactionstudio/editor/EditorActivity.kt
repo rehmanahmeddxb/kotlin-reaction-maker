@@ -50,20 +50,24 @@ import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * OBS-style studio (docs/OBS_SOURCE_PLAN.md):
+ * RADIAL OBS STUDIO (docs/RADIAL_OBS_AUDIT.md).
  *
  *  - the composition canvas fills the screen; controls float over it;
- *  - SOURCES are first-class: selecting one shows a Quick Control Bar
- *    (hide / mute / pause / lock / fit / ◉ wheel / ⋮ sheet) — every control
- *    works in one tap, no settings maze;
- *  - the Source Dock is a mini mixer: per-row eye + mute toggles, live status,
- *    drag-handle Z reordering;
- *  - the radial wheel blooms contextually per source type with spring
- *    animations, haptics and vector icons;
+ *  - the WHOLE interface is the nested radial menu: one ◉ Studio launcher
+ *    blooms petals for Sources · Add · Controls · Dock · Mixing · Canvas ·
+ *    Export · Project, each petal opens its own sub-petals, and the leaf
+ *    petals perform the action. The old Sources/Add/Canvas/Export tab
+ *    buttons are gone;
+ *  - the CAMERA is a live source composited ON the canvas (LiveCamera →
+ *    PreviewEngine.setFrame → Compositor), not a separate fullscreen screen,
+ *    so you frame your reaction inside the composition;
+ *  - sheets survive only for things a ring cannot do well (dock list, mixer
+ *    sliders, export settings, the per-source advanced panel) and are opened
+ *    FROM petals;
  *  - all mutations go through SourceController (command layer) → undo/redo
  *    and preview == export are guaranteed by construction.
  */
-class EditorActivity : Activity(), StageView.Host {
+class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     companion object {
         const val EXTRA_PROJECT_ID = "pid"
@@ -74,6 +78,7 @@ class EditorActivity : Activity(), StageView.Host {
         const val REQ_CAMERA = 43
         const val REQ_SCREEN_CAPTURE = 44
         const val REQ_APP_PERMS = 45
+        const val REQ_CAMERA_PERM = 46
     }
 
     private lateinit var store: ProjectStore
@@ -92,14 +97,18 @@ class EditorActivity : Activity(), StageView.Host {
     private lateinit var panelContent: LinearLayout
     private lateinit var sheet: LinearLayout
     private lateinit var dockContainer: LinearLayout
-    private lateinit var tabBtns: HashMap<String, TextView>
     private lateinit var recChip: TextView
-    private lateinit var wheel: RadialWheelView
+    private lateinit var wheel: RadialMenuView
     private lateinit var dock: SourceDock
-    private lateinit var ctrl: SourceController
+    override lateinit var ctrl: SourceController
     private lateinit var rootFrame: FrameLayout
+    private lateinit var studioBtn: LinearLayout
     private var wheelBtn: IconBtn? = null
     private var sheetTab: String? = null
+
+    /** live camera feed → canvas (one at a time; see LiveCamera) */
+    private var liveCam: LiveCamera? = null
+    private var liveCamLayerId: String? = null
 
     private lateinit var engine: PreviewEngine
     private val undo = UndoStack()
@@ -187,7 +196,11 @@ class EditorActivity : Activity(), StageView.Host {
             val role = if (proj?.layers?.isEmpty() == true) "main" else "pip"
             consumeMediaFile(pending, role, name = "Screen record", type = LayerType.SCREEN)
         }
-        if (recChip.visibility == View.VISIBLE && !ScreenCaptureService.running) recChip.visibility = View.GONE
+        if (recChip.visibility == View.VISIBLE && !ScreenCaptureService.running &&
+            liveCam?.recording != true) recChip.visibility = View.GONE
+        // a live camera layer that survived a pause / rotate / relaunch gets
+        // its feed back (a project saved with a live layer reopens live)
+        reconcileLiveCamera()
         if (engineReady()) engine.refreshFrames()
     }
 
@@ -198,10 +211,14 @@ class EditorActivity : Activity(), StageView.Host {
 
     override fun onStop() {
         if (engineReady()) engine.stopSnapshots()
+        // release the camera whenever we leave the foreground; it is restarted
+        // in onResume so another app can use the camera meanwhile
+        if (liveCam?.recording != true) stopLiveCamera(evict = false)
         super.onStop()
     }
 
     override fun onDestroy() {
+        stopLiveCamera(evict = true)
         saveHandler.removeCallbacksAndMessages(null)
         flushSave()
         if (engineReady()) engine.release()
@@ -211,7 +228,7 @@ class EditorActivity : Activity(), StageView.Host {
     }
 
     override fun onBackPressed() {
-        if (wheel.isOpen()) { wheel.dismiss(true); return }
+        if (wheel.isOpen()) { wheel.pop(); return }
         if (sheetTab != null) { setSheet(null); return }
         flushSave()
         store.clearOpen(projectId)
@@ -262,7 +279,11 @@ class EditorActivity : Activity(), StageView.Host {
         recChip.background = Ic.pill(this, Color.argb(220, 20, 8, 10), 18f,
             Color.argb(180, 255, 90, 90))
         recChip.visibility = View.GONE
-        recChip.setOnClickListener { stopScreenCapture() }
+        recChip.setOnClickListener {
+            val camL = liveCamLayerId?.let { id -> proj?.layerById(id) }
+            if (liveCam?.recording == true && camL != null) toggleLiveCameraRecord(camL)
+            else stopScreenCapture()
+        }
         val rlp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
         rlp.topMargin = UI.dp(this, 58)
@@ -286,8 +307,8 @@ class EditorActivity : Activity(), StageView.Host {
 
         buildSheet(root)
 
-        // ===== radial wheel overlay (top of everything) =====
-        wheel = RadialWheelView(this)
+        // ===== nested radial menu overlay (top of everything) =====
+        wheel = RadialMenuView(this)
         root.addView(wheel, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
@@ -452,52 +473,84 @@ class EditorActivity : Activity(), StageView.Host {
         durationLabel.layoutParams = dlp
         transport.addView(durationLabel)
 
-        // tab bar: Sources / Add / Canvas / Export
-        val tabs = LinearLayout(this)
-        tabs.orientation = LinearLayout.HORIZONTAL
-        tabs.setPadding(UI.dp(this, 6), UI.dp(this, 4), UI.dp(this, 6), UI.dp(this, 10))
-        sheet.addView(tabs)
-        tabBtns = HashMap()
-        val defs = listOf(
-            "sources" to ("Sources" to R.drawable.ic_layers),
-            "add" to ("Add" to R.drawable.ic_add),
-            "canvas" to ("Canvas" to R.drawable.ic_aspect),
-            "export" to ("Export" to R.drawable.ic_export))
-        for ((key, ln) in defs) {
-            val t = TextView(this)
-            t.text = ln.first
-            t.gravity = Gravity.CENTER
-            t.setTextColor(UI.FG)
-            t.textSize = 12f
-            t.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-            t.setCompoundDrawablePadding(UI.dp(this, 6))
-            t.setCompoundDrawablesRelativeWithIntrinsicBounds(
-                Ic.get(this, ln.second, UI.FG2), null, null, null)
-            val lp = LinearLayout.LayoutParams(0, UI.dp(this, 42), 1f)
-            lp.setMargins(UI.dp(this, 4), 0, UI.dp(this, 4), 0)
-            t.layoutParams = lp
-            val g = GradientDrawable()
-            g.cornerRadius = UI.dpf(this, 12f)
-            g.setColor(Color.argb(180, 24, 27, 36))
-            g.setStroke(1, Color.argb(60, 255, 255, 255))
-            t.background = g
-            t.setOnClickListener { onTab(key) }
-            tabs.addView(t)
-            tabBtns[key] = t
+        // ===== the radial launcher replaces the whole tab bar =====
+        // One control opens the entire interface as nested rings, so there is
+        // no row of Sources / Add / Canvas / Export buttons any more.
+        val launchRow = LinearLayout(this)
+        launchRow.orientation = LinearLayout.HORIZONTAL
+        launchRow.gravity = Gravity.CENTER
+        launchRow.setPadding(UI.dp(this, 6), UI.dp(this, 2), UI.dp(this, 6), UI.dp(this, 10))
+        sheet.addView(launchRow)
+
+        studioBtn = LinearLayout(this)
+        studioBtn.orientation = LinearLayout.HORIZONTAL
+        studioBtn.gravity = Gravity.CENTER
+        studioBtn.setPadding(UI.dp(this, 18), 0, UI.dp(this, 20), 0)
+        val sg2 = GradientDrawable()
+        sg2.cornerRadius = UI.dpf(this, 26f)
+        sg2.setColor(Color.argb(240, 255, 90, 44))
+        sg2.setStroke(UI.dp(this, 1), Color.argb(140, 255, 200, 160))
+        studioBtn.background = sg2
+        val sblp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(this, 50))
+        studioBtn.layoutParams = sblp
+
+        val sbIcon = android.widget.ImageView(this)
+        sbIcon.setImageDrawable(Ic.get(this, R.drawable.ic_wheel, Color.WHITE))
+        val sbilp = LinearLayout.LayoutParams(UI.dp(this, 24), UI.dp(this, 24))
+        sbilp.setMargins(0, 0, UI.dp(this, 10), 0)
+        sbIcon.layoutParams = sbilp
+        studioBtn.addView(sbIcon)
+
+        val sbCol = LinearLayout(this)
+        sbCol.orientation = LinearLayout.VERTICAL
+        val sbt = TextView(this)
+        sbt.text = "Studio"
+        sbt.setTextColor(Color.WHITE)
+        sbt.textSize = 14f
+        sbt.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        sbCol.addView(sbt)
+        val sbs = TextView(this)
+        sbs.text = "sources · add · controls · mixing"
+        sbs.setTextColor(Color.argb(220, 255, 235, 225))
+        sbs.textSize = 9f
+        sbCol.addView(sbs)
+        studioBtn.addView(sbCol)
+
+        studioBtn.setOnClickListener {
+            studioBtn.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
+            studioBtn.animate().scaleX(0.94f).scaleY(0.94f).setDuration(80).withEndAction {
+                studioBtn.animate().scaleX(1f).scaleY(1f).setDuration(260)
+                    .setInterpolator(OvershootInterpolator(2f)).start()
+                openRootWheel()
+            }.start()
         }
+        launchRow.addView(studioBtn)
     }
 
-    // ================= tabs / sheet =================
+    // ================= radial menu entry points =================
 
-    private fun onTab(key: String) {
-        if (sheetTab == key) { setSheet(null); return }
-        setSheet(key)
+    /** Open the root ring, blooming from the Studio button. */
+    private fun openRootWheel() {
+        setSheet(null)
+        val loc = IntArray(2); val rootLoc = IntArray(2)
+        studioBtn.getLocationOnScreen(loc)
+        rootFrame.getLocationOnScreen(rootLoc)
+        val ax = (loc[0] + studioBtn.width / 2f) - rootLoc[0]
+        val ay = (loc[1] + studioBtn.height / 2f) - rootLoc[1]
+        wheel.show(RadialMenus.root(this), ax, ay - UI.dpf(this, 60f))
     }
+
+    /** Open a specific ring at a point (used by canvas long-press and ◉). */
+    private fun openWheelLevel(level: RadialMenuView.Level, ax: Float, ay: Float) {
+        setSheet(null)
+        wheel.show(level, ax, ay)
+    }
+
+    // ================= sheet (only where a ring is the wrong tool) =================
 
     private fun setSheet(tab: String?) {
         sheetTab = tab
         val sv = sheet.findViewWithTag<ScrollView>("panelScroll")
-        highlightTab(tab)
         if (tab == null) {
             sv.visibility = View.GONE
             return
@@ -505,8 +558,7 @@ class EditorActivity : Activity(), StageView.Host {
         panelContent.removeAllViews()
         when (tab) {
             "sources" -> buildSourcesPanel()
-            "add" -> buildAddPanel()
-            "canvas" -> buildCanvasPanel()
+            "mixer" -> buildMixerPanel()
             "export" -> buildExportPanel()
         }
         sv.visibility = View.VISIBLE
@@ -516,49 +568,74 @@ class EditorActivity : Activity(), StageView.Host {
             .setDuration(230).setInterpolator(OvershootInterpolator(1.2f)).start()
     }
 
-    private fun highlightTab(active: String?) {
-        for ((k, v) in tabBtns) {
-            val g = v.background as GradientDrawable
-            if (k == active) {
-                g.setColor(Color.argb(235, 255, 90, 44))
-                v.setTextColor(Color.WHITE)
-                v.setCompoundDrawablesRelativeWithIntrinsicBounds(
-                    Ic.get(this, when (k) {
-                        "sources" -> R.drawable.ic_layers
-                        "add" -> R.drawable.ic_add
-                        "canvas" -> R.drawable.ic_aspect
-                        else -> R.drawable.ic_export
-                    }, Color.WHITE), null, null, null)
-            } else {
-                g.setColor(Color.argb(180, 24, 27, 36))
-                v.setTextColor(UI.FG)
-                v.setCompoundDrawablesRelativeWithIntrinsicBounds(
-                    Ic.get(this, when (k) {
-                        "sources" -> R.drawable.ic_layers
-                        "add" -> R.drawable.ic_add
-                        "canvas" -> R.drawable.ic_aspect
-                        else -> R.drawable.ic_export
-                    }, UI.FG2), null, null, null)
-            }
-        }
-    }
-
     // ================= panel: SOURCES dock =================
 
     private fun buildSourcesPanel() {
-        section("SOURCES — tap select · eye/mute toggle · ⠿ drag = Z order · long press = more")
+        section("SOURCE DOCK — tap select · eye/mute toggle · ⠿ drag = Z order · long press = more")
         // the dock container is reused across panel rebuilds — re-parent it here
         (dockContainer.parent as? ViewGroup)?.removeView(dockContainer)
         dockContainer.setPadding(UI.dp(this, 8), UI.dp(this, 2), UI.dp(this, 8), UI.dp(this, 10))
         panelContent.addView(dockContainer)
         dock.rebuild()
         if (proj!!.layers.isEmpty()) {
-            val b = UI.btn(this, "+  Add your first source", accent = true)
+            val b = UI.btn(this, "◉  Open the radial menu to add a source", accent = true)
             val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, UI.dp(this, 44))
             lp.setMargins(UI.dp(this, 12), UI.dp(this, 4), UI.dp(this, 12), UI.dp(this, 12))
             b.layoutParams = lp
-            b.setOnClickListener { setSheet("add") }
+            b.setOnClickListener { openWheelLevel(RadialMenus.add(this), -1f, -1f) }
             panelContent.addView(b)
+        }
+    }
+
+    // ================= panel: MIXER (sliders need a sheet) =================
+
+    private fun buildMixerPanel() {
+        val audio = proj!!.layers.filter { it.isClip() }
+        section("MIXER — per-source level · mute · solo")
+        if (audio.isEmpty()) {
+            val t = UI.label(this, "No audio sources yet — add a video, screen recording " +
+                "or record a camera take.", dim = true, size = 12f)
+            val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT)
+            lp.setMargins(UI.dp(this, 14), UI.dp(this, 6), UI.dp(this, 14), UI.dp(this, 14))
+            t.layoutParams = lp
+            panelContent.addView(t)
+            return
+        }
+        for (l in audio.reversed()) {
+            val head = LinearLayout(this)
+            head.orientation = LinearLayout.HORIZONTAL
+            head.gravity = Gravity.CENTER_VERTICAL
+            head.setPadding(UI.dp(this, 14), UI.dp(this, 6), UI.dp(this, 12), 0)
+            val ic = android.widget.ImageView(this)
+            ic.setImageDrawable(Ic.get(this, Ic.typeIcon(l.type), UI.ACCENT2))
+            val ilp = LinearLayout.LayoutParams(UI.dp(this, 16), UI.dp(this, 16))
+            ilp.setMargins(0, 0, UI.dp(this, 8), 0)
+            ic.layoutParams = ilp
+            head.addView(ic)
+            val nm = TextView(this)
+            nm.text = l.name.ifBlank { l.type.label }
+            nm.setTextColor(Color.WHITE)
+            nm.textSize = 12.5f
+            nm.maxLines = 1
+            head.addView(nm, LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            val effMuted = ctrl.effectiveMuted(l)
+            val mb = IconBtn(this)
+            mb.layoutParams = IconBtn.sized(this, 36)
+            mb.setIcon(if (effMuted) R.drawable.ic_volume_off else R.drawable.ic_volume,
+                if (effMuted) UI.DANGER else UI.FG)
+            mb.setOnClickListener { ctrl.toggleMuted(l.id); setSheet("mixer") }
+            head.addView(mb)
+            val sb2 = IconBtn(this)
+            sb2.layoutParams = IconBtn.sized(this, 36)
+            sb2.setIcon(R.drawable.ic_star, if (l.solo) UI.ACCENT2 else UI.FG)
+            sb2.setOnClickListener { ctrl.toggleSolo(l.id); setSheet("mixer") }
+            head.addView(sb2)
+            panelContent.addView(head)
+            panelContent.addView(sliderRow("Level", (l.volume * 100).toInt()) { v ->
+                pushUndoLight(); engine.setVolume(l, v / 100f); markDirty()
+            })
         }
     }
 
@@ -596,66 +673,7 @@ class EditorActivity : Activity(), StageView.Host {
         container.addView(row)
     }
 
-    private fun buildAddPanel() {
-        val hasMain = proj!!.layers.isNotEmpty()
-        if (!hasMain) {
-            val t = UI.label(this,
-                "First pick what fills the MAIN CANVAS (the background).", dim = false, size = 13f)
-            t.gravity = Gravity.CENTER
-            val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT)
-            lp.setMargins(UI.dp(this, 16), UI.dp(this, 12), UI.dp(this, 16), UI.dp(this, 2))
-            t.layoutParams = lp
-            panelContent.addView(t)
-            section("MAIN CANVAS SOURCE")
-        } else {
-            section("ADD SOURCE (becomes a PiP overlay)")
-        }
-        panelButtonRow(panelContent,
-            "🎬 Video file" to { pickMedia(video = true) },
-            "🖼 Image file" to { pickMedia(video = false) })
-        panelButtonRow(panelContent,
-            "🎥 Record camera" to { openCamera() },
-            "⛺ Record screen" to { startScreenCapture() })
-        section("OVERLAYS")
-        panelButtonRow(panelContent, "💬 Text" to { addText() })
-        val note = UI.label(this,
-            "Videos: MP4, AVI, WebM, MKV, 3GP… (anything this device can decode).",
-            dim = true, size = 10.5f)
-        val nlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT)
-        nlp.setMargins(UI.dp(this, 14), UI.dp(this, 8), UI.dp(this, 14), UI.dp(this, 10))
-        note.layoutParams = nlp
-        panelContent.addView(note)
-    }
-
-    // ================= panel: CANVAS =================
-
-    private fun buildCanvasPanel() {
-        section("CANVAS RATIO (rotates the screen, layers keep their geometry)")
-        panelButtonRow(panelContent,
-            "16:9" to { changeAspect(Aspect.R169) },
-            "9:16" to { changeAspect(Aspect.R916) },
-            "1:1" to { changeAspect(Aspect.R11) })
-        section("CANVAS BACKGROUND")
-        panelButtonRow(panelContent,
-            "Dark" to { setBg(Color.rgb(16, 20, 24)) },
-            "White" to { setBg(Color.rgb(255, 255, 255)) },
-            "Orange" to { setBg(Color.rgb(255, 90, 44)) })
-        panelButtonRow(panelContent,
-            "Navy" to { setBg(Color.rgb(30, 60, 120)) },
-            "Green" to { setBg(Color.rgb(20, 120, 90)) },
-            "Purple" to { setBg(Color.rgb(120, 30, 90)) })
-        if (selectedId != null) {
-            section("SELECTED SOURCE")
-            panelButtonRow(panelContent,
-                "Set selected as canvas background" to {
-                    guardRecording { ctrl.setAsCanvasBackground(selectedId) }
-                })
-        }
-    }
-
-    private fun setBg(c: Int) {
+    private fun setBgColor(c: Int) {
         pushUndo()
         proj!!.bgColor = c
         markDirty(); stage.refresh()
@@ -754,7 +772,7 @@ class EditorActivity : Activity(), StageView.Host {
         go.layoutParams = glp
         go.setOnClickListener {
             setSheet(null)
-            runExport(quality, maxDim, fps, avail[codecIdx])
+            if (!warnLiveBeforeExport()) runExport(quality, maxDim, fps, avail[codecIdx])
         }
         panelContent.addView(go)
     }
@@ -814,7 +832,7 @@ class EditorActivity : Activity(), StageView.Host {
             if (l.visible) UI.FG else Color.argb(110, 255, 255, 255)) {
             ctrl.toggleVisible(l.id); animateHideFeedback(l)
         }
-        if (l.isVideoLike()) {
+        if (l.isClip()) {
             val effMuted = ctrl.effectiveMuted(l)
             bar(if (effMuted) R.drawable.ic_volume_off else R.drawable.ic_volume,
                 if (effMuted) UI.DANGER else UI.FG) { ctrl.toggleMuted(l.id) }
@@ -822,6 +840,12 @@ class EditorActivity : Activity(), StageView.Host {
                 if (l.playing) UI.FG else UI.ACCENT2) {
                 engine.toggleLayerPlay(l); markDirty(); refreshAll()
             }
+        } else if (l.isLive()) {
+            // live camera: record the take and flip the lens without leaving the canvas
+            val rec = liveCam?.recording == true
+            bar(if (rec) R.drawable.ic_stop else R.drawable.ic_camera,
+                if (rec) UI.DANGER else UI.OK) { toggleLiveCameraRecord(l) }
+            bar(R.drawable.ic_switch, UI.FG) { switchCameraFacing(l) }
         }
         bar(if (l.locked) R.drawable.ic_lock else R.drawable.ic_lock_open,
             if (l.locked) UI.ACCENT2 else UI.FG) { ctrl.toggleLocked(l.id) }
@@ -863,6 +887,7 @@ class EditorActivity : Activity(), StageView.Host {
 
     // ================= Radial wheel =================
 
+    /** ◉ on the quick bar: jump straight into this source's ring (depth 1). */
     private fun openWheel(anchor: View, l: Layer) {
         val loc = IntArray(2)
         anchor.getLocationOnScreen(loc)
@@ -870,81 +895,7 @@ class EditorActivity : Activity(), StageView.Host {
         rootFrame.getLocationOnScreen(rootLoc)
         val ax = (loc[0] + anchor.width / 2f) - rootLoc[0]
         val ay = (loc[1] + anchor.height / 2f) - rootLoc[1]
-
-        val petals = ArrayList<RadialWheelView.Petal>()
-        if (l.isVideoLike()) {
-            petals.add(RadialWheelView.Petal(
-                if (l.playing) R.drawable.ic_pause else R.drawable.ic_play,
-                if (l.playing) "Pause" else "Play", !l.playing) {
-                engine.toggleLayerPlay(l); markDirty(); refreshAll()
-            })
-            petals.add(RadialWheelView.Petal(
-                if (ctrl.effectiveMuted(l)) R.drawable.ic_volume else R.drawable.ic_volume_off,
-                if (ctrl.effectiveMuted(l)) "Unmute" else "Mute", ctrl.effectiveMuted(l)) {
-                ctrl.toggleMuted(l.id)
-            })
-            petals.add(RadialWheelView.Petal(R.drawable.ic_loop, if (l.loop) "Loop on" else "Loop", l.loop) {
-                ctrl.toggleLoop(l.id)
-            })
-            petals.add(RadialWheelView.Petal(
-                if (l.visible) R.drawable.ic_eye_off else R.drawable.ic_eye,
-                if (l.visible) "Hide" else "Show", !l.visible) { ctrl.toggleVisible(l.id) })
-            petals.add(RadialWheelView.Petal(
-                if (l.locked) R.drawable.ic_lock else R.drawable.ic_lock_open,
-                if (l.locked) "Unlock" else "Lock", l.locked) { ctrl.toggleLocked(l.id) })
-            petals.add(RadialWheelView.Petal(
-                if (l.fit == Layer.FIT_FIT) R.drawable.ic_fit else R.drawable.ic_fill,
-                if (l.fit == Layer.FIT_FIT) "Whole frame" else "Fill box", l.fit == Layer.FIT_FIT) {
-                ctrl.toggleFit(l.id)
-            })
-            petals.add(RadialWheelView.Petal(R.drawable.ic_copy, "Duplicate") {
-                val nid = ctrl.duplicate(l.id); selectedId = nid; refreshAll()
-            })
-            petals.add(RadialWheelView.Petal(R.drawable.ic_delete, "Delete", danger = true) {
-                guardRecording {
-                    ctrl.delete(l.id); selectedId = null; engine.evict(l.id); refreshAll()
-                }
-            })
-        } else if (l.isText()) {
-            petals.add(RadialWheelView.Petal(R.drawable.ic_edit, "Edit") { editTextLayer(l) })
-            petals.add(RadialWheelView.Petal(R.drawable.ic_palette, "Color") {
-                pushUndo(); l.textColor = nextColor(l.textColor); markDirty(); stage.refresh()
-            })
-            petals.add(RadialWheelView.Petal(
-                if (l.visible) R.drawable.ic_eye_off else R.drawable.ic_eye,
-                if (l.visible) "Hide" else "Show", !l.visible) { ctrl.toggleVisible(l.id) })
-            petals.add(RadialWheelView.Petal(
-                if (l.locked) R.drawable.ic_lock else R.drawable.ic_lock_open,
-                if (l.locked) "Unlock" else "Lock", l.locked) { ctrl.toggleLocked(l.id) })
-            petals.add(RadialWheelView.Petal(R.drawable.ic_center, "Center") { ctrl.center(l.id) })
-            petals.add(RadialWheelView.Petal(R.drawable.ic_delete, "Delete", danger = true) {
-                guardRecording {
-                    ctrl.delete(l.id); selectedId = null; refreshAll()
-                }
-            })
-        } else {
-            petals.add(RadialWheelView.Petal(
-                if (l.visible) R.drawable.ic_eye_off else R.drawable.ic_eye,
-                if (l.visible) "Hide" else "Show", !l.visible) { ctrl.toggleVisible(l.id) })
-            petals.add(RadialWheelView.Petal(
-                if (l.locked) R.drawable.ic_lock else R.drawable.ic_lock_open,
-                if (l.locked) "Unlock" else "Lock", l.locked) { ctrl.toggleLocked(l.id) })
-            petals.add(RadialWheelView.Petal(
-                if (l.fit == Layer.FIT_FIT) R.drawable.ic_fit else R.drawable.ic_fill,
-                if (l.fit == Layer.FIT_FIT) "Whole frame" else "Fill box", l.fit == Layer.FIT_FIT) {
-                ctrl.toggleFit(l.id)
-            })
-            petals.add(RadialWheelView.Petal(R.drawable.ic_center, "Center") { ctrl.center(l.id) })
-            petals.add(RadialWheelView.Petal(R.drawable.ic_copy, "Duplicate") {
-                val nid = ctrl.duplicate(l.id); selectedId = nid; refreshAll()
-            })
-            petals.add(RadialWheelView.Petal(R.drawable.ic_delete, "Delete", danger = true) {
-                guardRecording {
-                    ctrl.delete(l.id); selectedId = null; refreshAll()
-                }
-            })
-        }
-        wheel.show(Ic.typeIcon(l.type), l.name, petals, ax, ay)
+        openWheelLevel(RadialMenus.source(this, l.id), ax, ay)
     }
 
     /** destructive operations are locked while an export runs (plan §7) */
@@ -993,7 +944,7 @@ class EditorActivity : Activity(), StageView.Host {
             pushUndoLight(); l.opacity = v / 100f; markDirty(); stage.refresh()
         })
 
-        if (l.isVideoLike()) {
+        if (l.isClip()) {
             section("PLAYBACK & AUDIO")
             panelButtonRow(panelContent,
                 (if (l.playing) "❚❚ Pause source" else "▶ Play source") to {
@@ -1052,8 +1003,6 @@ class EditorActivity : Activity(), StageView.Host {
         panelContent.translationY = UI.dpf(this, 26f)
         panelContent.animate().alpha(1f).translationY(0f)
             .setDuration(230).setInterpolator(OvershootInterpolator(1.2f)).start()
-        // mark no tab highlighted (this is a per-source sheet)
-        highlightTab(null)
         sheetTab = "adv"
     }
 
@@ -1080,7 +1029,8 @@ class EditorActivity : Activity(), StageView.Host {
         head.gravity = Gravity.CENTER
         box.addView(head)
         val sub = UI.label(this,
-            "What plays full-screen behind your reaction?\nPick one — extras become PiP sources.",
+            "What plays full-screen behind your reaction?\nPick one — extras become PiP sources." +
+            "\nEverything else lives in the ◉ Studio radial menu.",
             dim = true, size = 12f)
         sub.gravity = Gravity.CENTER
         sub.setTextColor(Color.argb(220, 235, 238, 245))
@@ -1101,10 +1051,11 @@ class EditorActivity : Activity(), StageView.Host {
             b.setOnClickListener { fn() }
             box.addView(b)
         }
+        big("Camera — live on canvas", R.drawable.ic_camera) { addLiveCamera() }
         big("Local video", R.drawable.ic_video) { pickMedia(video = true) }
-        big("Record camera", R.drawable.ic_camera) { openCamera() }
         big("Record screen", R.drawable.ic_screen) { startScreenCapture() }
         big("Image", R.drawable.ic_image) { pickMedia(video = false) }
+        big("◉ Open the radial menu", R.drawable.ic_wheel) { openRootWheel() }
 
         emptyOverlay.addView(box, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -1136,7 +1087,7 @@ class EditorActivity : Activity(), StageView.Host {
     /** cheap signature of per-source play states (detects auto-pause at end) */
     private fun playingSignature(): String {
         val sb = StringBuilder()
-        for (l in proj!!.layers) if (l.isVideoLike()) sb.append(if (l.playing) '1' else '0')
+        for (l in proj!!.layers) if (l.isClip()) sb.append(if (l.playing) '1' else '0')
         return sb.toString()
     }
 
@@ -1171,12 +1122,62 @@ class EditorActivity : Activity(), StageView.Host {
         ctrl.toggleVisible(l.id)
     }
 
+    /** Long press anywhere on the canvas opens the rings under the finger. */
+    override fun onLongPressCanvas(l: Layer?, x: Float, y: Float) {
+        val stageLoc = IntArray(2); val rootLoc = IntArray(2)
+        stage.getLocationOnScreen(stageLoc)
+        rootFrame.getLocationOnScreen(rootLoc)
+        val ax = x + stageLoc[0] - rootLoc[0]
+        val ay = y + stageLoc[1] - rootLoc[1]
+        if (l != null) {
+            select(l.id)
+            openWheelLevel(RadialMenus.source(this, l.id), ax, ay)
+        } else {
+            openWheelLevel(RadialMenus.root(this), ax, ay)
+        }
+    }
+
     private fun onSourceChanged() {
         // called by SourceController after every command
+        reconcileLiveCamera()
         stage.refresh()
         refreshAll()
         markDirty()
         engine.refreshFrames()
+    }
+
+    /**
+     * Keep the camera HARDWARE in sync with the layer list.
+     *
+     * Any path can change the layers behind our back — the Delete petal, the
+     * advanced sheet, a dock drag, and above all undo/redo (which rebuilds the
+     * list from JSON). Two things must never happen:
+     *   1. the live layer is gone but LiveCamera still holds the camera open
+     *      (the camera stays locked for every other app), and
+     *   2. a live layer exists with no feed behind it (a dead frozen box,
+     *      which undo used to resurrect).
+     * This reconciles both, so no individual call site has to remember.
+     */
+    private fun reconcileLiveCamera() {
+        val p = proj ?: return
+        val liveLayer = p.layers.firstOrNull { it.isLive() }
+        if (liveLayer == null) {
+            if (liveCam != null || liveCamLayerId != null) {
+                stopLiveCamera(evict = true)
+                liveCamLayerId = null
+            }
+            return
+        }
+        if (liveCamLayerId != liveLayer.id) {
+            // undo/redo restored a different (or a brand new) live layer
+            stopLiveCamera(evict = true)
+            liveCamLayerId = liveLayer.id
+        }
+        if (liveCam == null && !isFinishing &&
+            checkSelfPermission(android.Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED) {
+            startLiveCamera()
+        }
     }
 
     private fun refreshAll() {
@@ -1221,6 +1222,7 @@ class EditorActivity : Activity(), StageView.Host {
 
     private fun afterStructureChange() {
         engine.attach(projectId)
+        reconcileLiveCamera()
         refreshAll()
         val dur = proj!!.durationMs().toInt().coerceAtLeast(1)
         seek.max = dur
@@ -1284,6 +1286,11 @@ class EditorActivity : Activity(), StageView.Host {
     override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, res: IntArray) {
         super.onRequestPermissionsResult(code, perms, res)
         if (code == REQ_APP_PERMS) launchProjection()
+        if (code == REQ_CAMERA_PERM) {
+            if (checkSelfPermission(android.Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED) addLiveCamera()
+            else UI.toast(this, "Camera permission is needed to put the camera on the canvas")
+        }
     }
 
     private fun launchProjection() {
@@ -1595,4 +1602,296 @@ class EditorActivity : Activity(), StageView.Host {
                 }
             })
     }
+
+    // ================= LIVE CAMERA ON THE CANVAS =================
+
+    /**
+     * Add the camera as a LIVE source composited on the canvas.
+     *
+     * This is the fix for "selecting the camera shows a strange interface":
+     * no fullscreen activity, no separate UI — a CAMERA layer is created,
+     * placed like any other source, and [LiveCamera] pushes its frames into
+     * the PreviewEngine so the shared Compositor draws it on the stage. You
+     * frame the reaction inside the composition, with drag / resize / rotate /
+     * fit / z-order all live.
+     */
+    private fun addLiveCamera() {
+        if (liveCamLayerId != null) {
+            val existing = proj!!.layerById(liveCamLayerId!!)
+            if (existing != null) {
+                UI.toast(this, "The live camera is already on the canvas")
+                select(existing.id)
+                return
+            }
+        }
+        if (checkSelfPermission(android.Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(android.Manifest.permission.CAMERA,
+                android.Manifest.permission.RECORD_AUDIO), REQ_CAMERA_PERM)
+            return
+        }
+        val p = proj!!
+        val asMain = p.layers.isEmpty()
+        mutateThen {
+            val l = Layer(type = LayerType.CAMERA, name = "Camera (live)")
+            l.live = true
+            l.camFacing = Layer.FACING_FRONT
+            l.mirror = true
+            // a sane 16:9 guess until the first frame reports the real size
+            l.srcW = 1280; l.srcH = 720
+            l.fit = Layer.FIT_FIT
+            p.layers.add(l)
+            if (asMain) placeMain(l, p) else placePip(l, p)
+            selectedId = l.id
+            liveCamLayerId = l.id
+        }
+        startLiveCamera()
+    }
+
+    private fun startLiveCamera() {
+        val id = liveCamLayerId ?: return
+        if (liveCam != null) return
+        val cam = LiveCamera(this, { bmp ->
+            // frames arrive on the camera thread → hop to the UI thread
+            runOnUiThread {
+                val l = proj?.layerById(id)
+                if (l == null) { stopLiveCamera(evict = true); return@runOnUiThread }
+                // adopt the real feed aspect once (keeps fit/PiP geometry honest)
+                val cw = cam0W(); val chh = cam0H()
+                if (cw > 0 && chh > 0 && (l.srcW != cw || l.srcH != chh)) {
+                    l.srcW = cw; l.srcH = chh
+                    if (!LayerFit.isFullBleed(l)) {
+                        LayerFit.pip(l, proj!!.aspect.canvasW, proj!!.aspect.canvasH,
+                            anchor = "br")
+                    }
+                }
+                engine.setFrame(l, bmp)
+                stage.refresh()
+            }
+        }, { state ->
+            runOnUiThread {
+                when (state) {
+                    "permission" -> UI.toast(this, "Camera permission is needed")
+                    "nocamera" -> {
+                        UI.toast(this, "No camera on this device — using the fullscreen recorder")
+                        removeLiveCameraLayer(); openCamera()
+                    }
+                    "error" -> {
+                        UI.toast(this, "Camera busy — falling back to the fullscreen recorder")
+                        removeLiveCameraLayer(); openCamera()
+                    }
+                    "recfail" -> UI.toast(this, "Could not record this camera take")
+                    "recording" -> { recChip.text = "● STOP CAMERA TAKE"; recChip.visibility = View.VISIBLE }
+                    "live" -> refreshAll()
+                }
+            }
+        })
+        liveCam = cam
+        cam.start(front = true)
+        UI.toast(this, "Live camera on the canvas — drag, resize and record from ◉ Studio")
+    }
+
+    private fun cam0W(): Int = liveCam?.outW ?: 0
+    private fun cam0H(): Int = liveCam?.outH ?: 0
+
+    private fun stopLiveCamera(evict: Boolean) {
+        val cam = liveCam ?: return
+        liveCam = null
+        cam.stop()
+        val id = liveCamLayerId
+        if (evict && id != null) engine.clearExternal(id)
+    }
+
+    private fun removeLiveCameraLayer() {
+        val id = liveCamLayerId ?: return
+        stopLiveCamera(evict = true)
+        liveCamLayerId = null
+        ctrl.delete(id)
+        if (selectedId == id) selectedId = null
+        refreshAll()
+    }
+
+    /** Record the live camera to a clip and swap the layer over IN PLACE. */
+    private fun toggleLiveCameraRecord(l: Layer) {
+        val cam = liveCam
+        if (cam == null) { UI.toast(this, "The live camera is not running"); return }
+        if (cam.recording) {
+            cam.stopRecording { f ->
+                runOnUiThread {
+                    recChip.visibility = View.GONE
+                    if (f == null || !f.exists()) {
+                        UI.toast(this, "Take was too short or failed")
+                        refreshAll(); return@runOnUiThread
+                    }
+                    swapLiveCameraToClip(l, f)
+                }
+            }
+        } else {
+            cam.startRecording(store.mediaDir(projectId)) { ok ->
+                runOnUiThread {
+                    if (ok) {
+                        recChip.text = "● STOP CAMERA TAKE"
+                        recChip.visibility = View.VISIBLE
+                        UI.toast(this, "Recording the camera take")
+                    } else UI.toast(this, "Could not start the take")
+                    refreshAll()
+                }
+            }
+        }
+    }
+
+    /**
+     * The finished take replaces the live feed IN PLACE: same geometry, same
+     * z-order, same name — so the composition you framed live is exactly the
+     * one that exports.
+     */
+    private fun swapLiveCameraToClip(live: Layer, f: File) {
+        val p = proj!!
+        val info = MediaKit.probe(f.absolutePath)
+        pushUndo()
+        val idx = p.layers.indexOf(live).coerceAtLeast(0)
+        stopLiveCamera(evict = true)
+        liveCamLayerId = null
+        val clip = Layer(type = LayerType.CAMERA, name = "Camera take",
+            relPath = "media/${f.name}", durMs = info.durMs,
+            srcW = info.width, srcH = info.height, srcRotation = info.rotation)
+        clip.cx = live.cx; clip.cy = live.cy
+        clip.wN = live.wN; clip.hN = live.hN; clip.rotDeg = live.rotDeg
+        clip.fit = live.fit
+        clip.opacity = live.opacity
+        clip.visible = live.visible
+        p.layers.remove(live)
+        p.layers.add(idx.coerceAtMost(p.layers.size), clip)
+        selectedId = clip.id
+        afterStructureChange()
+        UI.toast(this, "Take added as a clip — ${UI.fmtTime(info.durMs)}")
+    }
+
+    // ================= RadialMenus.Host =================
+
+    override fun selected(): Layer? = selectedId?.let { proj!!.layerById(it) }
+    override fun selectId(id: String?) { select(id) }
+
+    override fun addVideo() { pickMedia(video = true) }
+    override fun addImage() { pickMedia(video = false) }
+    override fun addCameraLive() { addLiveCamera() }
+    override fun addCameraTake() { openCamera() }
+    override fun addScreen() { startScreenCapture() }
+    override fun addTextSource() { addText() }
+
+    override fun anyPlaying(): Boolean = engineReady() && engine.anyPlaying()
+    override fun toggleMasterPlay() { togglePlay() }
+    override fun restart() {
+        engine.seekTo(0L)
+        seek.progress = 0
+        onTick(0L)
+    }
+    override fun nudge(ms: Long) {
+        val dur = proj!!.durationMs()
+        val t = (engine.master() + ms).coerceIn(0L, dur)
+        engine.seekTo(t)
+        seek.progress = t.toInt().coerceAtMost(seek.max)
+        onTick(t)
+    }
+    override fun toggleSourcePlay(l: Layer) {
+        engine.toggleLayerPlay(l); markDirty(); refreshAll()
+    }
+    override fun snapshotFrame() {
+        // freeze the current composition as an IMAGE source
+        val p = proj!!
+        try {
+            val bmp = Bitmap.createBitmap(p.aspect.canvasW / 2, p.aspect.canvasH / 2,
+                Bitmap.Config.ARGB_8888)
+            val c = android.graphics.Canvas(bmp)
+            com.rehman.ahmedreactionstudio.core.Compositor.draw(
+                com.rehman.ahmedreactionstudio.core.Compositor.Ctx(), c,
+                bmp.width, bmp.height, p, { engine.frameOf(it) }, engine.master(), null)
+            val dir = store.mediaDir(projectId); dir.mkdirs()
+            val f = File(dir, "snap_${System.currentTimeMillis()}.png")
+            f.outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            bmp.recycle()
+            consumeMediaFile(f, "pip", name = "Snapshot", type = LayerType.IMAGE)
+        } catch (e: Exception) {
+            UI.toast(this, "Snapshot failed: ${e.message}")
+        }
+    }
+    override fun undo() { doUndo() }
+    override fun redo() { doRedo() }
+
+    override fun openDockPanel() { setSheet("sources") }
+    override fun openMixerPanel() { setSheet("mixer") }
+    override fun openExportPanel() { setSheet("export") }
+    override fun openAdvanced(l: Layer) { openAdvancedSheet(l) }
+    override fun quickExport() {
+        val avail = Exporter.Codec.available().ifEmpty { listOf(Exporter.Codec.H264) }
+        val codec = avail.firstOrNull { it == Exporter.Codec.H264 } ?: avail[0]
+        if (warnLiveBeforeExport()) return
+        runExport(1, 720, 30, codec)
+    }
+
+    /** A live camera cannot be encoded — say so instead of exporting a hole. */
+    private fun warnLiveBeforeExport(): Boolean {
+        val live = proj!!.layers.firstOrNull { it.isLive() && it.visible } ?: return false
+        AlertDialog.Builder(this)
+            .setTitle("Live camera on the canvas")
+            .setMessage("\"${live.name}\" is a LIVE feed — a live source has no recorded " +
+                "frames, so it would export as an empty box.\n\nRecord a take first " +
+                "(◉ Studio → Sources → the camera → Record take); the take replaces the " +
+                "live feed in place and keeps your framing.")
+            .setPositiveButton("Record a take") { _, _ -> toggleLiveCameraRecord(live) }
+            .setNegativeButton("Export anyway") { _, _ ->
+                val avail = Exporter.Codec.available().ifEmpty { listOf(Exporter.Codec.H264) }
+                runExport(1, 720, 30, avail.firstOrNull { it == Exporter.Codec.H264 } ?: avail[0])
+            }
+            .setNeutralButton("Cancel", null)
+            .show()
+        return true
+    }
+
+    override fun setAspect(a: Aspect) { changeAspect(a) }
+    override fun setBg(color: Int) { setBgColor(color) }
+    override fun fitAllSources() {
+        val p = proj!!
+        pushUndo()
+        for (l in p.layers) if (!l.isText()) l.fit = Layer.FIT_FIT
+        markDirty(); stage.refresh(); refreshAll()
+        UI.toast(this, "Every source shows its whole frame")
+    }
+    override fun renameProject() {
+        val input = EditText(this)
+        input.setText(proj!!.name)
+        input.setTextColor(UI.FG)
+        AlertDialog.Builder(this).setTitle("Rename project").setView(input)
+            .setPositiveButton("OK") { _, _ ->
+                val n = input.text.toString().trim()
+                if (n.isNotEmpty()) { proj!!.name = n; markDirty(); updateName() }
+            }
+            .setNegativeButton("Cancel", null).show()
+    }
+    override fun saveNow() { flushSave(); UI.toast(this, "Project saved") }
+    override fun openDiagnostics() {
+        startActivity(Intent(this, DiagnosticsActivity::class.java))
+    }
+    override fun closeProject() { onBackPressed() }
+    override fun editText(l: Layer) { editTextLayer(l) }
+    override fun cycleTextColor(l: Layer) {
+        pushUndo(); l.textColor = nextColor(l.textColor); markDirty(); stage.refresh()
+    }
+
+    override fun isCameraRecording(l: Layer): Boolean =
+        l.id == liveCamLayerId && liveCam?.recording == true
+    override fun toggleCameraRecord(l: Layer) { toggleLiveCameraRecord(l) }
+    override fun switchCameraFacing(l: Layer) {
+        val cam = liveCam ?: return
+        cam.switchFacing()
+        l.camFacing = if (cam.isFront()) Layer.FACING_FRONT else Layer.FACING_BACK
+        l.mirror = cam.isFront()
+        markDirty(); refreshAll()
+    }
+    override fun toggleCameraMirror(l: Layer) {
+        l.mirror = !l.mirror
+        liveCam?.setMirror(l.mirror)
+        markDirty(); refreshAll()
+    }
+
+    override fun toast(msg: String) { UI.toast(this, msg) }
 }

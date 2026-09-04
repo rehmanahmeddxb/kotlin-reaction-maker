@@ -62,6 +62,7 @@ class SourceController(
 
     fun setFit(id: String?, fit: String) = withLayer(id) { it.fit = fit }
     fun setOpacity(id: String?, v: Float) = withLayer(id) { it.opacity = v.coerceIn(0f, 1f) }
+    fun setVolume(id: String?, v: Float) = withLayer(id) { it.volume = v.coerceIn(0f, 1f) }
     fun setName(id: String?, name: String) = withLayer(id) { it.name = name }
 
     /** Move inside the z-list. `index` semantics: 0 = canvas background. */

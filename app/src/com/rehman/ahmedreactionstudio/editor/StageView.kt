@@ -52,6 +52,12 @@ class StageView @JvmOverloads constructor(
         fun onTapEmpty()
         fun onChanged()            // immediate (gesture start) snapshot
         fun onDoubleTap(l: Layer)  // quick action: hide / show (OBS plan §4.5)
+        /**
+         * Long press on the canvas: open the radial menu right under the
+         * finger — the source's own ring when a source was pressed, the root
+         * ring on empty canvas. [x]/[y] are in THIS view's pixels.
+         */
+        fun onLongPressCanvas(l: Layer?, x: Float, y: Float)
     }
 
     companion object {
@@ -94,6 +100,10 @@ class StageView @JvmOverloads constructor(
     private var lastTapUp = 0L
     private var lastTapX = 0f
     private var lastTapY = 0f
+
+    /** long-press → radial menu at the finger */
+    private var longPressFired = false
+    private var pendingLongPress: Runnable? = null
 
     override fun onMeasure(w: Int, h: Int) {
         setMeasuredDimension(specSize(w, 360), specSize(h, 360))
@@ -271,6 +281,7 @@ class StageView @JvmOverloads constructor(
                 moved = false
                 undoPushed = false
                 downX = lx(e); downY = ly(e)
+                scheduleLongPress(e.x, e.y, lx(e), ly(e))
                 val selId = hp.selectedId()
                 val sel = selId?.let { p.layerById(it) }
                 // rotation / resize handles on the current selection first
@@ -292,6 +303,7 @@ class StageView @JvmOverloads constructor(
                 return true
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
+                cancelRadialLongPress()
                 val l = startLayerId?.let { p.layerById(it) }
                 if (l != null && !l.locked && e.pointerCount == 2 && mode != Mode.ROTATE) {
                     mode = Mode.PINCH
@@ -307,6 +319,8 @@ class StageView @JvmOverloads constructor(
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
+                if (hypot(lx(e) - downX, ly(e) - downY) > UI.dpf(context, 12f)) cancelRadialLongPress()
+                if (longPressFired) return true
                 if (mode == Mode.NONE) return true
                 val l = startLayerId?.let { p.layerById(it) } ?: return true
                 val x = lx(e); val y = ly(e)
@@ -341,6 +355,12 @@ class StageView @JvmOverloads constructor(
                 return true
             }
             MotionEvent.ACTION_UP -> {
+                cancelRadialLongPress()
+                if (longPressFired) {
+                    longPressFired = false
+                    mode = Mode.NONE; startLayerId = null
+                    return true
+                }
                 if (moved) host?.onTransform()
                 else {
                     // clean tap on a layer: double-tap = hide / show quick action
@@ -362,6 +382,8 @@ class StageView @JvmOverloads constructor(
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
+                cancelRadialLongPress()
+                longPressFired = false
                 if (moved) host?.onTransform()
                 mode = Mode.NONE
                 startLayerId = null
@@ -370,6 +392,29 @@ class StageView @JvmOverloads constructor(
             }
         }
         return true
+    }
+
+    // ---------- long press → radial menu ----------
+
+    private fun scheduleLongPress(rawX: Float, rawY: Float, cxp: Float, cyp: Float) {
+        cancelRadialLongPress()
+        longPressFired = false
+        val r = Runnable {
+            // a drag/resize already in progress must not be hijacked
+            if (moved) return@Runnable
+            longPressFired = true
+            performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+            mode = Mode.NONE
+            startLayerId = null
+            host?.onLongPressCanvas(layerAt(cxp, cyp), rawX, rawY)
+        }
+        pendingLongPress = r
+        postDelayed(r, 460L)
+    }
+
+    private fun cancelRadialLongPress() {
+        pendingLongPress?.let { removeCallbacks(it) }
+        pendingLongPress = null
     }
 
     private fun startGesture(l: Layer, m: String) {

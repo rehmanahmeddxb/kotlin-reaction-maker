@@ -71,6 +71,13 @@ class PreviewEngine(
     private val paths = HashMap<String, String>()
     private val lastSeekAt = HashMap<String, Long>()
 
+    /**
+     * Layers whose frames are pushed from OUTSIDE (the live camera owns and
+     * reuses its bitmaps). The engine must never recycle those — doing so
+     * would tear down a buffer the producer is still drawing into.
+     */
+    private val externalIds = HashSet<String>()
+
     private val exec = Executors.newFixedThreadPool(2)
     private val handler = Handler(Looper.getMainLooper())
     private var masterMs = 0L
@@ -118,7 +125,7 @@ class PreviewEngine(
     private fun endOfMediaCheck() {
         val p = project()
         for (l in p.layers) {
-            if (!l.isVideoLike() || !l.playing || l.loop || l.durMs <= 0L) continue
+            if (!l.isClip() || !l.playing || l.loop || l.durMs <= 0L) continue
             val t = clocks[l.id]?.media(masterMs, l.speed) ?: continue
             if (t >= l.durMs) {
                 l.playing = false
@@ -146,7 +153,7 @@ class PreviewEngine(
         val live = HashSet<String>()
         for (l in p.layers) {
             live.add(l.id)
-            if (!l.isVideoLike()) continue
+            if (!l.isClip()) continue
             val c = Clock()
             c.freeze = l.pausedMediaMs
             c.wasPlaying = l.playing
@@ -179,14 +186,14 @@ class PreviewEngine(
         masterMs = ms.coerceAtLeast(0L)
         val p = project()
         p.lastPlayheadMs = masterMs
-        for (l in p.layers) if (l.isVideoLike()) clocks[l.id]?.seek(masterMs, l.speed)
+        for (l in p.layers) if (l.isClip()) clocks[l.id]?.seek(masterMs, l.speed)
         syncPlayers(SystemClock.elapsedRealtime())
         refreshFrames()
     }
 
     fun playAll() {
         val p = project()
-        for (l in p.layers) if (l.isVideoLike()) {
+        for (l in p.layers) if (l.isClip()) {
             val c = clocks[l.id] ?: continue
             // an ended non-looping clip restarts from 0:00 on play-all
             if (!l.loop && l.durMs > 0 && c.freeze >= l.durMs - 80) { c.freeze = 0L; l.pausedMediaMs = 0L }
@@ -199,7 +206,7 @@ class PreviewEngine(
 
     fun pauseAll() {
         val p = project()
-        for (l in p.layers) if (l.isVideoLike()) {
+        for (l in p.layers) if (l.isClip()) {
             l.playing = false
             clocks[l.id]?.pause(masterMs)
         }
@@ -208,7 +215,7 @@ class PreviewEngine(
 
     fun toggleLayerPlay(l: Layer): Boolean {
         // returns new state
-        if (!l.isVideoLike()) return l.playing
+        if (!l.isClip()) return l.playing
         if (l.playing) {
             l.playing = false
             clocks[l.id]?.pause(masterMs)
@@ -233,7 +240,7 @@ class PreviewEngine(
      */
     fun anyPlaying(): Boolean {
         val p = project()
-        for (l in p.layers) if (l.isVideoLike() && l.playing) return true
+        for (l in p.layers) if (l.isClip() && l.playing) return true
         return false
     }
 
@@ -272,7 +279,7 @@ class PreviewEngine(
     // ---------- audio (never on the UI thread) ----------
 
     private fun ensureAudioPlayer(l: Layer) {
-        if (effectiveMuted(l) || !l.isVideoLike()) return
+        if (effectiveMuted(l) || !l.isClip()) return
         if (players.containsKey(l.id) || preparing.contains(l.id)) return
         val path = paths[l.id] ?: pathOf(l) ?: return
         preparing.add(l.id)
@@ -313,7 +320,7 @@ class PreviewEngine(
     private fun syncPlayers(now: Long) {
         val p = project()
         for (l in p.layers) {
-            if (!l.isVideoLike()) continue
+            if (!l.isClip()) continue
             // audio follows play + mute/solo ONLY. Hiding a source does not
             // silence it (OBS rule, plan §2).
             val playingNow = l.playing && !effectiveMuted(l)
@@ -377,7 +384,7 @@ class PreviewEngine(
     fun refreshFrames() {
         val p = project()
         var any = false
-        for (l in p.layers) if (l.isVideoLike() && l.visible && !l.relPath.isNullOrBlank()) {
+        for (l in p.layers) if (l.isClip() && l.visible && !l.relPath.isNullOrBlank()) {
             any = true
             paths[l.id] = pathOf(l) ?: continue
         }
@@ -401,7 +408,7 @@ class PreviewEngine(
     private fun requestFrames(closest: Boolean) {
         val p = project()
         for (l in p.layers) {
-            if (!l.isVideoLike() || !l.visible || l.relPath.isNullOrBlank()) continue
+            if (!l.isClip() || !l.visible || l.relPath.isNullOrBlank()) continue
             if (!closest && !l.playing) continue
             val id = l.id
             val path = paths[id] ?: pathOf(l) ?: continue
@@ -428,7 +435,7 @@ class PreviewEngine(
     private fun publish(id: String, bmp: Bitmap) {
         if (project().layerById(id) == null) { bmp.recycle(); return }
         val prev = frames.put(id, bmp)
-        if (prev != null && prev !== bmp) prev.recycle()
+        if (prev != null && prev !== bmp && !externalIds.contains(id)) prev.recycle()
         newFrames.set(true)
         onFrameReady(masterMs)
     }
@@ -457,21 +464,40 @@ class PreviewEngine(
     /** evict + recycle a layer's frame and decoder (main thread). */
     fun evict(id: String) {
         releaseSource(id)
+        val external = externalIds.remove(id)
         handler.post {
-            frames.remove(id)?.let { try { it.recycle() } catch (_: Exception) { } }
+            frames.remove(id)?.let {
+                if (!external) try { it.recycle() } catch (_: Exception) { }
+            }
         }
     }
 
     fun frameOf(l: Layer): Bitmap? = frames[l.id]
 
+    /**
+     * Push a frame produced outside the engine (the live camera). The bitmap
+     * stays owned by the producer: it is registered as external so no engine
+     * path ever recycles it.
+     */
     fun setFrame(l: Layer, bmp: Bitmap?) {
         if (bmp == null) return
+        externalIds.add(l.id)
         frames.put(l.id, bmp)
         newFrames.set(true)
     }
 
+    /** Stop treating [id] as externally fed (the producer released it). */
+    fun clearExternal(id: String) {
+        externalIds.remove(id)
+        frames.remove(id)
+        newFrames.set(true)
+    }
+
     fun recycleFrames() {
-        for ((_, b) in frames) { try { b.recycle() } catch (_: Exception) { } }
+        for ((id, b) in frames) {
+            if (externalIds.contains(id)) continue
+            try { b.recycle() } catch (_: Exception) { }
+        }
         frames.clear()
     }
 
