@@ -23,18 +23,11 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Restore toolchain cache
-        id: tc-cache
-        uses: actions/cache@v4
-        with:
-          path: /tmp/ahmed-tc
-          key: ahmed-tc-${{ runner.os }}-v3
-
       - name: Install offline build toolchain
-        if: steps.tc-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf /tmp/ahmed-tc
           bash -euxo pipefail tools/ci-toolchain.sh 2>&1 | tee /tmp/tc-install.log
 
       - name: Print toolchain log (on failure)
