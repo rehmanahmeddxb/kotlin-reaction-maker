@@ -53,6 +53,9 @@ jobs:
             artifacts/AhmedReactionStudio-1.0.0.apk
           /tmp/ahmed-tc/aapt2 dump badging artifacts/AhmedReactionStudio-1.0.0.apk \
             | grep -E "^package|^sdkVersion|^launchable-activity"
+          # launcher icon must resolve to the adaptive (colourful) icon
+          /tmp/ahmed-tc/aapt2 dump badging artifacts/AhmedReactionStudio-1.0.0.apk \
+            | grep -q "mipmap-anydpi-v26/ic_launcher.xml"
           # every activity class present in the dex
           python3 - <<'PY'
           import zipfile
@@ -63,6 +66,11 @@ jobs:
               assert n.encode() in dex, 'missing ' + n
           print('dex contains all activities + screen capture service')
           PY
+
+      - name: Speed check (build timing + APK stats)
+        env:
+          TC_ROOT: /tmp/ahmed-tc
+        run: ./tools/speed-check.sh
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
