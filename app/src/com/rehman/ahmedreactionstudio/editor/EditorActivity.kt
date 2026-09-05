@@ -2020,11 +2020,15 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         quickBar.addView(div)
 
         fun bar(resId: Int, tint: Int, desc: String, fn: () -> Unit): IconBtn {
+            // quickBar is a LinearLayout, so give the button LinearLayout
+            // layout params directly. IconBtn extends FrameLayout, which means
+            // IconBtn.sized() returns FrameLayout.LayoutParams — casting that
+            // to LinearLayout.LayoutParams *before* the view is added throws
+            // ClassCastException (Android only converts params on addView).
             val b = IconBtn(this)
-            b.layoutParams = IconBtn.sized(this, 48)
-            // At least the Step 5 target size, now 48dp for the shared toolbar.
             b.setIcon(resId, tint, desc)
-            val lp = b.layoutParams as LinearLayout.LayoutParams
+            // 48dp touch target for the shared toolbar, with a 1dp side gap.
+            val lp = LinearLayout.LayoutParams(UI.dp(this, 48), UI.dp(this, 48))
             lp.setMargins(UI.dp(this, 1), 0, UI.dp(this, 1), 0)
             b.layoutParams = lp
             b.setOnClickListener { fn() }
