@@ -606,7 +606,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
         val diag = IconBtn(this)
         diag.layoutParams = IconBtn.sized(this, 44)
-        diag.setIcon(R.drawable.ic_settings, UI.FG, "Project settings")
+        diag.setIcon(R.drawable.ic_info, UI.FG, "Diagnostics")
         diag.setOnClickListener { startActivity(Intent(this, DiagnosticsActivity::class.java)) }
         top.addView(diag)
     }
@@ -1590,6 +1590,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         dockContainer.setPadding(UI.dp(this, 10), UI.dp(this, 2), UI.dp(this, 10), UI.dp(this, 10))
         panelContent.addView(dockContainer)
         dock.rebuild()
+        buildLayerInspector()
         if (proj!!.layers.isEmpty()) {
             val b = UI.btn(this, "＋  Add your first source", accent = true)
             val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, UI.dp(this, 44))
@@ -1598,6 +1599,120 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             b.setOnClickListener { openWheelLevel(RadialMenus.add(this), -1f, -1f) }
             panelContent.addView(b)
         }
+    }
+
+    /**
+     * SELECTED-SOURCE INSPECTOR — the canonical home (UI Plan2 §4) for the
+     * verbs that used to be scattered across the Arrange ring, the Canvas ring
+     * and the advanced sheet:
+     *
+     *   V10 z-order (Front / Back)      V11 position (3×3 anchor grid)
+     *   V12 Set as background           V14 Duplicate
+     *   V24 Rename source               V28 text edit / size / colour / shadow
+     *   V29 Opacity
+     *
+     * Audio verbs deliberately do NOT live here — they are the Audio sheet's
+     * (V01/V02/V07/V32). Everything routes through [SourceController] so undo
+     * and preview==export hold by construction.
+     */
+    private fun buildLayerInspector() {
+        val l = selectedId?.let { proj!!.layerById(it) } ?: return
+        val name = l.name.ifBlank { l.type.label }
+
+        section("SELECTED  ·  $name")
+
+        // rename (V24: "Rename source", never a bare "Rename")
+        panelButtonRow(panelContent,
+            "Rename source" to { renameLayer(l) })
+
+        // V10 — z-order. Dock drag handles fine reordering; these are the
+        // two coarse jumps.
+        section("ORDER  ·  drag ⠿ above for fine control")
+        panelButtonRow(panelContent,
+            "To front" to { ctrl.moveZ(l.id, "front"); refreshLayersSheet() },
+            "To back" to { ctrl.moveZ(l.id, "back"); refreshLayersSheet() })
+
+        // V11 — one 3×3 anchor grid, one label set.
+        section("POSITION")
+        panelButtonRow(panelContent,
+            "Top-left" to { ctrl.anchor(l.id, "tl") },
+            "Top" to { ctrl.anchor(l.id, "tc") },
+            "Top-right" to { ctrl.anchor(l.id, "tr") })
+        panelButtonRow(panelContent,
+            "Left" to { ctrl.anchor(l.id, "cl") },
+            "Centre" to { ctrl.center(l.id) },
+            "Right" to { ctrl.anchor(l.id, "cr") })
+        panelButtonRow(panelContent,
+            "Bottom-left" to { ctrl.anchor(l.id, "bl") },
+            "Bottom" to { ctrl.anchor(l.id, "bc") },
+            "Bottom-right" to { ctrl.anchor(l.id, "br") })
+        panelButtonRow(panelContent,
+            "Reset position" to { ctrl.resetGeometry(l.id) })
+
+        // V29 — opacity sits next to its sibling controls, not buried.
+        panelContent.addView(sliderRow("Opacity  ${(l.opacity * 100).toInt()}%",
+            (l.opacity * 100).toInt()) { v ->
+            pushUndoLight(); l.opacity = v / 100f; markDirty(); stage.refresh()
+        })
+
+        // V28 — text inspector. Previously the source ring was the only home.
+        if (l.isText()) {
+            section("TEXT")
+            panelButtonRow(panelContent,
+                "Edit text" to { editTextLayer(l) },
+                "Colour" to { cycleTextColor(l); refreshLayersSheet() })
+            panelContent.addView(sliderRow("Text size",
+                (l.fontSizeN * 1000).toInt().coerceIn(10, 300)) { v ->
+                pushUndoLight(); l.fontSizeN = v / 1000f; markDirty(); stage.refresh()
+            })
+            panelButtonRow(panelContent,
+                (if (l.shadow) "Shadow: on" else "Shadow: off") to {
+                    pushUndo(); l.shadow = !l.shadow; markDirty(); stage.refresh()
+                    refreshLayersSheet()
+                })
+        }
+
+        // V12 + V14. "Set as background" is the ONLY name for this verb
+        // (never "Fill canvas" / "Selection as background").
+        section("SOURCE")
+        if (!l.isText()) {
+            panelButtonRow(panelContent,
+                "Set as background" to {
+                    ctrl.setAsCanvasBackground(l.id)
+                    showUndoSnack("$name is now the canvas background")
+                    refreshLayersSheet()
+                },
+                "Duplicate" to { duplicateLayer(l) })
+        } else {
+            panelButtonRow(panelContent,
+                "Duplicate" to { duplicateLayer(l) })
+        }
+
+        // V13 — delete keeps an Undo snackbar.
+        val del = UI.btn(this, "Delete source", accent = false, small = false)
+        del.setTextColor(UI.DANGER)
+        del.contentDescription = "Delete $name"
+        val dlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, UI.dp(this, 44))
+        dlp.setMargins(UI.dp(this, 12), UI.dp(this, 6), UI.dp(this, 12), UI.dp(this, 14))
+        del.layoutParams = dlp
+        del.setOnClickListener {
+            guardRecording {
+                ctrl.delete(l.id); selectedId = null; engine.evict(l.id)
+                refreshAll()
+                refreshLayersSheet()
+                showUndoSnack("Deleted $name")
+            }
+        }
+        panelContent.addView(del)
+    }
+
+    /**
+     * Rebuild the Layers sheet in place, but only when it is the sheet that is
+     * actually open — a toggle inside the inspector must never pop a different
+     * panel over the user's finger.
+     */
+    private fun refreshLayersSheet() {
+        if (sheetTab == "sources") setSheet("sources")
     }
 
     /** cycle the selection through the layer stack (‹ › steppers) */
@@ -1720,6 +1835,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         row.setPadding(UI.dp(this, 8), 0, UI.dp(this, 8), 0)
         for ((label, fn) in items) {
             val b = UI.btn(this, label, accent = false, small = true)
+            // T-05: the label is the action, so it is also the TalkBack text
+            b.contentDescription = label
             val lp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             lp.setMargins(UI.dp(this, 4), UI.dp(this, 3), UI.dp(this, 4), UI.dp(this, 3))
             b.layoutParams = lp
@@ -2108,6 +2225,9 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             pushUndo(); l.rotDeg = 0f; markDirty(); stage.refresh()
             showUndoSnack("${l.name} rotation reset — the knob above the frame rotates")
         }
+        // V10 z-order: the quick bar keeps the two nudges (a protected Phase-2
+        // shortcut, see tools/validate-integration.py); the *duplicates* that
+        // were deleted are the Arrange ring and the advanced sheet.
         bar(R.drawable.ic_up, UI.FG, "Bring ${l.name} forward") { ctrl.moveZ(l.id, "up") }
         bar(R.drawable.ic_down, UI.FG, "Send ${l.name} backward") { ctrl.moveZ(l.id, "down") }
         bar(R.drawable.ic_fullscreen, UI.FG, "Full canvas: hide all controls") { setFullCanvas(true) }
@@ -2162,13 +2282,17 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     // ================= Advanced sheet (long press / ⋮) =================
 
-    /** duplicate with the single rule every surface enforces: no live-camera clones */
+    /**
+     * Duplicate. The "no live-camera clone" rule is owned by
+     * [SourceController.duplicate] (UI Plan2 T-06) — this surface only reports
+     * the refusal, it does not re-implement it.
+     */
     private fun duplicateLayer(l: Layer) {
-        if (l.isLive()) {
+        val nid = ctrl.duplicate(l.id)
+        if (nid == null) {
             UI.toast(this, "The live camera can't be duplicated — record a take first")
             return
         }
-        val nid = ctrl.duplicate(l.id)
         selectedId = nid
         refreshAll()
         showUndoSnack("Duplicated ${l.name}")
@@ -2203,57 +2327,26 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         head.addView(ren)
         panelContent.addView(head)
 
+        // UI Plan2 §4 — this sheet no longer duplicates verbs that have a
+        // canonical home elsewhere. Deleted from here:
+        //   Fit/Fill (V09), Hide/Show (V03), Pause (V04) → quick bar
+        //   Mute (V01), Solo (V02), Loop (V32), Volume (V07) → Audio sheet
+        //   Opacity (V29), z-order (V10), anchors (V11),
+        //   Set as background (V12), Duplicate (V14), text (V28)
+        //     → Layers sheet selected-source inspector
         section("APPEARANCE")
-        if (!l.isText()) {
-            panelButtonRow(panelContent,
-                (if (l.fit == Layer.FIT_FIT) "Fit: whole frame" else "Fill: crop to box") to {
-                    ctrl.toggleFit(l.id); openAdvancedSheet(l)
-                },
-                (if (l.visible) "Hide" else "Show") to {
-                    ctrl.toggleVisible(l.id); showHideFeedback(l); openAdvancedSheet(l)
-                })
-        } else {
-            panelButtonRow(panelContent,
-                (if (l.visible) "Hide" else "Show") to {
-                    ctrl.toggleVisible(l.id); showHideFeedback(l); openAdvancedSheet(l)
-                },
-                (if (l.locked) "Unlock" else "Lock") to {
-                    ctrl.toggleLocked(l.id); openAdvancedSheet(l)
-                })
-        }
-        if (!l.isText()) {
-            panelButtonRow(panelContent,
-                (if (l.locked) "Unlock" else "Lock") to {
-                    ctrl.toggleLocked(l.id); openAdvancedSheet(l)
-                })
-        }
-        panelContent.addView(sliderRow("Opacity  ${(l.opacity * 100).toInt()}%",
-            (l.opacity * 100).toInt()) { v ->
-            pushUndoLight(); l.opacity = v / 100f; markDirty(); stage.refresh()
-        })
+        panelButtonRow(panelContent,
+            (if (l.locked) "Unlock" else "Lock") to {
+                ctrl.toggleLocked(l.id); openAdvancedSheet(l)
+            })
 
         if (l.isClip()) {
-            section("PLAYBACK & AUDIO")
+            section("AUDIO")
             panelButtonRow(panelContent,
-                (if (l.playing) "Pause source" else "Play source") to {
-                    engine.toggleLayerPlay(l); markDirty(); openAdvancedSheet(l)
-                },
-                (if (l.loop) "Loop: on" else "Loop: off") to {
-                    ctrl.toggleLoop(l.id); openAdvancedSheet(l)
-                })
-            panelButtonRow(panelContent,
-                (if (l.muted) "Unmute" else "Mute") to {
-                    ctrl.toggleMuted(l.id); openAdvancedSheet(l)
-                },
-                (if (l.solo) "Solo: on" else "Solo: off") to {
-                    ctrl.toggleSolo(l.id); openAdvancedSheet(l)
-                })
-            panelContent.addView(sliderRow("Volume  ${(l.volume * 100).toInt()}%",
-                (l.volume * 100).toInt()) { v ->
-                pushUndoLight(); engine.setVolume(l, v / 100f); markDirty()
-            })
+                "Open the audio mixer" to { setSheet("mixer") })
             val soloNote = UI.label(this,
-                "Solo = only soloed sources are heard (nothing else is changed or lost).",
+                "Level, mute, solo and loop for every source live in the Audio " +
+                    "sheet. Solo = only soloed sources are heard (nothing is lost).",
                 dim = true, size = 9.5f)
             val snlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -2262,48 +2355,9 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             panelContent.addView(soloNote)
         }
 
-        if (l.isText()) {
-            section("TEXT")
-            panelButtonRow(panelContent,
-                "Edit text" to { editTextLayer(l) },
-                "Change color" to { cycleTextColor(l); openAdvancedSheet(l) })
-            panelContent.addView(sliderRow("Text size",
-                (l.fontSizeN * 1000).toInt().coerceIn(10, 300)) { v ->
-                pushUndoLight(); l.fontSizeN = v / 1000f; markDirty(); stage.refresh()
-            })
-            panelButtonRow(panelContent,
-                (if (l.shadow) "Shadow: on" else "Shadow: off") to {
-                    pushUndo(); l.shadow = !l.shadow; markDirty(); stage.refresh()
-                    openAdvancedSheet(l)
-                })
-        }
-
-        section("ARRANGE — z-order (top of the list = front)")
+        section("LAYOUT")
         panelButtonRow(panelContent,
-            "Bring forward" to { ctrl.moveZ(l.id, "up"); openAdvancedSheet(l) },
-            "Send backward" to { ctrl.moveZ(l.id, "down"); openAdvancedSheet(l) })
-        panelButtonRow(panelContent,
-            "To front" to { ctrl.moveZ(l.id, "front"); openAdvancedSheet(l) },
-            "To back" to { ctrl.moveZ(l.id, "back"); openAdvancedSheet(l) })
-        panelButtonRow(panelContent,
-            "Top-left" to { ctrl.anchor(l.id, "tl") },
-            "Top" to { ctrl.anchor(l.id, "tc") },
-            "Top-right" to { ctrl.anchor(l.id, "tr") })
-        panelButtonRow(panelContent,
-            "Bottom-left" to { ctrl.anchor(l.id, "bl") },
-            "Bottom" to { ctrl.anchor(l.id, "bc") },
-            "Bottom-right" to { ctrl.anchor(l.id, "br") })
-        panelButtonRow(panelContent,
-            "Center" to { ctrl.center(l.id) },
-            "Reset position" to { ctrl.resetGeometry(l.id) })
-        if (!l.isText()) {
-            panelButtonRow(panelContent,
-                "Set as background" to { ctrl.setAsCanvasBackground(l.id) },
-                "Duplicate" to { duplicateLayer(l) })
-        } else {
-            panelButtonRow(panelContent,
-                "Duplicate" to { duplicateLayer(l) })
-        }
+            "Open Layers for order & position" to { setSheet("sources") })
 
         section("DANGER")
         val del = UI.btn(this, "Delete source", accent = false, small = false)

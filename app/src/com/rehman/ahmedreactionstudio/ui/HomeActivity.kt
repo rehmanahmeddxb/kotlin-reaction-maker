@@ -111,6 +111,7 @@ class HomeActivity : Activity() {
         val newBtn = UI.btn(this, "+  New project", accent = true)
         newBtn.layoutParams = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, UI.dp(this, 50))
+        newBtn.contentDescription = "Create a new project"
         newBtn.setOnClickListener { showNewDialog() }
         root.addView(newBtn)
 
@@ -147,6 +148,7 @@ class HomeActivity : Activity() {
         val rowLp = LinearLayout.LayoutParams(0, UI.dp(this, 40), 1f)
         for (a in Aspect.entries) {
             val c = UI.chip(this, a.code)
+            c.contentDescription = "Canvas aspect ratio ${a.code}"
             c.layoutParams = rowLp
             c.setOnClickListener {
                 val sel = chips.values.firstOrNull { it === c } ?: return@setOnClickListener
@@ -270,6 +272,7 @@ class HomeActivity : Activity() {
 
             // actions
             val del = UI.chip(ctx, "\u2715")
+            del.contentDescription = "Delete project ${p.name}"
             del.setTextColor(UI.DANGER)
             del.setOnClickListener {
                 AlertDialog.Builder(ctx)
@@ -284,6 +287,7 @@ class HomeActivity : Activity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT)
             actionCol.gravity = Gravity.CENTER_VERTICAL or Gravity.END
             val dup = UI.chip(ctx, "Copy")
+            dup.contentDescription = "Duplicate project ${p.name}"
             dup.setOnClickListener {
                 store.duplicate(p.id)
                 refresh()

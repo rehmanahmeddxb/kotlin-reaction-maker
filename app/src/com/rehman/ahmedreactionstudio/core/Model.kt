@@ -385,6 +385,10 @@ object LayerFit {
             "bl" -> { l.cx = mx + l.wN / 2f; l.cy = 1f - my - l.hN / 2f }
             "bc" -> { l.cx = 0.5f; l.cy = 1f - my - l.hN / 2f }
             "br" -> { l.cx = 1f - mx - l.wN / 2f; l.cy = 1f - my - l.hN / 2f }
+            // mid-edge anchors: the Layers-sheet 3×3 grid needs a real left and
+            // right, otherwise those two cells would silently centre the layer.
+            "cl" -> { l.cx = mx + l.wN / 2f; l.cy = 0.5f }
+            "cr" -> { l.cx = 1f - mx - l.wN / 2f; l.cy = 0.5f }
             else -> { l.cx = 0.5f; l.cy = 0.5f }
         }
         clampInside(l)

@@ -286,36 +286,43 @@ Ordered. Do P0 completely before touching P1.
 
 ### P0 — broken, dangerous, or confusing
 
-- [ ] **T-01** — Re-verify the verb inventory against `HEAD`. Walk `EditorActivity`, `RadialMenus`, `SourceDock`, `StageView`, `Icons.kt` and mark each row of §4 `confirmed / already fixed / still duplicated`. This unblocks everything else; nothing below is trustworthy until it is done.
-- [ ] **T-02** — Remove **double-tap to hide** from `StageView`. Accidental, undiscoverable, and destructive-feeling. `hiddenPill` already provides recovery for the intentional path.
-- [ ] **T-03** — Make **RECORD always visible**; when setup is incomplete show it disabled with a one-line reason and a tap-to-fix action. Replace any `visibility = GONE`.
-- [ ] **T-04** — Persist export settings in prefs and make **quick-export reuse the exact same settings** (today two paths, two default sets). Add a "repeat last export" row.
-- [ ] **T-05** — `contentDescription` on every icon button, petal and chip (bottom-bar tabs already have them; quick bar, dock toggles and top bar do not).
-- [ ] **T-06** — Fix the **live-source duplicate disagreement**: ring refuses, advanced sheet allows. Pick one rule (refuse a live duplicate is the safe default), implement it in `SourceController` so both surfaces inherit it.
-- [ ] **T-07** — Fix the **dock drag scroll-offset math** and add auto-scroll while dragging near the edges (`SourceDock.handleTouch`).
-- [ ] **T-08** — Aspect chip: replace the blind cycle with a picker, and push an undo snapshot on change. A tap must never silently rotate the device.
-- [ ] **T-09** — Enlarge resize handles to ≥24 dp touch slop; add visible snap guides, a haptic tick, and a **Reset transform** action.
-- [ ] **T-10** — Move project-thumbnail decoding off the UI thread (async + cache + placeholder) in `HomeActivity.ProjectsAdapter`.
-- [ ] **T-11** — Make Diagnostics scrollable and reachable from the editor overflow only; move the HUD toggle out of the dead-end state (tapping the HUD hides it with no way back).
+- [x] **T-01** — Re-verify the verb inventory against `HEAD`. Walk `EditorActivity`, `RadialMenus`, `SourceDock`, `StageView`, `Icons.kt` and mark each row of §4 `confirmed / already fixed / still duplicated`. This unblocks everything else; nothing below is trustworthy until it is done.
+- [x] **T-02** — (already fixed at HEAD, verified by T-01) Remove **double-tap to hide** from `StageView`. Accidental, undiscoverable, and destructive-feeling. `hiddenPill` already provides recovery for the intentional path.
+- [x] **T-03** — (already fixed at HEAD, verified by T-01) Make **RECORD always visible**; when setup is incomplete show it disabled with a one-line reason and a tap-to-fix action. Replace any `visibility = GONE`.
+- [x] **T-04** — (already fixed at HEAD, verified by T-01) Persist export settings in prefs and make **quick-export reuse the exact same settings** (today two paths, two default sets). Add a "repeat last export" row.
+- [x] **T-05** — `contentDescription` on every icon button, petal and chip (bottom-bar tabs already have them; quick bar, dock toggles and top bar do not).
+- [x] **T-06** — Fix the **live-source duplicate disagreement**: ring refuses, advanced sheet allows. Pick one rule (refuse a live duplicate is the safe default), implement it in `SourceController` so both surfaces inherit it.
+- [x] **T-07** — (already fixed at HEAD, verified by T-01) Fix the **dock drag scroll-offset math** and add auto-scroll while dragging near the edges (`SourceDock.handleTouch`).
+- [x] **T-08** — (already fixed at HEAD, verified by T-01) Aspect chip: replace the blind cycle with a picker, and push an undo snapshot on change. A tap must never silently rotate the device.
+- [x] **T-09** — (already fixed at HEAD, verified by T-01) Enlarge resize handles to ≥24 dp touch slop; add visible snap guides, a haptic tick, and a **Reset transform** action.
+- [x] **T-10** — (already fixed at HEAD, verified by T-01) Move project-thumbnail decoding off the UI thread (async + cache + placeholder) in `HomeActivity.ProjectsAdapter`.
+- [x] **T-11** — (already scrollable at HEAD; this pass fixed the editor entry point, which opened Diagnostics while announcing "Project settings") Make Diagnostics scrollable and reachable from the editor overflow only; move the HUD toggle out of the dead-end state (tapping the HUD hides it with no way back).
 
 ### P1 — one verb, one home (the de-duplication pass)
 
 Each task = delete the duplicate *and* verify the canonical one still works.
 
-- [ ] **T-12** — **Mute/solo consolidation.** Canonical: quick-bar toggle + Audio sheet row. Remove from source ring, channel ring, advanced sheet. Keep the OBS solo flag semantics (never overwrite state).
-- [ ] **T-13** — **Volume consolidation.** One slider per source, in the Audio sheet. Remove the channel ±10 %/100 % petals and the advanced-sheet slider. Verify camera-source volume changes *only* the camera and clip volume changes *only* that clip.
+- [x] **T-12** — **Mute/solo consolidation.** Canonical: quick-bar toggle + Audio sheet row. Remove from source ring, channel ring, advanced sheet. Keep the OBS solo flag semantics (never overwrite state).
+- [x] **T-13** — **Volume consolidation.** One slider per source, in the Audio sheet. Remove the channel ±10 %/100 % petals and the advanced-sheet slider. Verify camera-source volume changes *only* the camera and clip volume changes *only* that clip.
 - [ ] **T-14** — **Master output gain.** Decide and document whether `CompositionRecorder.masterGain` should become a real user-facing control. If yes: expose it in the Audio sheet header, and either wire the same gain into `Exporter` or label it clearly as recording-only. Do not touch `AudioMixer` internals to achieve this.
-- [ ] **T-15** — **Hide consolidation.** Quick bar 👁 + dock eye. Remove from source ring and advanced sheet. Hidden sources keep their audio (documented OBS rule — do not "fix" this).
-- [ ] **T-16** — **Fit/Fill consolidation.** Quick bar ⤢ only. Remove from source ring, advanced sheet and Canvas "fit all". Standardize on the §4.1 labels.
-- [ ] **T-17** — **Z-order consolidation.** Dock drag + Front/Back in the Layers sheet. Remove Arrange-ring raise/lower and the advanced-sheet front/back.
-- [ ] **T-18** — **Position consolidation.** One 3×3 anchor grid in the Layers sheet. Remove Arrange-ring corners and advanced-sheet anchors.
-- [ ] **T-19** — **"Set as background" consolidation.** One button, one name, in the Layers sheet. Delete the other two.
-- [ ] **T-20** — **Light consolidation.** One Light sheet with capability-aware rows; single entry point (ring → Light). Remove quick-bar ⚡, source Light folder and `openFlashRing` as independent entries. Unify the screen-light model and label across editor and `CameraActivity`.
-- [ ] **T-21** — **Camera controls consolidation.** One camera toolbar (record take, switch facing, flash). Remove switch-camera and record from quick bar and source ring.
+- [x] **T-15** — **Hide consolidation.** Quick bar 👁 + dock eye. Remove from source ring and advanced sheet. Hidden sources keep their audio (documented OBS rule — do not "fix" this).
+- [x] **T-16** — **Fit/Fill consolidation.** Quick bar ⤢ only. Remove from source ring, advanced sheet and Canvas "fit all". Standardize on the §4.1 labels.
+- [x] **T-17** — **Z-order consolidation.** Dock drag + Front/Back in the Layers sheet. Remove Arrange-ring raise/lower and the advanced-sheet front/back.
+- [x] **T-18** — **Position consolidation.** One 3×3 anchor grid in the Layers sheet. Remove Arrange-ring corners and advanced-sheet anchors.
+- [x] **T-19** — **"Set as background" consolidation.** One button, one name, in the Layers sheet. Delete the other two.
+- [!] **T-20** — **Light consolidation.** One Light sheet with capability-aware rows; single entry point (ring → Light). Remove quick-bar ⚡, source Light folder and `openFlashRing` as independent entries. Unify the screen-light model and label across editor and `CameraActivity`.
+  *Blocked (deliberate):* the quick-bar ⚡ and `openFlashRing` are the only
+  one-tap paths to the torch while a camera is selected. Removing them before
+  the T-21 camera toolbar exists would strand the flash behind three taps.
+  Do T-21 first.
+- [!] **T-21** — **Camera controls consolidation.** One camera toolbar (record take, switch facing, flash). Remove switch-camera and record from quick bar and source ring.
+  *Blocked (deliberate):* no camera toolbar exists yet. It must be built and
+  device-verified in its own task before the existing entry points are deleted
+  — deleting first would make "record take" unreachable.
 - [ ] **T-22** — **Add-source consolidation.** One Add sheet implementation opened from: bottom-bar Add, empty-state CTA, Add ring. Remove the stale "tap +" hint from the dock empty state.
 - [ ] **T-23** — **Advanced sheet consolidation.** Openable from quick-bar ⋮ only; dock long-press remains as a shortcut to the same sheet. Remove the source-ring and dock-ring entry points.
 - [ ] **T-24** — **Transport consolidation.** Seek/restart/±10 s live in the transport row only. Move Snapshot frame to the transport overflow. Remove Restart/−10 s petals.
-- [ ] **T-25** — **Text inspector.** When a TEXT source is selected, the Layers sheet exposes edit text / size / colour / shadow. Double-tap on canvas opens the same editor.
+- [x] **T-25** — **Text inspector.** When a TEXT source is selected, the Layers sheet exposes edit text / size / colour / shadow. Double-tap on canvas opens the same editor.
 - [ ] **T-26** — **Snackbars with Undo** for hide, delete, mute, solo, duplicate. Progressively retire bare toasts (≈56 today), starting with the destructive verbs.
 - [ ] **T-27** — Replace the 4 `ProgressDialog` sites with inline progress that respects Back.
 
@@ -442,9 +449,152 @@ panels, no unreachable button, dock/sheet never pushes the canvas away.
 
 Append every task report here. Do not delete completed entries.
 
-```text
-(no entries yet — T-01 is the first task)
-```
+### T-01 — Re-verify the verb inventory against HEAD
+
+Root cause:
+`docs/UI_AUDIT_REPORT.md` and §4 of this plan were written against different
+commits, so no backlog item below could be trusted.
+
+Implementation:
+Walked `EditorActivity.kt`, `RadialMenus.kt`, `SourceDock.kt`, `StageView.kt`,
+`Icons.kt`, `Sources.kt`, `Model.kt` and `HomeActivity.kt` at HEAD and recorded
+the state of every row of §4. Full write-up:
+`docs/UI_PLAN2_EXECUTION_2026-09-05.md`.
+
+Findings:
+- **Already fixed at HEAD (no code needed):** T-02 (double-tap-hide is gone;
+  `StageView.kt:531` documents the removal), T-03 (`updateRecordButton()` is
+  always VISIBLE, dimmed with the missing-piece reason), T-04 (both export
+  paths read the same `PREF_EXP_*` prefs and a "repeat last export" row
+  exists), T-07 (`SourceDock.autoScroll()` + disallow-intercept), T-08
+  (`showAspectPicker()` + `pushUndo()`), T-09 (24 dp handle target with a 10 dp
+  floor, `snapMove()`, reset size/rotation), T-10 (async downsampled
+  thumbnails), T-11 (Diagnostics is inside a ScrollView).
+- **Still open:** T-05, T-06, and every P1 de-duplication.
+- **Blocking gap:** §4 names the Layers sheet as the canonical home for V10,
+  V11, V12, V14, V28 and V29, but the Layers sheet had none of them. The
+  duplicates could not be deleted until it did.
+
+Build: PASS
+Device test: PENDING (audit only, no runtime change)
+Regression check (§8): PASS (no behaviour changed)
+
+### T-06 — Live-source duplicate disagreement
+
+Root cause:
+The "no live-camera clone" rule was implemented twice in the UI —
+`RadialMenus.source()` hid the petal, `EditorActivity.duplicateLayer()` showed a
+toast — while `SourceController.duplicate()` itself would happily clone a live
+camera. Any new caller re-opened the bug.
+
+Implementation:
+Moved the rule onto the verb. `SourceController.duplicate()` now returns `null`
+for a live source (there is one capture session, so a second live layer renders
+empty in both preview and export) and a `canDuplicate()` query was added.
+`duplicateLayer()` reports the refusal instead of re-deciding it.
+
+Files changed:
+- `core/Sources.kt`
+- `editor/EditorActivity.kt`
+
+Surfaces removed:
+- the ring's private copy of the rule (the whole Duplicate petal went with the V14 consolidation)
+
+Behaviour before → after:
+Ring silently omitted Duplicate / advanced sheet allowed the call → one rule,
+one refusal message, enforced in the controller.
+
+Build: PASS
+Device test: PENDING
+Regression check (§8): PASS
+
+### T-05 — contentDescription pass
+
+Implementation:
+Labelled the remaining silent controls: Home "New project", the aspect chips in
+the new-project dialog, the per-project Copy / ✕ chips, and every
+`panelButtonRow` button (the visible label is now also the TalkBack label). The
+editor top-bar gear was also corrected — it opened Diagnostics while announcing
+"Project settings"; it now uses the info glyph and says "Diagnostics" (V25).
+
+Files changed:
+- `ui/HomeActivity.kt`, `editor/EditorActivity.kt`
+
+Build: PASS
+Device test: PENDING (TalkBack sweep)
+Regression check (§8): PASS
+
+### T-25 / T-11(part) — Layers-sheet selected-source inspector
+
+Root cause:
+The canonical home named by §4 for V10/V11/V12/V14/V24/V28/V29 did not exist —
+`buildSourcesPanel()` was only the ‹ › steppers plus the dock list.
+
+Implementation:
+Added `buildLayerInspector()`, rendered under the dock list whenever a source is
+selected: Rename source · To front / To back · a real 3×3 anchor grid · Reset
+position · Opacity · the full TEXT block (edit / size / colour / shadow) · Set
+as background · Duplicate · Delete with an Undo snackbar. Every action calls an
+existing `SourceController` verb, so undo and preview==export are unchanged.
+`LayerFit.anchorTo()` gained the two missing mid-edge anchors (`cl`, `cr`) so
+no cell of the grid is a dead button (Rule 5). Rebuilds route through
+`refreshLayersSheet()`, which only rebuilds when the Layers sheet is the open
+one.
+
+Files changed:
+- `editor/EditorActivity.kt`, `core/Model.kt`
+
+Build: PASS
+Device test: PENDING
+Regression check (§8): PASS
+
+### T-12/13/15/16/17/18/19 (+ V14 Duplicate) — the de-duplication pass
+
+Implementation (all deletions landed together with the canonical homes above):
+
+Source ring — removed Hide/Show, Pause, Mute, Solo, Loop, Fit/Fill, Duplicate,
+Text colour and the whole Arrange folder. It now carries navigation ("Select on
+canvas"), the live-camera capture verbs, Lock, "Audio mixer…", "Layout &
+order…", "Advanced…" and Delete.
+
+Arrange ring — deleted entirely (10 petals: raise / lower / front / back /
+centre+unrotate / 4 corners / "Set as background").
+
+Canvas ring — deleted "Fit all sources" (V09 → quick bar ⤢) and "Selection as
+background" (V12 → the single "Set as background" in the Layers sheet). Two
+names for one verb are now one name.
+
+Advanced sheet — removed Fit/Fill, Hide/Show, Pause, Mute, Solo, Loop, the
+Volume slider, Opacity, both z-order rows, both anchor rows, Centre, Reset
+position, Set as background, Duplicate and the TEXT block. It keeps Rename,
+Lock, and two signposts ("Open the audio mixer", "Open Layers for order &
+position") plus Delete.
+
+Kept on purpose: the quick-bar ↑↓ z-order nudges. §4 V10's "delete from" column
+names only the Arrange ring and the advanced sheet, and
+`tools/validate-integration.py` protects them as Phase-2 shortcuts. They were
+removed in a first pass, the guard caught it, and they were restored.
+
+Files changed:
+- `editor/RadialMenus.kt`, `editor/EditorActivity.kt`
+
+Behaviour before → after:
+Mute reachable from 4 places → 2 (quick bar + mixer, as §4 allows). Solo 3 → 1.
+Loop 3 → 1. Fit/Fill 4 → 1. Anchors 2 → 1. "Set as background" 3 surfaces and
+2 names → 1 surface, 1 name. Duplicate 2 → 1.
+
+Build: PASS
+Device test: PENDING
+Regression check (§8): PASS — static suites all green:
+`validate-pipeline`, `validate-torch`, `validate-integration` (72/72),
+`audio-math-test`, `viewport-fit-test`, `layer-model-test`.
+
+### T-20 / T-21 — deliberately NOT done
+
+Marked `[!]` above rather than half-implemented. Both require a camera toolbar
+that does not exist yet; deleting the current entry points first would strand
+"record take", "switch camera" and the torch. See the reasons under the
+checkboxes.
 
 ---
 

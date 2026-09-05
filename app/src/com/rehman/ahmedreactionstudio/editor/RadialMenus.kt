@@ -211,10 +211,15 @@ object RadialMenus {
             val out = ArrayList<RadialMenuView.Item>()
             out.add(item(R.drawable.ic_check, "Select on canvas",
                 active = h.selected()?.id == l.id) { h.selectId(l.id) })
-            out.add(item(if (l.visible) R.drawable.ic_eye_off else R.drawable.ic_eye,
-                if (l.visible) "Hide" else "Show", active = !l.visible, keepOpen = true) {
-                h.ctrl.toggleVisible(l.id)
-            })
+            // UI Plan2 §4, one verb one home — deleted from this ring:
+            //   Hide/Show (V03) → quick bar 👁 + dock eye
+            //   Pause source (V04) → quick bar ⏯ + dock status line
+            //   Mute (V01) / Solo (V02) / Loop (V32) → Audio sheet
+            //   Fit/Fill (V09) → quick bar ⤢
+            //   Duplicate (V14) → Layers sheet
+            //   Arrange folder (V10/V11/V12) → Layers sheet inspector
+            // The ring keeps only navigation, camera capture and the two verbs
+            // that have no other one-tap home.
 
             if (l.isLive()) {
                 val rec = h.isCameraRecording(l)
@@ -231,41 +236,20 @@ object RadialMenus {
                     flash(h, l.id)
                 })
             } else if (l.isClip()) {
-                out.add(item(if (l.playing) R.drawable.ic_pause else R.drawable.ic_play,
-                    if (l.playing) "Pause" else "Play", active = !l.playing, keepOpen = true) {
-                    h.toggleSourcePlay(l)
-                })
-                val m = h.ctrl.effectiveMuted(l)
-                out.add(item(if (m) R.drawable.ic_volume_off else R.drawable.ic_volume,
-                    if (m) "Unmute" else "Mute", active = m, keepOpen = true) {
-                    h.ctrl.toggleMuted(l.id)
-                })
-                out.add(item(R.drawable.ic_loop, if (l.loop) "Loop: on" else "Loop: off",
-                    active = l.loop, keepOpen = true) { h.ctrl.toggleLoop(l.id) })
-                out.add(item(R.drawable.ic_star, if (l.solo) "Solo: on" else "Solo",
-                    active = l.solo, keepOpen = true) { h.ctrl.toggleSolo(l.id) })
+                // audio verbs (mute/solo/loop/level) live in the Audio sheet
+                out.add(item(R.drawable.ic_volume, "Audio mixer…") { h.openMixerPanel() })
             }
 
             if (l.isText()) {
                 out.add(item(R.drawable.ic_edit, "Edit text") { h.editText(l) })
-                out.add(item(R.drawable.ic_palette, "Colour", keepOpen = true) { h.cycleTextColor(l) })
-            } else {
-                // Naming standard (used in every surface): Fit = whole frame,
-                // Fill = crop to box. Never "Fill" for background promotion.
-                out.add(item(if (l.fit == Layer.FIT_FIT) R.drawable.ic_fit else R.drawable.ic_fill,
-                    if (l.fit == Layer.FIT_FIT) "Fit: whole frame" else "Fill: crop to box",
-                    active = l.fit == Layer.FIT_FIT, keepOpen = true) { h.ctrl.toggleFit(l.id) })
             }
 
             out.add(item(if (l.locked) R.drawable.ic_lock else R.drawable.ic_lock_open,
                 if (l.locked) "Unlock" else "Lock", active = l.locked, keepOpen = true) {
                 h.ctrl.toggleLocked(l.id)
             })
-            out.add(folder(R.drawable.ic_drag, "Arrange") { arrange(h, l.id) })
+            out.add(item(R.drawable.ic_drag, "Layout & order…") { h.openDockPanel() })
             out.add(item(R.drawable.ic_settings, "Advanced…") { h.openAdvanced(l) })
-            if (!l.isLive()) out.add(item(R.drawable.ic_copy, "Duplicate") {
-                h.ctrl.duplicate(l.id)
-            })
             out.add(item(R.drawable.ic_delete, "Delete", danger = true) { h.ctrl.delete(l.id) })
             out
         }
@@ -283,25 +267,10 @@ object RadialMenus {
         flashItems(h, l)
     }
 
-    fun arrange(h: Host, id: String): RadialMenuView.Level = RadialMenuView.Level(
-        R.drawable.ic_drag, "Arrange", "position · size · z-order"
-    ) {
-        val l = h.project.layerById(id)
-        if (l == null) emptyList() else listOf(
-            item(R.drawable.ic_up, "Bring forward", keepOpen = true) { h.ctrl.moveZ(l.id, "up") },
-            item(R.drawable.ic_down, "Send backward", keepOpen = true) { h.ctrl.moveZ(l.id, "down") },
-            item(R.drawable.ic_up, "To front", keepOpen = true) { h.ctrl.moveZ(l.id, "front") },
-            item(R.drawable.ic_down, "To back", keepOpen = true) { h.ctrl.moveZ(l.id, "back") },
-            item(R.drawable.ic_reset, "Centre + unrotate", keepOpen = true) { h.ctrl.resetGeometry(l.id) },
-            item(R.drawable.ic_corner_tl, "Corner: top-left", keepOpen = true) { h.ctrl.anchor(l.id, "tl") },
-            item(R.drawable.ic_corner_tr, "Corner: top-right", keepOpen = true) { h.ctrl.anchor(l.id, "tr") },
-            item(R.drawable.ic_corner_bl, "Corner: bottom-left", keepOpen = true) { h.ctrl.anchor(l.id, "bl") },
-            item(R.drawable.ic_corner_br, "Corner: bottom-right", keepOpen = true) { h.ctrl.anchor(l.id, "br") },
-            item(R.drawable.ic_fill, "Set as background") {
-                h.ctrl.setAsCanvasBackground(l.id)
-            }
-        )
-    }
+    // The ARRANGE ring is deleted (UI Plan2 T-17/T-18/T-19). Z-order,
+    // the 3×3 anchor grid, "Reset position" and "Set as background" all have a
+    // single home now: the selected-source inspector in the Layers sheet,
+    // reachable from the ring via "Layout & order…".
 
     // ================= ADD =================
 
@@ -338,12 +307,10 @@ object RadialMenus {
                 h.setAspect(Aspect.R11)
             },
             folder(R.drawable.ic_palette, "Background") { background(h) },
-            item(R.drawable.ic_fullscreen, "Full canvas") { h.enterFullCanvas() },
-            item(R.drawable.ic_fit, "Fit all sources", keepOpen = true) { h.fitAllSources() },
-            item(R.drawable.ic_fill, "Selection as background", keepOpen = true) {
-                val s = h.selected()
-                if (s == null) h.toast("Select a source first") else h.ctrl.setAsCanvasBackground(s.id)
-            }
+            item(R.drawable.ic_fullscreen, "Full canvas") { h.enterFullCanvas() }
+            // Deleted: "Fit all sources" (V09 lives on the quick bar ⤢) and
+            // "Selection as background" (V12 lives in the Layers sheet under
+            // its single name, "Set as background").
         )
     }
 
@@ -386,7 +353,6 @@ object RadialMenus {
                 active = hudOn, keepOpen = true) { h.toggleStatsHud() },
             item(R.drawable.ic_undo, "Undo", keepOpen = true) { h.undo() },
             item(R.drawable.ic_redo, "Redo", keepOpen = true) { h.redo() },
-            item(R.drawable.ic_info, "Diagnostics") { h.openDiagnostics() },
             item(R.drawable.ic_back, "Close project", danger = true) { h.closeProject() }
         )
     }
