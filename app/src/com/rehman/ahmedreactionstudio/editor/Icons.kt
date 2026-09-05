@@ -67,8 +67,11 @@ class IconBtn(context: Context) : FrameLayout(context) {
         isFocusable = true
     }
 
-    fun setIcon(resId: Int, tint: Int = UI.FG) {
+    fun setIcon(resId: Int, tint: Int = UI.FG, desc: String? = null) {
         image.setImageDrawable(Ic.get(context, resId, tint))
+        // TalkBack label for an otherwise silent icon button. Call sites pass a
+        // short verb ("Mute", "Hide"); when null the previous label is kept.
+        if (desc != null) contentDescription = desc
     }
 
     /** animated icon swap: quick dip + swap + spring back */

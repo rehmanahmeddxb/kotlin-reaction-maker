@@ -70,10 +70,12 @@ object Exporter {
         /** index into [EncoderConfig.Quality]: 0 tiny, 1 small, 2 balanced, 3 high */
         val quality: Int = 2,
         val codec: Codec = Codec.H264,
-        val outFile: File
+        val outFile: File,
+        /** max-compatibility mode: H.264 at the call site, tight GOP, default rate control */
+        val compat: Boolean = false
     )
 
-    class Result(val ok: Boolean, val message: String, val file: File?)
+    class Result(val ok: Boolean, val message: String, val file: File?, val retry: Boolean = false)
 
     /** short-side sizing; keeps the canvas aspect, dims rounded to a multiple of 16 (encoder alignment) */
     fun chooseSize(cw: Int, ch: Int, maxDim: Int): Pair<Int, Int> {
@@ -142,6 +144,27 @@ object Exporter {
         onProgress: (Int, String) -> Unit,
         onDone: (Result) -> Unit
     ) {
+        exportInternal(p, store, opts, cancel, onProgress) { res ->
+            // A file the device itself cannot play back is never reported as
+            // success: retry once with max-compatibility settings (H.264 +
+            // safe encoder config) before admitting failure.
+            if (!res.ok && res.retry && !cancel.get()) {
+                try { opts.outFile.delete() } catch (_: Exception) { }
+                onProgress(2, "Trying compatibility mode (H.264)")
+                exportInternal(p, store, opts.copy(codec = Codec.H264, compat = true),
+                    cancel, onProgress, onDone)
+            } else onDone(res)
+        }
+    }
+
+    internal fun exportInternal(
+        p: Project,
+        store: ProjectStore,
+        opts: Options,
+        cancel: AtomicBoolean,
+        onProgress: (Int, String) -> Unit,
+        onDone: (Result) -> Unit
+    ) {
         Thread({
             var res: Result = Result(false, "Unknown export failure", null)
             var vCodec: MediaCodec? = null
@@ -168,14 +191,26 @@ object Exporter {
                 // NV12 packing for SemiPlanar; I420 packing for Planar; Flexible treated as NV12
                 val nv12 = colorFmt != MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar
 
-                // OBS-class tuning: long GOP + VBR + B-frames + resolution-aware
-                // bitrate. This is where "hours of footage in a few hundred MB"
-                // comes from; see EncoderConfig for the reasoning.
+                // OBS-class tuning: long GOP + VBR + resolution-aware bitrate.
+                // This is where "hours of footage in a few hundred MB" comes
+                // from; see EncoderConfig for the reasoning.
                 val vFormat = EncoderConfig.videoFormat(
-                    opts.codec.mime, w, h, fps, colorFmt, quality, liveRecorder = false
+                    opts.codec.mime, w, h, fps, colorFmt, quality,
+                    liveRecorder = false, compat = opts.compat
                 )
                 vCodec = MediaCodec.createByCodecName(encName)
-                vCodec.configure(vFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                try {
+                    vCodec.configure(vFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                } catch (e: Exception) {
+                    // Tuned config rejected by this encoder: one immediate retry
+                    // with the safe config before giving up on the codec.
+                    if (opts.compat) throw e
+                    val safe = EncoderConfig.videoFormat(
+                        opts.codec.mime, w, h, fps, colorFmt, quality,
+                        liveRecorder = false, compat = true
+                    )
+                    vCodec.configure(safe, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                }
                 vCodec.start()
                 val muxerFmt = if (opts.codec.webm) MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM
                 else MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
@@ -394,7 +429,10 @@ object Exporter {
                             }
                             val aIdx = aCodec!!.dequeueInputBuffer(20_000)
                             if (aIdx >= 0) {
-                                aCodec!!.queueInputBuffer(aIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                // EOS carries the running PTS, not 0: a backwards
+                                // timestamp here breaks strict muxers/players.
+                                aCodec!!.queueInputBuffer(aIdx, 0, 0, audioPts(audioSamplesDone),
+                                    MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                                 aEosQueued = true
                             }
                         }
@@ -415,7 +453,8 @@ object Exporter {
                                 } else {
                                     val aIdx = aCodec!!.dequeueInputBuffer(20_000)
                                     if (aIdx >= 0) {
-                                        aCodec!!.queueInputBuffer(aIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                        aCodec!!.queueInputBuffer(aIdx, 0, 0, audioPts(audioSamplesDone),
+                                            MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                                         aEosQueued = true
                                     }
                                 }
@@ -433,15 +472,39 @@ object Exporter {
                     if (!progressed) finalStall++ else finalStall = 0
                 }
 
-                // validation: ensure file is playable (probe duration)
+                // Finalize BEFORE validating: the moov box (the index that makes
+                // an MP4 playable at all) is only written by muxer.stop(), so
+                // probing earlier always sees a "broken" file. The finally block
+                // below is then a no-op (everything already released + nulled).
+                var finalized = false
+                try {
+                    if (muxerStarted) { muxer?.stop(); finalized = true }
+                } catch (_: Exception) { }
+                try { muxer?.release() } catch (_: Exception) { }
+                muxer = null
+                try { vCodec?.stop() } catch (_: Exception) { }
+                try { vCodec?.release() } catch (_: Exception) { }
+                vCodec = null
+                try { aCodec?.stop() } catch (_: Exception) { }
+                try { aCodec?.release() } catch (_: Exception) { }
+                aCodec = null
+
+                // Strict validation: the file must exist, have real bytes, AND
+                // be probed back by this device's own framework (width + duration).
+                // Anything less is a failure that triggers the compat retry —
+                // a broken file is never reported as "Export complete".
                 res = if (cancel.get()) Result(false, "Export cancelled", null)
-                else if (opts.outFile.exists() && opts.outFile.length() > 0) {
+                else if (!finalized) Result(false,
+                    "Export could not finalize the video file.", null, retry = !opts.compat)
+                else if (!opts.outFile.exists() || opts.outFile.length() <= 4096L) Result(false,
+                    "Export produced an empty file.", null, retry = !opts.compat)
+                else {
                     val probed = try { MediaKit.probe(opts.outFile.absolutePath) } catch (_: Exception) { null }
-                    // accept if we have video width or duration >0; some WebM probes may miss width
-                    if (probed != null && probed.width == 0 && probed.durMs == 0L && opts.outFile.length() < 1024) {
-                        Result(false, "Export produced an unreadable file.", null)
+                    if (probed == null || probed.width <= 0 || probed.durMs <= 0L) {
+                        Result(false, "Export produced a file this device cannot play back.",
+                            null, retry = !opts.compat)
                     } else Result(true, "Export complete", opts.outFile)
-                } else Result(false, "Export produced an empty file.", null)
+                }
             } catch (e: Exception) {
                 res = Result(false, "Export error: ${e.message}", null)
             } finally {
@@ -463,6 +526,9 @@ object Exporter {
     private class ClipState(val pcm: ShortArray, val volume: Float, val loop: Boolean, val durMs: Long) {
         val durSamples: Long = durMs * 44100L / 1000L
     }
+
+    /** mono 44.1 kHz sample position -> presentation microseconds */
+    private fun audioPts(samples: Long): Long = samples * 1_000_000L / 44100L
 
     private fun encodeAudioChunk(codec: MediaCodec, clips: List<ClipState>, baseSamples: Long, chunk: Int) {
         val n = chunk
@@ -487,8 +553,7 @@ object Exporter {
             if (buf != null) {
                 buf.clear()
                 buf.asShortBuffer().put(mixed)
-                val ptsUs = baseSamples * 1_000_000L / 44100L
-                codec.queueInputBuffer(inIdx, 0, mixed.size * 2, ptsUs, 0)
+                codec.queueInputBuffer(inIdx, 0, mixed.size * 2, audioPts(baseSamples), 0)
             }
         }
     }

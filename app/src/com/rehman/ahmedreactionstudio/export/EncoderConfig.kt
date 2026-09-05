@@ -90,8 +90,17 @@ object EncoderConfig {
     /**
      * Build a fully tuned encoder format.
      *
-     * @param liveRecorder true for the real-time RECORD path (tighter GOP, and
-     *                     no B-frames so latency stays predictable)
+     * Reliability rules (learned from unplayable-export bugs):
+     *  - NEVER force a profile/level or B-frames: on several chipsets a
+     *    byte-buffer HW encoder configured with High@L4.1 + B-frames emits a
+     *    stream the device's own players reject outright ("file doesn't play
+     *    at all" despite megabytes of samples). The encoder default (usually
+     *    Baseline/Constrained, no B-frames) plays everywhere; VBR + long GOP
+     *    keep almost all of the size win.
+     *
+     * @param liveRecorder true for the real-time RECORD path (tighter GOP)
+     * @param compat true for the max-compatibility retry (tight GOP, CBR-ish
+     *               default rate control, H.264 only at the call site)
      */
     fun videoFormat(
         mime: String,
@@ -100,7 +109,8 @@ object EncoderConfig {
         fps: Int,
         colorFormat: Int,
         quality: Quality,
-        liveRecorder: Boolean = false
+        liveRecorder: Boolean = false,
+        compat: Boolean = false
     ): MediaFormat {
         val fmt = MediaFormat.createVideoFormat(mime, w, h)
         fmt.setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFormat)
@@ -108,46 +118,20 @@ object EncoderConfig {
         fmt.setInteger(MediaFormat.KEY_FRAME_RATE, fps)
         fmt.setInteger(
             MediaFormat.KEY_I_FRAME_INTERVAL,
-            if (liveRecorder) GOP_SECONDS_RECORD else GOP_SECONDS_EXPORT
+            if (liveRecorder || compat) GOP_SECONDS_RECORD else GOP_SECONDS_EXPORT
         )
 
         // VBR: spend bits on motion, save them on static passages. This alone is
-        // a large part of the OBS/Bandicam size advantage.
-        try {
-            fmt.setInteger(
-                MediaFormat.KEY_BITRATE_MODE,
-                MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
-            )
-        } catch (_: Throwable) { }
-
-        // B-frames: cheap extra compression for offline export.
-        if (!liveRecorder && Build.VERSION.SDK_INT >= 29) {
-            try { fmt.setInteger(MediaFormat.KEY_MAX_B_FRAMES, 2) } catch (_: Throwable) { }
+        // a large part of the OBS/Bandicam size advantage. Skipped in compat
+        // mode, where the encoder default rate control is the safest choice.
+        if (!compat) {
+            try {
+                fmt.setInteger(
+                    MediaFormat.KEY_BITRATE_MODE,
+                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+                )
+            } catch (_: Throwable) { }
         }
-
-        // Better entropy coding / tools where the encoder advertises support.
-        try {
-            when (mime) {
-                MediaFormat.MIMETYPE_VIDEO_AVC -> {
-                    fmt.setInteger(
-                        MediaFormat.KEY_PROFILE,
-                        MediaCodecInfo.CodecProfileLevel.AVCProfileHigh
-                    )
-                    if (Build.VERSION.SDK_INT >= 23) {
-                        fmt.setInteger(
-                            MediaFormat.KEY_LEVEL,
-                            MediaCodecInfo.CodecProfileLevel.AVCLevel41
-                        )
-                    }
-                }
-                MediaFormat.MIMETYPE_VIDEO_HEVC -> {
-                    fmt.setInteger(
-                        MediaFormat.KEY_PROFILE,
-                        MediaCodecInfo.CodecProfileLevel.HEVCProfileMain
-                    )
-                }
-            }
-        } catch (_: Throwable) { }
 
         // Keep colour metadata explicit so players do not guess (and shift hue).
         if (Build.VERSION.SDK_INT >= 24) {

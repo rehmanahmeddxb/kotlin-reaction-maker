@@ -51,7 +51,9 @@ class StageView @JvmOverloads constructor(
         fun onTransform()          // debounced autosave + UI refresh
         fun onTapEmpty()
         fun onChanged()            // immediate (gesture start) snapshot
-        fun onDoubleTap(l: Layer)  // quick action: hide / show (OBS plan §4.5)
+        fun onDoubleTap(l: Layer)  // text layers: edit; anything else: nothing
+        /** Tapping a locked layer: explain + offer unlock (never silent). */
+        fun onLockedTap(l: Layer)
         /**
          * Long press on the canvas: open the radial menu right under the
          * finger — the source's own ring when a source was pressed, the root
@@ -251,9 +253,11 @@ class StageView @JvmOverloads constructor(
         val halfW = r.width() / 2f
         val halfH = r.height() / 2f
         val (px, py) = toLayerLocal(x, y, l, r)
-        // generous finger target, but never so big that a small PiP is nothing
-        // but handles (that was the "cannot drag the PiP" bug)
-        val touch = min(UI.dpf(context, 20f), min(halfW, halfH) * 0.9f)
+        // Finger target: 24dp on normal layers, shrinking for small PiPs so a
+        // tiny layer is not nothing-but-handles (the "cannot drag the PiP"
+        // bug), with a 10dp floor so handles stay grabbable.
+        val touch = min(UI.dpf(context, 24f), min(halfW, halfH) * 0.9f)
+            .coerceAtLeast(UI.dpf(context, 10f))
         if (touch <= 0f) return null
         // rotate knob above the top edge
         val knobY = -halfH - UI.dpf(context, 18f)
@@ -322,7 +326,11 @@ class StageView @JvmOverloads constructor(
                 val hit = layerAt(downX, downY)
                 if (hit != null) {
                     if (hit.id != selId) hp.select(hit.id)
-                    if (hit.locked) { mode = Mode.NONE; startLayerId = null; return true }
+                    if (hit.locked) {
+                        mode = Mode.NONE; startLayerId = null
+                        hp.onLockedTap(hit)
+                        return true
+                    }
                     startGesture(hit, "MOVE")
                 } else {
                     hp.onTapEmpty()
@@ -390,7 +398,8 @@ class StageView @JvmOverloads constructor(
                 }
                 if (moved) host?.onTransform()
                 else {
-                    // clean tap on a layer: double-tap = hide / show quick action
+                    // clean second tap on a layer: text edits itself, media ignores
+                    // (double-tap-hide was removed: too easy to trigger by accident)
                     val x = lx(e); val y = ly(e)
                     val now = android.os.SystemClock.uptimeMillis()
                     val hit = layerAt(x, y)

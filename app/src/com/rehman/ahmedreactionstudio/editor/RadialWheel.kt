@@ -49,6 +49,8 @@ class RadialMenuView(context: Context) : FrameLayout(context) {
      *  - [submenu] non-null  → folder: opens a nested ring
      *  - [action] non-null   → leaf: performs the verb
      *  - [keepOpen]          → toggle: performs the verb, then redraws this ring
+     *  - [enabled] false     → shown dimmed with its reason in the label; taps
+     *                          are ignored (no more fake buttons that only toast)
      */
     class Item(
         val icon: Int,
@@ -58,7 +60,8 @@ class RadialMenuView(context: Context) : FrameLayout(context) {
         val badge: String? = null,
         val submenu: (() -> Level)? = null,
         val keepOpen: Boolean = false,
-        val action: (() -> Unit)? = null
+        val action: (() -> Unit)? = null,
+        val enabled: Boolean = true
     )
 
     /** One ring: a hub identity plus a live list of petals. */
@@ -291,6 +294,8 @@ class RadialMenuView(context: Context) : FrameLayout(context) {
         val pad = (hubSize * 0.28f).toInt()
         icon.setPadding(pad, pad, pad, pad)
         hub.addView(icon, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        hub.contentDescription = if (stack.size > 1)
+            "Back to ${stack[stack.size - 2].title}" else "Close menu"
         hub.setOnClickListener {
             performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
             if (stack.size > 1) pop() else dismiss(true)
@@ -420,8 +425,22 @@ class RadialMenuView(context: Context) : FrameLayout(context) {
             badgeView = b
         }
 
+        // TalkBack: every petal announces its label (+ state). Disabled petals
+        // announce that they are unavailable instead of looking tappable.
+        petal.contentDescription = pt.label + when {
+            !pt.enabled -> ". Unavailable"
+            pt.submenu != null -> ". Opens options"
+            else -> ""
+        }
+        petal.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+        if (!pt.enabled) {
+            petal.alpha = 0.38f
+            label.alpha = 0.55f
+        }
+
         petal.setOnClickListener {
             if (dismissing) return@setOnClickListener
+            if (!pt.enabled) return@setOnClickListener
             performHapticFeedback(HapticFeedbackConstants.CONFIRM)
             petal.animate().scaleX(1.16f).scaleY(1.16f).setDuration(85)
                 .setListener(object : AnimatorListenerAdapter() {
