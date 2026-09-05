@@ -117,6 +117,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     private lateinit var dockContainer: LinearLayout
     private lateinit var recChip: TextView
     private lateinit var statsHud: TextView
+    private lateinit var hiddenPill: TextView
     private lateinit var wheel: RadialMenuView
     private lateinit var dock: SourceDock
     override lateinit var ctrl: SourceController
@@ -165,6 +166,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     private lateinit var recordBtn: TextView
     private var recorder: CompositionRecorder? = null
     private var recording = false
+    private var camWaitTries = 0
     private val recordHandler = Handler(Looper.getMainLooper())
     private val recordTick = object : Runnable {
         override fun run() {
@@ -381,6 +383,23 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         shlp.marginStart = UI.dp(this, 10)
         shlp.leftMargin = UI.dp(this, 10)
         root.addView(statsHud, shlp)
+
+        hiddenPill = TextView(this)
+        hiddenPill.textSize = 11f
+        hiddenPill.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        hiddenPill.setTextColor(Color.WHITE)
+        hiddenPill.setPadding(UI.dp(this, 12), UI.dp(this, 6), UI.dp(this, 12), UI.dp(this, 6))
+        hiddenPill.background = Ic.pill(this, Color.argb(200, 18, 20, 28), 14f,
+            Color.argb(90, 255, 255, 255))
+        hiddenPill.visibility = View.GONE
+        hiddenPill.contentDescription = "Show hidden sources"
+        hiddenPill.setOnClickListener { setSheet("sources") }
+        val hplp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END)
+        hplp.topMargin = UI.dp(this, 58)
+        hplp.marginEnd = UI.dp(this, 10)
+        hplp.rightMargin = UI.dp(this, 10)
+        root.addView(hiddenPill, hplp)
 
         // ===== floating quick control bar (above the dock) =====
         val qWrap = HorizontalScrollView(this)
@@ -1118,13 +1137,13 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             .coerceAtLeast(0)
         val qualityNames = EncoderConfig.Quality.entries.map { "${it.label} — ${it.hint}" }
         val resNames = arrayOf("Small (~480p)", "Medium (~720p)", "Large (~1080p)")
-        val fpsNames = arrayOf("24 fps", "30 fps")
+        val fpsNames = arrayOf("24 fps", "30 fps", "60 fps")
         var quality = prefs.getInt(PREF_EXP_QUALITY, EncoderConfig.Quality.BALANCED.ordinal)
             .coerceIn(0, qualityNames.size - 1)
         var maxDim = prefs.getInt(PREF_EXP_MAXDIM, 720).let {
             if (it <= 480) 480 else if (it >= 1080) 1080 else 720
         }
-        var fps = if (prefs.getInt(PREF_EXP_FPS, 30) == 24) 24 else 30
+        var fps = prefs.getInt(PREF_EXP_FPS, 30).let { if (it == 24) 24 else if (it == 60) 60 else 30 }
 
         // one-tap repeat of the last export (same settings, no re-picking)
         if (prefs.getBoolean(PREF_HAD_EXPORT, false)) {
@@ -1181,8 +1200,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             maxDim = intArrayOf(480, 720, 1080)[it]; refreshEstimate()
         }
         valueRow("Quality", qualityNames[quality], qualityNames) { quality = it; refreshEstimate() }
-        valueRow("Frame rate", if (fps == 24) fpsNames[0] else fpsNames[1], fpsNames.toList()) {
-            fps = if (it == 0) 24 else 30; refreshEstimate()
+        valueRow("Frame rate", when (fps) { 24 -> fpsNames[0]; 60 -> fpsNames[2]; else -> fpsNames[1] }, fpsNames.toList()) {
+            fps = intArrayOf(24, 30, 60)[it]; refreshEstimate()
         }
 
         val est = UI.label(this, "", dim = false, size = 12f)
@@ -1570,8 +1589,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         head.gravity = Gravity.CENTER
         box.addView(head)
         val sub = UI.label(this,
-            "What plays full-screen behind your reaction?\nPick one — extras become PiP sources." +
-            "\nEverything else lives in the ◉ Studio radial menu.",
+            "This becomes your main canvas.\nAnything you add later is a layer on top.",
             dim = true, size = 12f)
         sub.gravity = Gravity.CENTER
         sub.setTextColor(Color.argb(220, 235, 238, 245))
@@ -1767,6 +1785,18 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         updateEmptyState()
         updateName()
         updateRecordButton()
+        updateHiddenPill()
+    }
+
+    private fun updateHiddenPill() {
+        if (!this::hiddenPill.isInitialized) return
+        val n = proj?.layers?.count { !it.visible } ?: 0
+        if (n <= 0) {
+            hiddenPill.visibility = View.GONE
+            return
+        }
+        hiddenPill.text = if (n == 1) "1 hidden source" else "$n hidden sources"
+        hiddenPill.visibility = View.VISIBLE
     }
 
     private fun markDirty() {
@@ -1821,6 +1851,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         durationLabel.text = "/ " + UI.fmtTime(dur.toLong())
         stage.refresh()
         engine.refreshFrames()
+        if (engine.anyPlaying()) engine.startSnapshots()
         markDirty()
     }
 
@@ -2007,6 +2038,15 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             if (src.parentFile?.absolutePath != store.mediaDir(projectId).absolutePath) src.delete()
         } catch (_: Exception) { }
         setSheet(null)
+        val asMain = role == "main" || (proj?.layers?.size == 1)
+        showSnack(
+            if (asMain) "\"$name\" fills the canvas — later additions become layers."
+            else "\"$name\" added as a layer. Drag, resize, or tap Layers to reorder."
+        )
+        if (type != LayerType.IMAGE && engineReady()) {
+            engine.startSnapshots()
+            engine.refreshFrames()
+        }
     }
 
     /**
@@ -2164,14 +2204,27 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             exportCancel.set(true)
         }
 
+        // Freeze a COPY of each live camera frame. The live buffers are
+        // triple-buffered and will be overwritten within ~120 ms; exporting
+        // the live reference produced a black camera box.
+        val live = HashMap<String, Bitmap>()
+        for (l in p.layers) if (l.isLive()) {
+            val src = if (engineReady()) engine.frameOf(l) else null
+            if (src != null && !src.isRecycled) {
+                try { live[l.id] = src.copy(Bitmap.Config.ARGB_8888, false) } catch (_: Exception) { }
+            }
+        }
+        if (engineReady()) { engine.pauseAll(); engine.stopSnapshots() }
+
         Exporter.export(p, store, Exporter.Options(fps = fps, maxDim = maxDim, quality = quality,
-            codec = codec, outFile = out),
+            codec = codec, outFile = out, liveFrames = live),
             exportCancel,
             { prog, msg -> runOnUiThread { updateProgress(prog, msg) } },
             { res ->
                 runOnUiThread {
                     exportRunning = false
                     dismissProgress()
+                    for (b in live.values) try { b.recycle() } catch (_: Exception) { }
                     if (res.ok && res.file != null) {
                         publishAndReport(res.file, fileName, mime, "Export complete", codec)
                     } else {
@@ -2253,6 +2306,18 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         val p = proj!!
         if (!p.layers.any { it.isLive() }) { UI.toast(this, "Add the live camera first"); return }
         if (!p.layers.any { it.isClip() }) { UI.toast(this, "Add a local video first"); return }
+        val liveL = p.layers.firstOrNull { it.isLive() }
+        if (liveL != null && engine.frameOf(liveL) == null) {
+            if (camWaitTries++ >= 20) {
+                camWaitTries = 0
+                UI.toast(this, "Camera has not produced a frame yet — check permissions")
+                return
+            }
+            showSnack("Waiting for the camera…")
+            recordHandler.postDelayed({ if (!recording) startCompositeRecording() }, 250)
+            return
+        }
+        camWaitTries = 0
         // the mic is the reaction audio — ask for it up front if not yet granted
         if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED) {
@@ -2633,19 +2698,31 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         runExport(1, 720, 30, codec)
     }
 
-    /** A live camera cannot be encoded — say so instead of exporting a hole. */
+    /**
+     * Live camera has no file to seek. Recording captures motion; offline
+     * export freezes the last camera frame (never a black hole).
+     */
     private fun warnLiveBeforeExport(): Boolean {
         val live = proj!!.layers.firstOrNull { it.isLive() && it.visible } ?: return false
+        val hasFrame = engineReady() && engine.frameOf(live) != null
         AlertDialog.Builder(this)
             .setTitle("Live camera on the canvas")
-            .setMessage("\"${live.name}\" is a LIVE feed — a live source has no recorded " +
-                "frames, so it would export as an empty box.\n\nRecord a take first " +
-                "(◉ Studio → Sources → the camera → Record take); the take replaces the " +
-                "live feed in place and keeps your framing.")
-            .setPositiveButton("Record a take") { _, _ -> toggleLiveCameraRecord(live) }
-            .setNegativeButton("Export anyway") { _, _ ->
+            .setMessage("\"${live.name}\" is a live feed. Tap START RECORDING to capture " +
+                "camera + video as they play.\n\nOffline export can only freeze the " +
+                (if (hasFrame) "current camera frame" else "camera as an empty box until a frame arrives") +
+                " — it cannot play the live camera forward.")
+            .setPositiveButton("Start recording") { _, _ -> recordButtonTap() }
+            .setNegativeButton(if (hasFrame) "Export frozen frame" else "Export anyway") { _, _ ->
+                val prefs = editorPrefs()
                 val avail = Exporter.Codec.available().ifEmpty { listOf(Exporter.Codec.H264) }
-                runExport(1, 720, 30, avail.firstOrNull { it == Exporter.Codec.H264 } ?: avail[0])
+                val codec = avail.firstOrNull { it.name == prefs.getString(PREF_EXP_CODEC, "H264") }
+                    ?: avail.firstOrNull { it == Exporter.Codec.H264 } ?: avail[0]
+                val quality = prefs.getInt(PREF_EXP_QUALITY, EncoderConfig.Quality.BALANCED.ordinal)
+                val maxDim = prefs.getInt(PREF_EXP_MAXDIM, 720).let {
+                    if (it <= 480) 480 else if (it >= 1080) 1080 else 720
+                }
+                val fps = prefs.getInt(PREF_EXP_FPS, 30).let { if (it == 24) 24 else if (it == 60) 60 else 30 }
+                runExport(quality, maxDim, fps, codec)
             }
             .setNeutralButton("Cancel", null)
             .show()

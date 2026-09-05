@@ -324,12 +324,28 @@ object GlUtil {
             val ids = pboIds
             if (ids != null) {
                 val filled = readViaPbo(ids, outW, outH, bmp)
-                GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
-                GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
-                if (filled) return bmp
-                // Not primed yet (very first frame) — return the bitmap anyway;
-                // the caller keeps showing its previous frame for one tick.
-                if (pboIds != null) return bmp
+                if (filled) {
+                    GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+                    GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
+                    return bmp
+                }
+                // First frame (PBO not primed yet) MUST still produce real
+                // pixels. Returning an uninitialized bitmap here was the
+                // "local video is black in preview" bug: GPU reported success,
+                // software fallback never ran, and the ticker wasn't running
+                // so the garbage frame stayed on screen.
+                if (pboIds != null) {
+                    val buf = pixelBuf
+                    if (buf != null) {
+                        buf.rewind()
+                        GLES20.glReadPixels(0, 0, outW, outH, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
+                        buf.rewind()
+                        copyInto(bmp, buf, outW, outH)
+                    }
+                    GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+                    GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
+                    return bmp
+                }
                 // PBO path failed for good: fall through to the sync read below.
                 GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbo)
             }

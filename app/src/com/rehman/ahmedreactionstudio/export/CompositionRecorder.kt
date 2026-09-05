@@ -13,12 +13,15 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import com.rehman.ahmedreactionstudio.core.Compositor
 import com.rehman.ahmedreactionstudio.core.Layer
 import com.rehman.ahmedreactionstudio.core.Project
 import java.io.File
 import java.util.ArrayDeque
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /** One clip whose audio is mixed into the recording. */
 class ClipAudio(
@@ -39,16 +42,16 @@ class DecodedClip(val clip: ClipAudio, val pcm: ShortArray)
  * clock runs, at a steady fps. The live camera feeds straight through, so a
  * "local video + camera" setup records as one take.
  *
- * AUDIO: each clip's audio track is decoded to mono 44.1 kHz PCM once at
- * start, then summed with the microphone (if permitted) sample-by-sample and
- * encoded to AAC in the same muxer. Video and audio are timestamped off the
- * same wall clock, so they stay in sync.
+ * Playability rules (the previous implementation failed these):
+ *  - H.264 + AAC in MP4 only (the universally playable baseline)
+ *  - encoder input via [YuvWriter]/getInputImage (strided YUV, not packed NV12 guesses)
+ *  - one monotonic PTS clock per track; EOS carries lastPts+1, never 0
+ *  - muxer.start() only after tracks are added; failures abort instead of
+ *    silently writing an empty container
+ *  - MediaExtractor validation before reporting success
  *
- * Threading: rendering reads [frameOf], whose frames are owned by the UI
- * thread, so [renderAndSubmit] MUST be called on the main thread. The encoder
- * + mixer run on one private background thread and drain a small bounded queue
- * of double-buffered bitmaps; if the encoder cannot keep up, a video frame is
- * skipped (real-time capture drops rather than stalls).
+ * Threading: [renderAndSubmit] MUST be called on the main thread (it reads
+ * PreviewEngine bitmaps). Encoder + mixer run on a private thread.
  */
 class CompositionRecorder(
     private val projectRef: () -> Project,
@@ -57,11 +60,11 @@ class CompositionRecorder(
 ) {
 
     companion object {
+        private const val TAG = "AhmedRecorder"
         private const val AUDIO_RATE = 44100
-        private const val AUDIO_CHUNK = 1024          // ~23 ms per audio block
+        private const val AUDIO_CHUNK = 1024
     }
 
-    // ---------- video ----------
     private var codec: MediaCodec? = null
     private var w = 0
     private var h = 0
@@ -73,7 +76,6 @@ class CompositionRecorder(
     private val pool = ArrayDeque<Bitmap>()
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    // ---------- audio ----------
     private var audioCodec: MediaCodec? = null
     private var micRec: AudioRecord? = null
     private var audioEnabled = false
@@ -81,9 +83,8 @@ class CompositionRecorder(
     private val clips = ArrayList<ClipState>()
     private var audioSamples = 0L
 
-    // ---------- muxer ----------
     private var muxer: MediaMuxer? = null
-    private var muxerStarted = false
+    @Volatile private var muxerStarted = false
     private var videoTrack = -1
     private var audioTrack = -1
 
@@ -93,6 +94,7 @@ class CompositionRecorder(
 
     @Volatile private var finishing = false
     @Volatile private var discard = false
+    @Volatile private var setupFailed = false
     private var onDone: ((File?) -> Unit)? = null
 
     @Volatile var recording = false
@@ -100,11 +102,15 @@ class CompositionRecorder(
     var outFile: File? = null
         private set
 
+    private val videoPts = MonotonicPts()
+    private val audioPtsClock = MonotonicPts()
+    @Volatile private var videoSamplesWritten = 0
+
     private class ClipState(val clip: ClipAudio, val pcm: ShortArray) {
         val durSamples: Long = clip.durMs * AUDIO_RATE / 1000L
     }
 
-    /** Start the encoder writing to [outFile]. Returns false only on no video encoder. */
+    /** Start the encoder writing to [outFile]. Returns false only on no video encoder / setup failure. */
     fun start(
         outFile: File, w: Int, h: Int, fps: Int, codecKind: Exporter.Codec,
         audio: List<DecodedClip>, micEnabled: Boolean, onError: (String) -> Unit
@@ -112,16 +118,18 @@ class CompositionRecorder(
         this.w = w; this.h = h; this.fps = fps
         this.outFile = outFile
         this.micEnabledFlag = micEnabled
-        this.videoMime = codecKind.mime
+        // RECORD is the golden "what you see is what you get" path. Always
+        // H.264/AAC/MP4 regardless of the export-sheet codec — WebM/HEVC from
+        // this real-time path is what produced files that would not play.
+        this.videoMime = MediaFormat.MIMETYPE_VIDEO_AVC
         clips.clear()
         for (d in audio) if (d.pcm.isNotEmpty()) clips.add(ClipState(d.clip, d.pcm))
-        val (encName, colorFmt) = Exporter.pickEncoder(codecKind.mime)
+        val (encName, colorFmt) = Exporter.pickEncoder(MediaFormat.MIMETYPE_VIDEO_AVC)
         if (encName.isEmpty() || colorFmt < 0) {
-            onError("No ${codecKind.label} encoder on this device")
+            onError("No H.264 encoder on this device")
             return false
         }
         nv12 = colorFmt != MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar
-        // pre-allocate the double-buffer pool on the main thread
         try {
             for (i in 0 until 3) pool.addLast(Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888))
         } catch (e: Exception) {
@@ -136,13 +144,26 @@ class CompositionRecorder(
         recording = true
         finishing = false
         discard = false
-        handler!!.post { setupAndRun(encName, colorFmt) }
+        setupFailed = false
+        val ready = CountDownLatch(1)
+        handler!!.post {
+            val ok = setup(encName, colorFmt)
+            if (!ok) setupFailed = true
+            ready.countDown()
+            if (ok) runLoop() else finalize(failed = true)
+        }
+        try { ready.await(4, TimeUnit.SECONDS) } catch (_: Exception) { }
+        if (setupFailed || codec == null) {
+            recording = false
+            onError("Could not start the H.264 encoder")
+            return false
+        }
         return true
     }
 
     /** Render the current composition and enqueue it. Main thread only. */
     fun renderAndSubmit() {
-        if (!recording) return
+        if (!recording || setupFailed) return
         val bmp = obtain() ?: return
         val p = projectRef()
         val c = Canvas(bmp)
@@ -150,7 +171,6 @@ class CompositionRecorder(
         if (!queue.offer(bmp)) recycle(bmp)
     }
 
-    /** Stop capture, finalize the muxer, then invoke [onDone] on the main thread. */
     fun finish(onDone: (File?) -> Unit) {
         if (!recording) { onDone(null); return }
         recording = false
@@ -158,40 +178,31 @@ class CompositionRecorder(
         this.onDone = onDone
     }
 
-    /** Abort without a callback and discard any partial file (activity teardown). */
     fun abort() {
-        if (!recording) return
+        if (!recording && handler == null) return
         recording = false
         discard = true
         finishing = true
     }
 
-    // ================= setup (background thread) =================
-
-    private fun setupAndRun(encName: String, colorFmt: Int) {
-        try {
+    private fun setup(encName: String, colorFmt: Int): Boolean {
+        return try {
             outFile?.parentFile?.mkdirs()
-            // video encoder
-            // Same OBS-class tuning as the exporter, with a 2 s GOP and no
-            // B-frames because this path runs in real time.
             val vf = EncoderConfig.videoFormat(
-                videoMime, w, h, fps, colorFmt,
-                EncoderConfig.Quality.BALANCED, liveRecorder = true
+                MediaFormat.MIMETYPE_VIDEO_AVC, w, h, fps, colorFmt,
+                EncoderConfig.Quality.BALANCED, liveRecorder = true, compat = true
             )
             codec = MediaCodec.createByCodecName(encName)
             codec!!.configure(vf, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             codec!!.start()
-
             muxer = MediaMuxer(outFile!!.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-
-            // audio (pre-decoded clips + mic + AAC encoder); degrades to video-only on failure
             audioEnabled = clips.isNotEmpty() || micEnabledFlag
             if (audioEnabled) setupAudio()
+            true
         } catch (e: Exception) {
-            finalize(failed = true)
-            return
+            Log.e(TAG, "setup failed", e)
+            false
         }
-        runLoop()
     }
 
     private fun setupAudio() {
@@ -206,23 +217,22 @@ class CompositionRecorder(
                 micRec = rec
             } catch (_: Exception) { micRec = null }
         }
-        // no mic and no decodable clip audio → fall back to video-only
         if (micRec == null && clips.isEmpty()) { audioEnabled = false; return }
         try {
             val af = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, AUDIO_RATE, 1)
             af.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
             af.setInteger(MediaFormat.KEY_BIT_RATE, 96_000)
             af.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16_384)
+            af.setInteger(MediaFormat.KEY_CHANNEL_COUNT, 1)
             audioCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
             audioCodec!!.configure(af, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             audioCodec!!.start()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "AAC encoder unavailable; recording video-only", e)
             audioCodec = null
             audioEnabled = false
         }
     }
-
-    // ================= encode + mix loop (background thread) =================
 
     private fun runLoop() {
         val vc = codec ?: run { finalize(true); return }
@@ -235,27 +245,39 @@ class CompositionRecorder(
         var aEosQueued = false
         var aEosDone = false
         var failed = false
+        val audioPaced = audioEnabled && ac != null
+        // If the AAC encoder never produces a format, do not hold the muxer
+        // hostage — drop audio after 800 ms and mux video-only. An MP4 with
+        // video and no audio plays; an MP4 that never started does not.
+        val audioGiveUpAt = SystemClock.elapsedRealtime() + 800L
+        var audioGaveUp = false
+
+        fun tryStartMuxer() {
+            if (muxerStarted) return
+            if (videoTrack < 0) return
+            if (audioPaced && audioTrack < 0 && !audioGaveUp) return
+            try {
+                m.start()
+                muxerStarted = true
+            } catch (e: Exception) {
+                Log.e(TAG, "muxer.start failed", e)
+                failed = true
+            }
+        }
 
         fun drainVideo(): Boolean {
             while (true) {
-                val outIdx = try { vc.dequeueOutputBuffer(vInfo, 10_000) } catch (_: Exception) { -100 }
+                val outIdx = try { vc.dequeueOutputBuffer(vInfo, 2_000) } catch (_: Exception) { return true }
                 when {
                     outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                        try { videoTrack = m.addTrack(vc.outputFormat) } catch (_: Exception) { failed = true; return true }
+                        try { videoTrack = m.addTrack(vc.outputFormat) } catch (e: Exception) {
+                            Log.e(TAG, "add video track", e); failed = true; return true
+                        }
                         tryStartMuxer()
                     }
                     outIdx == MediaCodec.INFO_TRY_AGAIN_LATER -> return false
                     outIdx >= 0 -> {
-                        if (vInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
-                            try { vc.releaseOutputBuffer(outIdx, false) } catch (_: Exception) { }
-                            continue
-                        }
-                        if (videoTrack >= 0 && muxerStarted) {
-                            try { vc.getOutputBuffer(outIdx)?.let { m.writeSampleData(videoTrack, it, vInfo) } }
-                            catch (_: Exception) { }
-                        }
-                        val eos = vInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
-                        try { vc.releaseOutputBuffer(outIdx, false) } catch (_: Exception) { }
+                        val eos = writeOut(m, videoTrack, vc, outIdx, vInfo, videoPts) { videoSamplesWritten++ }
                         if (eos) return true
                     }
                     else -> return false
@@ -266,24 +288,20 @@ class CompositionRecorder(
         fun drainAudio(): Boolean {
             if (ac == null) return true
             while (true) {
-                val outIdx = try { ac.dequeueOutputBuffer(aInfo, 10_000) } catch (_: Exception) { -100 }
+                val outIdx = try { ac.dequeueOutputBuffer(aInfo, 2_000) } catch (_: Exception) { return true }
                 when {
                     outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                        try { audioTrack = m.addTrack(ac.outputFormat) } catch (_: Exception) { failed = true; return true }
+                        try { audioTrack = m.addTrack(ac.outputFormat) } catch (e: Exception) {
+                            Log.e(TAG, "add audio track", e)
+                            audioEnabled = false
+                            tryStartMuxer()
+                            return true
+                        }
                         tryStartMuxer()
                     }
                     outIdx == MediaCodec.INFO_TRY_AGAIN_LATER -> return false
                     outIdx >= 0 -> {
-                        if (aInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
-                            try { ac.releaseOutputBuffer(outIdx, false) } catch (_: Exception) { }
-                            continue
-                        }
-                        if (audioTrack >= 0 && muxerStarted) {
-                            try { ac.getOutputBuffer(outIdx)?.let { m.writeSampleData(audioTrack, it, aInfo) } }
-                            catch (_: Exception) { }
-                        }
-                        val eos = aInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
-                        try { ac.releaseOutputBuffer(outIdx, false) } catch (_: Exception) { }
+                        val eos = writeOut(m, audioTrack, ac, outIdx, aInfo, audioPtsClock)
                         if (eos) return true
                     }
                     else -> return false
@@ -292,78 +310,123 @@ class CompositionRecorder(
         }
 
         try {
-            val audioPaced = audioEnabled && ac != null
-            val finishDeadline = SystemClock.elapsedRealtime() + 5000L
-            while (!failed && !(vEosDone && (if (audioPaced) aEosDone else true))) {
-                // ----- video (non-blocking) -----
+            val finishDeadline = SystemClock.elapsedRealtime() + 6000L
+            while (!failed && !(vEosDone && (if (audioPaced && !audioGaveUp) aEosDone else true))) {
+                if (!audioGaveUp && audioPaced && audioTrack < 0 &&
+                    SystemClock.elapsedRealtime() > audioGiveUpAt) {
+                    audioGaveUp = true
+                    Log.w(TAG, "AAC format never arrived; muxing video-only")
+                    tryStartMuxer()
+                }
+
                 val bmp = queue.poll()
                 if (bmp != null) {
-                    val inIdx = vc.dequeueInputBuffer(20_000)
+                    val inIdx = try { vc.dequeueInputBuffer(20_000) } catch (_: Exception) { -1 }
                     if (inIdx >= 0) {
-                        val buf = vc.getInputBuffer(inIdx)
-                        if (buf != null && !bmp.isRecycled) {
-                            buf.clear()
-                            val bytes = Exporter.writeYuv(buf, bmp, w, h, nv12)
-                            val pts = (SystemClock.elapsedRealtime() - startWall) * 1000L
-                            vc.queueInputBuffer(inIdx, 0, bytes, pts, 0)
+                        if (!bmp.isRecycled) {
+                            val bytes = YuvWriter.fillInput(vc, inIdx, bmp, w, h, nv12)
+                            if (bytes > 0) {
+                                val pts = videoPts.next(
+                                    (SystemClock.elapsedRealtime() - startWall) * 1000L
+                                )
+                                try { vc.queueInputBuffer(inIdx, 0, bytes, pts, 0) } catch (_: Exception) { }
+                            } else {
+                                try { vc.queueInputBuffer(inIdx, 0, 0, videoPts.lastOr(0L), 0) } catch (_: Exception) { }
+                            }
                         }
                     }
                     recycle(bmp)
                 }
                 if (drainVideo()) vEosDone = true
 
-                // ----- audio (paced by the microphone read) -----
-                if (audioPaced && !finishing) {
+                if (audioPaced && !finishing && !audioGaveUp) {
                     encodeAudioChunk()
                     if (drainAudio()) aEosDone = true
                 } else if (!audioPaced && !finishing) {
-                    // no audio → keep the loop cadence from spinning too fast
-                    try { Thread.sleep(12) } catch (_: Exception) { }
+                    try { Thread.sleep(8) } catch (_: Exception) { }
                 }
 
-                // ----- finishing → flush + EOS -----
                 if (finishing) {
                     if (!vEosQueued && queue.isEmpty()) {
-                        val inIdx = vc.dequeueInputBuffer(20_000)
+                        val inIdx = try { vc.dequeueInputBuffer(20_000) } catch (_: Exception) { -1 }
                         if (inIdx >= 0) {
-                            vc.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                            vEosQueued = true
+                            val pts = videoPts.next(videoPts.lastOr(0L) + 33_333L)
+                            try {
+                                vc.queueInputBuffer(inIdx, 0, 0, pts, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                vEosQueued = true
+                            } catch (_: Exception) { }
                         }
                     }
-                    if (audioPaced && !aEosQueued) {
-                        val inIdx = ac!!.dequeueInputBuffer(20_000)
+                    if (audioPaced && !aEosQueued && !audioGaveUp) {
+                        val inIdx = try { ac!!.dequeueInputBuffer(20_000) } catch (_: Exception) { -1 }
                         if (inIdx >= 0) {
-                            ac.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                            aEosQueued = true
+                            val pts = audioPtsClock.next(audioPtsClock.lastOr(0L) + 23_000L)
+                            try {
+                                ac!!.queueInputBuffer(inIdx, 0, 0, pts, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                aEosQueued = true
+                            } catch (_: Exception) { }
                         }
                     }
                     if (drainVideo()) vEosDone = true
-                    if (audioPaced && drainAudio()) aEosDone = true
-                    // safety: never spin forever waiting for an EOS that will not come
+                    if (audioPaced && !audioGaveUp && drainAudio()) aEosDone = true
                     if (SystemClock.elapsedRealtime() > finishDeadline) break
                 }
             }
         } catch (e: Exception) {
+            Log.e(TAG, "encode loop", e)
             failed = true
         } finally {
             finalize(failed)
         }
     }
 
-    private fun tryStartMuxer() {
-        val m = muxer ?: return
-        if (!muxerStarted && videoTrack >= 0 && (!audioEnabled || audioTrack >= 0)) {
-            try { m.start(); muxerStarted = true } catch (_: Exception) { }
+    /**
+     * Drain one encoder output buffer into the muxer. Returns true on EOS.
+     * Codec-config buffers are never muxed (they live in outputFormat).
+     * ByteBuffer position/limit is set from BufferInfo — some devices return
+     * a buffer whose position is 0 with data at info.offset; others already
+     * slice it. Setting both is the portable pattern.
+     */
+    private fun writeOut(
+        m: MediaMuxer,
+        track: Int,
+        c: MediaCodec,
+        index: Int,
+        info: MediaCodec.BufferInfo,
+        clock: MonotonicPts,
+        onSample: (() -> Unit)? = null
+    ): Boolean {
+        val eos = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
+        try {
+            if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
+                c.releaseOutputBuffer(index, false)
+                return false
+            }
+            if (track >= 0 && muxerStarted && info.size > 0) {
+                val buf = c.getOutputBuffer(index)
+                if (buf != null) {
+                    info.presentationTimeUs = clock.next(info.presentationTimeUs)
+                    val end = info.offset + info.size
+                    if (end <= buf.capacity()) {
+                        buf.position(info.offset)
+                        buf.limit(end)
+                        m.writeSampleData(track, buf, info)
+                        onSample?.invoke()
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "writeSampleData", e)
+        } finally {
+            try { c.releaseOutputBuffer(index, false) } catch (_: Exception) { }
         }
+        return eos
     }
 
-    /** Read one audio block (mic + clips), mix, and feed the AAC encoder. */
     private fun encodeAudioChunk() {
         val ac = audioCodec ?: return
         val n = AUDIO_CHUNK
         val chunk = ShortArray(n)
-
-        // microphone (this read paces the loop at real time)
         val read = try { micRec?.read(chunk, 0, n) ?: -1 } catch (_: Exception) { -1 }
         if (read <= 0) {
             java.util.Arrays.fill(chunk, 0)
@@ -371,8 +434,6 @@ class CompositionRecorder(
         } else if (read < n) {
             for (i in read until n) chunk[i] = 0
         }
-
-        // add each clip's audio at the current position
         val base = audioSamples
         for (c in clips) {
             val data = c.pcm
@@ -388,21 +449,18 @@ class CompositionRecorder(
                 chunk[i] = v.coerceIn(-32768, 32767).toShort()
             }
         }
-
-        val inIdx = ac.dequeueInputBuffer(20_000)
+        val inIdx = try { ac.dequeueInputBuffer(20_000) } catch (_: Exception) { -1 }
         if (inIdx >= 0) {
             val buf = ac.getInputBuffer(inIdx)
             if (buf != null) {
                 buf.clear()
                 buf.asShortBuffer().put(chunk)
-                val ptsUs = audioSamples * 1_000_000L / AUDIO_RATE
-                ac.queueInputBuffer(inIdx, 0, chunk.size * 2, ptsUs, 0)
+                val ptsUs = audioPtsClock.next(audioSamples * 1_000_000L / AUDIO_RATE)
+                try { ac.queueInputBuffer(inIdx, 0, chunk.size * 2, ptsUs, 0) } catch (_: Exception) { }
                 audioSamples += n
             }
         }
     }
-
-    // ================= teardown =================
 
     private fun finalize(failed: Boolean) {
         try { codec?.stop() } catch (_: Exception) { }
@@ -414,21 +472,39 @@ class CompositionRecorder(
         try { micRec?.stop() } catch (_: Exception) { }
         try { micRec?.release() } catch (_: Exception) { }
         micRec = null
-        try { if (muxerStarted) muxer?.stop() } catch (_: Exception) { }
+        var muxOk = false
+        try {
+            if (muxerStarted) {
+                muxer?.stop()
+                muxOk = true
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "muxer.stop", e)
+            muxOk = false
+        }
         try { muxer?.release() } catch (_: Exception) { }
         muxer = null
         muxerStarted = false
         if (discard) try { outFile?.delete() } catch (_: Exception) { }
-        // drain any frames still queued so their bitmaps are returned to the pool
         var b = queue.poll()
         while (b != null) { recycle(b); b = queue.poll() }
-        val ok = !failed && !discard && outFile != null && outFile!!.exists() && outFile!!.length() > 0
-        val result = if (ok) outFile else null
         recyclePool()
         clips.clear()
+
+        val file = outFile
+        val playable = !failed && !discard && muxOk && file != null &&
+            videoSamplesWritten > 0 &&
+            ExportValidator.validate(file.absolutePath, expectAudio = false).ok
+        if (!playable && file != null && !discard) {
+            Log.e(TAG, "recording not playable (samples=$videoSamplesWritten muxOk=$muxOk failed=$failed)")
+        }
+        val result = if (playable) file else null
         val cb = onDone
         onDone = null
         recording = false
+        try { thread?.quitSafely() } catch (_: Exception) { }
+        thread = null
+        handler = null
         mainHandler.post { cb?.invoke(result) }
     }
 

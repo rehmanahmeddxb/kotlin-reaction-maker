@@ -7,7 +7,9 @@ import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.util.Log
 import com.rehman.ahmedreactionstudio.core.Compositor
+import com.rehman.ahmedreactionstudio.core.Layer
 import com.rehman.ahmedreactionstudio.core.LayerType
 import com.rehman.ahmedreactionstudio.core.MediaKit
 import com.rehman.ahmedreactionstudio.core.Project
@@ -42,6 +44,8 @@ import kotlin.math.roundToInt
  */
 object Exporter {
 
+    private const val TAG = "AhmedExporter"
+
     /** codecs the export dialog can offer */
     enum class Codec(val mime: String, val label: String, val ext: String, val webm: Boolean) {
         H264(MediaFormat.MIMETYPE_VIDEO_AVC, "H.264 / AVC", "mp4", false),
@@ -72,7 +76,14 @@ object Exporter {
         val codec: Codec = Codec.H264,
         val outFile: File,
         /** max-compatibility mode: H.264 at the call site, tight GOP, default rate control */
-        val compat: Boolean = false
+        val compat: Boolean = false,
+        /**
+         * Last decoded frame of each LIVE camera layer, keyed by layer id.
+         * Offline export cannot seek a live feed; without this the camera
+         * box is encoded as the background color (the "black camera" bug).
+         * Recording (CompositionRecorder) is what captures live motion.
+         */
+        val liveFrames: Map<String, Bitmap> = emptyMap()
     )
 
     class Result(val ok: Boolean, val message: String, val file: File?, val retry: Boolean = false)
@@ -98,10 +109,13 @@ object Exporter {
      * because the exporter feeds YUV byte buffers (not an input Surface).
      */
     internal fun pickEncoder(mime: String): Pair<String, Int> {
+        // Flexible FIRST: that is the format getInputImage() is defined for.
+        // Packed NV12/I420 are fallbacks for software encoders that still
+        // want a tightly packed ByteBuffer.
         val yuv = intArrayOf(
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible,      // 0x7F000789
             MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar,   // 21 NV12
-            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar,        // 19 I420
-            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible       // 0x7F000789
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar        // 19 I420
         )
         val surfaceOnly = 2130708361 // COLOR_FormatSurface
         val infos = try {
@@ -115,18 +129,14 @@ object Exporter {
                 if (name.contains("google") || name.contains("c2.android") || name.contains("sw")) 1 else 0
             } else 1
         }
-        // first pass: require a YUV byte-buffer format (skip pure-surface encoders)
         for (ci in ordered) {
             try {
                 val caps = ci.getCapabilitiesForType(mime)
-                val hasYuv = caps.colorFormats.any { yuv.contains(it) }
                 val onlySurface = caps.colorFormats.size == 1 && caps.colorFormats[0] == surfaceOnly
                 if (onlySurface) continue
-                if (!hasYuv) continue
                 for (f in yuv) if (caps.colorFormats.contains(f)) return Pair(ci.name, f)
             } catch (_: Exception) { }
         }
-        // fallback: accept even surface-only-advertised flexible
         for (ci in ordered) {
             try {
                 val caps = ci.getCapabilitiesForType(mime)
@@ -243,8 +253,9 @@ object Exporter {
                         }
                     }
                 }
-                val bitmapFor: (com.rehman.ahmedreactionstudio.core.Layer) -> Bitmap? = { l ->
+                val bitmapFor: (Layer) -> Bitmap? = { l ->
                     when {
+                        l.isLive() -> opts.liveFrames[l.id]
                         l.type == LayerType.IMAGE -> imageCache[l.id]
                         l.isVideoLike() -> decoders[l.id]?.current
                         else -> null
@@ -297,11 +308,50 @@ object Exporter {
                 var aEosQueued = false
                 var aEosDone = !audioEnabled
                 var lastProgress = -1
+                val vPts = MonotonicPts()
+                val aClock = MonotonicPts()
+                var muxerFailed = false
 
                 fun tryStartMuxer() {
-                    if (!muxerStarted && vTrack >= 0 && (!audioEnabled || aTrack >= 0)) {
-                        try { muxer!!.start(); muxerStarted = true } catch (_: Exception) { }
+                    if (muxerStarted || muxerFailed) return
+                    if (vTrack < 0) return
+                    if (audioEnabled && aTrack < 0) return
+                    try {
+                        muxer!!.start()
+                        muxerStarted = true
+                    } catch (e: Exception) {
+                        Log.e(TAG, "muxer.start failed", e)
+                        muxerFailed = true
                     }
+                }
+
+                fun writeTrack(
+                    codec: MediaCodec, track: Int, idx: Int, info: MediaCodec.BufferInfo, clock: MonotonicPts
+                ): Boolean {
+                    val eos = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
+                    try {
+                        if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
+                            codec.releaseOutputBuffer(idx, false)
+                            return false
+                        }
+                        if (track >= 0 && muxerStarted && info.size > 0) {
+                            val buf = codec.getOutputBuffer(idx)
+                            if (buf != null) {
+                                info.presentationTimeUs = clock.next(info.presentationTimeUs)
+                                val end = info.offset + info.size
+                                if (end <= buf.capacity()) {
+                                    buf.position(info.offset)
+                                    buf.limit(end)
+                                    muxer!!.writeSampleData(track, buf, info)
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "writeSampleData", e)
+                    } finally {
+                        try { codec.releaseOutputBuffer(idx, false) } catch (_: Exception) { }
+                    }
+                    return eos
                 }
 
                 fun drainVideo(): Boolean {
@@ -309,25 +359,19 @@ object Exporter {
                         val outIdx = vCodec!!.dequeueOutputBuffer(vInfo, 3000)
                         when {
                             outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                                try { vTrack = muxer!!.addTrack(vCodec!!.outputFormat) } catch (_: Exception) { return true }
+                                try { vTrack = muxer!!.addTrack(vCodec!!.outputFormat) }
+                                catch (e: Exception) {
+                                    Log.e(TAG, "add video track", e)
+                                    muxerFailed = true
+                                    return true
+                                }
                                 tryStartMuxer()
                             }
                             outIdx == MediaCodec.INFO_TRY_AGAIN_LATER -> return false
                             outIdx >= 0 -> {
-                                // codec config buffers are NOT muxed (they are contained in outputFormat)
-                                if (vInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
-                                    vCodec!!.releaseOutputBuffer(outIdx, false)
-                                    continue
-                                }
-                                if (vTrack >= 0 && muxerStarted) {
-                                    vCodec!!.getOutputBuffer(outIdx)?.let {
-                                        try { muxer!!.writeSampleData(vTrack, it, vInfo) } catch (_: Exception) { }
-                                    }
-                                }
-                                val eos = vInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
-                                vCodec!!.releaseOutputBuffer(outIdx, false)
-                                if (eos) return true
+                                if (writeTrack(vCodec!!, vTrack, outIdx, vInfo, vPts)) return true
                             }
+                            else -> return false
                         }
                     }
                 }
@@ -338,24 +382,21 @@ object Exporter {
                         val outIdx = ac.dequeueOutputBuffer(aInfo, 3000)
                         when {
                             outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                                try { aTrack = muxer!!.addTrack(ac.outputFormat) } catch (_: Exception) { return true }
+                                try { aTrack = muxer!!.addTrack(ac.outputFormat) }
+                                catch (e: Exception) {
+                                    Log.w(TAG, "add audio track; muxing video-only", e)
+                                    audioEnabled = false
+                                    aEosDone = true
+                                    tryStartMuxer()
+                                    return true
+                                }
                                 tryStartMuxer()
                             }
                             outIdx == MediaCodec.INFO_TRY_AGAIN_LATER -> return false
                             outIdx >= 0 -> {
-                                if (aInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
-                                    ac.releaseOutputBuffer(outIdx, false)
-                                    continue
-                                }
-                                if (aTrack >= 0 && muxerStarted) {
-                                    ac.getOutputBuffer(outIdx)?.let {
-                                        try { muxer!!.writeSampleData(aTrack, it, aInfo) } catch (_: Exception) { }
-                                    }
-                                }
-                                val eos = aInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
-                                ac.releaseOutputBuffer(outIdx, false)
-                                if (eos) return true
+                                if (writeTrack(ac, aTrack, outIdx, aInfo, aClock)) return true
                             }
+                            else -> return false
                         }
                     }
                 }
@@ -385,12 +426,9 @@ object Exporter {
                         Compositor.draw(ctx, canvas, w, h, p, bitmapFor, timeMs, null)
                         val inIdx = vCodec!!.dequeueInputBuffer(20_000)
                         if (inIdx >= 0) {
-                            val buf = vCodec!!.getInputBuffer(inIdx)
-                            if (buf != null) {
-                                buf.clear()
-                                val bytes = writeYuv(buf, frameBitmap!!, w, h, nv12)
-                                vCodec!!.queueInputBuffer(inIdx, 0, bytes, ptsUs, 0)
-                            }
+                            val bytes = YuvWriter.fillInput(vCodec!!, inIdx, frameBitmap!!, w, h, nv12)
+                            val pts = vPts.next(ptsUs)
+                            vCodec!!.queueInputBuffer(inIdx, 0, bytes.coerceAtLeast(0), pts, 0)
                         }
                         ptsUs += frameUs
                         frameIdx++
@@ -415,7 +453,8 @@ object Exporter {
                     } else if (!vEosQueued) {
                         val inIdx = vCodec!!.dequeueInputBuffer(20_000)
                         if (inIdx >= 0) {
-                            vCodec!!.queueInputBuffer(inIdx, 0, 0, ptsUs,
+                            val eosPts = vPts.next(ptsUs)
+                            vCodec!!.queueInputBuffer(inIdx, 0, 0, eosPts,
                                 MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             vEosQueued = true
                         }
@@ -431,7 +470,7 @@ object Exporter {
                             if (aIdx >= 0) {
                                 // EOS carries the running PTS, not 0: a backwards
                                 // timestamp here breaks strict muxers/players.
-                                aCodec!!.queueInputBuffer(aIdx, 0, 0, audioPts(audioSamplesDone),
+                                aCodec!!.queueInputBuffer(aIdx, 0, 0, aClock.next(audioPts(audioSamplesDone)),
                                     MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                                 aEosQueued = true
                             }
@@ -453,7 +492,8 @@ object Exporter {
                                 } else {
                                     val aIdx = aCodec!!.dequeueInputBuffer(20_000)
                                     if (aIdx >= 0) {
-                                        aCodec!!.queueInputBuffer(aIdx, 0, 0, audioPts(audioSamplesDone),
+                                        aCodec!!.queueInputBuffer(aIdx, 0, 0,
+                                            aClock.next(audioPts(audioSamplesDone)),
                                             MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                                         aEosQueued = true
                                     }
@@ -494,15 +534,16 @@ object Exporter {
                 // Anything less is a failure that triggers the compat retry —
                 // a broken file is never reported as "Export complete".
                 res = if (cancel.get()) Result(false, "Export cancelled", null)
+                else if (muxerFailed) Result(false,
+                    "Export could not start the media container.", null, retry = !opts.compat)
                 else if (!finalized) Result(false,
                     "Export could not finalize the video file.", null, retry = !opts.compat)
-                else if (!opts.outFile.exists() || opts.outFile.length() <= 4096L) Result(false,
-                    "Export produced an empty file.", null, retry = !opts.compat)
                 else {
-                    val probed = try { MediaKit.probe(opts.outFile.absolutePath) } catch (_: Exception) { null }
-                    if (probed == null || probed.width <= 0 || probed.durMs <= 0L) {
-                        Result(false, "Export produced a file this device cannot play back.",
-                            null, retry = !opts.compat)
+                    val report = ExportValidator.validate(
+                        opts.outFile.absolutePath, expectAudio = audioEnabled
+                    )
+                    if (!report.ok) {
+                        Result(false, report.message, null, retry = !opts.compat)
                     } else Result(true, "Export complete", opts.outFile)
                 }
             } catch (e: Exception) {
@@ -629,50 +670,7 @@ object Exporter {
         }
     }
 
-    /** ARGB bitmap -> I420 (nv12=false) or NV12/NV12-flexible (nv12=true); returns bytes used */
-    internal fun writeYuv(dst: java.nio.ByteBuffer, bmp: Bitmap, w: Int, h: Int, nv12: Boolean): Int {
-        val px = IntArray(w * h)
-        bmp.getPixels(px, 0, w, 0, 0, w, h)
-        val ySize = w * h
-        val uvSize = ySize / 4
-        val base = dst.position()
-        // ensure buffer has enough capacity; clear to base
-        var i = 0
-        var rowBase = base
-        for (j in 0 until h) {
-            var bOff = rowBase
-            for (k in 0 until w) {
-                val c = px[i]
-                val r = (c shr 16) and 0xFF
-                val g = (c shr 8) and 0xFF
-                val b = c and 0xFF
-                var y = ((66 * r + 129 * g + 25 * b + 128) shr 8) + 16
-                if (y < 16) y = 16 else if (y > 235) y = 235
-                dst.put(bOff + k, y.toByte())
-                i++
-            }
-            rowBase += w
-        }
-        val uOff = base + ySize
-        val vOff = uOff + uvSize
-        var uPos = uOff
-        for (j in 0 until h / 2) {
-            for (k in 0 until w / 2) {
-                val c = px[(j * 2) * w + (k * 2)]
-                val r = (c shr 16) and 0xFF
-                val g = (c shr 8) and 0xFF
-                val b = c and 0xFF
-                var cb = ((-38 * r - 74 * g + 112 * b + 128) shr 8) + 128
-                var cr = ((112 * r - 94 * g - 18 * b + 128) shr 8) + 128
-                if (cb < 16) cb = 16 else if (cb > 240) cb = 240
-                if (cr < 16) cr = 16 else if (cr > 240) cr = 240
-                if (nv12) {
-                    dst.put(uPos, cb.toByte()); dst.put(uPos + 1, cr.toByte()); uPos += 2
-                } else {
-                    dst.put(uPos, cb.toByte()); dst.put(vOff + (uPos - uOff), cr.toByte()); uPos += 1
-                }
-            }
-        }
-        return ySize + uvSize * 2
-    }
+    /** Packed NV12/I420 fallback (tests + software encoders without getInputImage). */
+    internal fun writeYuv(dst: java.nio.ByteBuffer, bmp: Bitmap, w: Int, h: Int, nv12: Boolean): Int =
+        YuvWriter.fillPacked(dst, bmp, w, h, nv12)
 }
