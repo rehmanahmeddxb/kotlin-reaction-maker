@@ -17,6 +17,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Static pipeline validation
+        run: python3 tools/validate-pipeline.py
+
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
@@ -114,6 +117,12 @@ jobs:
               'reconcileLiveCamera': 'camera/layer-list reconciler',
               # camera preview fit (feed inside the surface, never cut off)
               'updatePreviewTransform': 'camera preview fit',
+              # P0 export/record playability: strided YUV, monotonic PTS, probe
+              'YuvWriter': 'strided YUV encoder input',
+              'ExportValidator': 'exported-file playability probe',
+              'MonotonicPts': 'monotonic presentation timestamps',
+              'CompositionRecorder': 'live composition recorder',
+              'liveFrames': 'frozen live-camera frames in offline export',
           }
           for sym, what in features.items():
               assert sym.encode() in dex, f'FEATURE MISSING FROM APK: {sym} ({what})'

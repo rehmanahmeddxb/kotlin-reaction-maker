@@ -97,6 +97,21 @@ class DiagnosticsActivity : Activity() {
         } catch (_: Exception) { }
         row("H.264 encoders", "hw $hwAvc / sw $swAvc")
         row("HEVC encoders", "hw $hwHevc / sw $swHevc")
+        row("Default export", "H.264 + AAC in MP4 (plays on Android and Windows)")
+        try {
+            var flex = 0; var nv12 = 0; var i420 = 0; var surfaceOnly = 0
+            for (ci in MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos) {
+                if (!ci.isEncoder) continue
+                if (!ci.supportedTypes.contains(MediaFormat.MIMETYPE_VIDEO_AVC)) continue
+                val caps = ci.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                val fmts = caps.colorFormats
+                if (fmts.contains(android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)) flex++
+                if (fmts.contains(android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar)) nv12++
+                if (fmts.contains(android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar)) i420++
+                if (fmts.size == 1 && fmts[0] == 2130708361) surfaceOnly++
+            }
+            row("H.264 color", "Flexible×$flex  NV12×$nv12  I420×$i420  surface-only×$surfaceOnly")
+        } catch (_: Exception) { }
 
         // storage for exports
         val ex = getExternalFilesDir(null)

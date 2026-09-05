@@ -97,10 +97,20 @@ class LiveCamera(
     private var lastFrameAt = 0L
     private var activeCameraId: String? = null
 
-    /** double-buffered output bitmaps (dimensions after rotation) */
+    /**
+     * Triple-buffered output bitmaps (dimensions after rotation).
+     *
+     * Two buffers is not enough: the compositor (and the recorder) may still
+     * be reading the published frame while convert() wraps around and writes
+     * it again. That race produced torn / black camera frames in the export
+     * even though the live preview looked fine. Three slots: never write the
+     * bitmap currently published to PreviewEngine.
+     */
     private var bufA: Bitmap? = null
     private var bufB: Bitmap? = null
-    private var useA = true
+    private var bufC: Bitmap? = null
+    private var writeSlot = 0
+    @Volatile private var published: Bitmap? = null
     private var argb: IntArray = IntArray(0)
     private var rowY: ByteArray = ByteArray(0)
     private var rowU: ByteArray = ByteArray(0)
@@ -276,7 +286,8 @@ class LiveCamera(
         try { repeatRequest() } catch (_: Exception) { }
         stopRecordingLocked(discard = true)
         closeCameraOnly()
-        bufA = null; bufB = null
+        bufA = null; bufB = null; bufC = null
+        published = null
         argb = IntArray(0)
     }
 
@@ -587,16 +598,33 @@ class LiveCamera(
             }
         }
 
-        val cur = if (useA) bufA else bufB
-        val bmp: Bitmap = if (cur == null || cur.width != ow || cur.height != oh || cur.isRecycled) {
+        val avoid = published
+        val slots = arrayOf(bufA, bufB, bufC)
+        var bmp: Bitmap? = null
+        for (k in 0..2) {
+            val i = (writeSlot + k) % 3
+            val cur = slots[i]
+            if (cur !== avoid && cur != null && !cur.isRecycled &&
+                cur.width == ow && cur.height == oh) {
+                bmp = cur
+                writeSlot = (i + 1) % 3
+                break
+            }
+        }
+        if (bmp == null) {
             val fresh = Bitmap.createBitmap(ow, oh, Bitmap.Config.ARGB_8888)
-            if (useA) bufA = fresh else bufB = fresh
-            fresh
-        } else cur
-        bmp.setPixels(out, 0, ow, 0, 0, ow, oh)
-        useA = !useA
+            when {
+                bufA == null || bufA === avoid || bufA?.isRecycled == true -> bufA = fresh
+                bufB == null || bufB === avoid || bufB?.isRecycled == true -> bufB = fresh
+                else -> bufC = fresh
+            }
+            bmp = fresh
+        }
+        val outBmp = bmp ?: return null
+        outBmp.setPixels(out, 0, ow, 0, 0, ow, oh)
+        published = outBmp
         outW = ow; outH = oh
-        return bmp
+        return outBmp
     }
 
     private fun displayRotation(): Int {

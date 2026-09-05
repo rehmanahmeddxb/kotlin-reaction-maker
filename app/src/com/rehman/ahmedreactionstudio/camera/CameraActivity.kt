@@ -490,11 +490,11 @@ class CameraActivity : Activity() {
     private fun updateTorchLabel() {
         when {
             torchSupported ->
-                torchBtn.text = if (torchOn) "Flash ON" else "Flash"
+                torchBtn.text = if (torchOn) "Hardware torch ON" else "Hardware torch"
             facing == CameraCharacteristics.LENS_FACING_FRONT ->
-                torchBtn.text = if (torchOn) "Screen ON" else "Screen light"
+                torchBtn.text = if (torchOn) "Screen light ON" else "Screen light"
             else -> {
-                torchBtn.text = "No flash"
+                torchBtn.text = "No hardware torch"
                 torchBtn.isEnabled = false
                 return
             }

@@ -191,6 +191,8 @@ class PreviewEngine(
     }
 
     fun attach(projectId: String) {
+        val wasTicking = ticking
+        val wantSnapshots = snapshotLoop
         detach()
         this.projectId = projectId
         val p = project()
@@ -210,6 +212,13 @@ class PreviewEngine(
         // drop decoders of layers that are gone
         for (id in ArrayList(gpuIds)) if (!live.contains(id)) releaseSource(id)
         for (id in ArrayList(fallback.keys)) if (!live.contains(id)) releaseSource(id)
+        // Adding a source used to stop the ticker (detach() does). A newly
+        // added clip with playing=true then decoded one (often black PBO)
+        // frame and froze. Restore continuous decode when anything is playing.
+        if (wasTicking || wantSnapshots || anyPlaying()) {
+            if (wantSnapshots) snapshotLoop = true
+            startTicker()
+        }
     }
 
     fun detach() {
@@ -684,12 +693,22 @@ class PreviewEngine(
     }
 
     fun recycleFrames() {
+        // Live-camera frames are owned by LiveCamera. Clearing them from the
+        // map (the old code did `frames.clear()` even for external ids) is
+        // why adding a local video after the camera made the camera go black
+        // until the next ImageReader callback — which, under load, could be
+        // never in time for the first recorded frames.
+        val keep = HashMap<String, Bitmap>()
         for ((id, b) in frames) {
-            if (externalIds.contains(id)) continue
+            if (externalIds.contains(id)) {
+                keep[id] = b
+                continue
+            }
             if (gpuIds.contains(id)) continue  // decoder owns it
             try { b.recycle() } catch (_: Exception) { }
         }
         frames.clear()
+        frames.putAll(keep)
     }
 
     fun release() {
