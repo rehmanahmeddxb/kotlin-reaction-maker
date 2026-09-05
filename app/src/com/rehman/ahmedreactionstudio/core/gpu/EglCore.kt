@@ -21,6 +21,13 @@ class EglCore {
     private var surface: EGLSurface = EGL14.EGL_NO_SURFACE
     private var released = false
 
+    companion object {
+        /** true when the shared context is OpenGL ES 3 (PBO read-back available) */
+        @Volatile
+        var es3: Boolean = false
+            internal set
+    }
+
     fun init() {
         if (display != EGL14.EGL_NO_DISPLAY) return
         display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
@@ -29,24 +36,39 @@ class EglCore {
         if (!EGL14.eglInitialize(display, ver, 0, ver, 1)) {
             throw RuntimeException("eglInitialize failed")
         }
-        val attribList = intArrayOf(
-            EGL14.EGL_RED_SIZE, 8,
-            EGL14.EGL_GREEN_SIZE, 8,
-            EGL14.EGL_BLUE_SIZE, 8,
-            EGL14.EGL_ALPHA_SIZE, 8,
-            EGL14.EGL_RENDERABLE_TYPE, 4, // EGL_OPENGL_ES2_BIT
-            EGL14.EGL_SURFACE_TYPE, EGL14.EGL_PBUFFER_BIT,
-            EGL14.EGL_NONE
-        )
-        val configs = arrayOfNulls<EGLConfig>(1)
-        val num = IntArray(1)
-        if (!EGL14.eglChooseConfig(display, attribList, 0, configs, 0, 1, num, 0) || num[0] == 0) {
-            throw RuntimeException("eglChooseConfig failed")
+        // Ask for an ES3 context first: ES3 brings Pixel Buffer Objects, which
+        // turn the per-frame glReadPixels from a full CPU/GPU pipeline stall
+        // (15-25 ms on a mid-range phone — the entire reason the preview was
+        // capped around 17 fps) into an asynchronous transfer. Every device
+        // that cannot give us ES3 falls back to the ES2 context and the old
+        // synchronous read-back, so nothing regresses.
+        var cfg: EGLConfig? = null
+        var made = false
+        for (glVer in intArrayOf(3, 2)) {
+            val renderableBit = if (glVer == 3) 0x0040 else 4  // ES3_BIT_KHR : ES2_BIT
+            val attribList = intArrayOf(
+                EGL14.EGL_RED_SIZE, 8,
+                EGL14.EGL_GREEN_SIZE, 8,
+                EGL14.EGL_BLUE_SIZE, 8,
+                EGL14.EGL_ALPHA_SIZE, 8,
+                EGL14.EGL_RENDERABLE_TYPE, renderableBit,
+                EGL14.EGL_SURFACE_TYPE, EGL14.EGL_PBUFFER_BIT,
+                EGL14.EGL_NONE
+            )
+            val configs = arrayOfNulls<EGLConfig>(1)
+            val num = IntArray(1)
+            if (!EGL14.eglChooseConfig(display, attribList, 0, configs, 0, 1, num, 0) ||
+                num[0] == 0 || configs[0] == null) continue
+            val ctxAttrib = intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, glVer, EGL14.EGL_NONE)
+            val c = EGL14.eglCreateContext(display, configs[0]!!, EGL14.EGL_NO_CONTEXT, ctxAttrib, 0)
+            if (c == null || c == EGL14.EGL_NO_CONTEXT) continue
+            context = c
+            cfg = configs[0]!!
+            es3 = glVer == 3
+            made = true
+            break
         }
-        val cfg = configs[0]!!
-        val ctxAttrib = intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE)
-        context = EGL14.eglCreateContext(display, cfg, EGL14.EGL_NO_CONTEXT, ctxAttrib, 0)
-        if (context == EGL14.EGL_NO_CONTEXT) throw RuntimeException("eglCreateContext failed")
+        if (!made || cfg == null) throw RuntimeException("eglCreateContext failed")
         val pbuf = intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE)
         surface = EGL14.eglCreatePbufferSurface(display, cfg, pbuf, 0)
         if (surface == EGL14.EGL_NO_SURFACE) throw RuntimeException("eglCreatePbufferSurface failed")

@@ -3,7 +3,6 @@ package com.rehman.ahmedreactionstudio.editor
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.ProgressDialog
-import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
@@ -12,15 +11,12 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
-import android.media.MediaScannerConnection
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Environment
 import android.os.Handler
 import android.os.Looper
-import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.view.Gravity
 import android.view.View
@@ -51,7 +47,9 @@ import com.rehman.ahmedreactionstudio.export.AudioDecode
 import com.rehman.ahmedreactionstudio.export.ClipAudio
 import com.rehman.ahmedreactionstudio.export.CompositionRecorder
 import com.rehman.ahmedreactionstudio.export.DecodedClip
+import com.rehman.ahmedreactionstudio.export.EncoderConfig
 import com.rehman.ahmedreactionstudio.export.Exporter
+import com.rehman.ahmedreactionstudio.export.MediaSave
 import com.rehman.ahmedreactionstudio.ui.DiagnosticsActivity
 import com.rehman.ahmedreactionstudio.util.UI
 import java.io.File
@@ -125,6 +123,10 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     /** live camera feed → canvas (one at a time; see LiveCamera) */
     private var liveCam: LiveCamera? = null
     private var liveCamLayerId: String? = null
+
+    /** screen flash (front-camera lighting): overlay panel + max brightness */
+    private var screenLight = false
+    private var screenLightView: View? = null
 
     private lateinit var engine: PreviewEngine
     private val undo = UndoStack()
@@ -248,6 +250,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         // release the camera whenever we leave the foreground; it is restarted
         // in onResume so another app can use the camera meanwhile
         if (liveCam?.recording != true) stopLiveCamera(evict = false)
+        // never leave the panel glowing / brightness pinned in the background
+        if (screenLight) { screenLight = false; applyScreenLight() }
         super.onStop()
     }
 
@@ -810,12 +814,19 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         }
 
         val avail = Exporter.Codec.available().ifEmpty { listOf(Exporter.Codec.H264) }
-        val codecNames = avail.map { it.label }
-        var codecIdx = avail.indexOfFirst { it == Exporter.Codec.H264 }.coerceAtLeast(0)
-        val qualityNames = arrayOf("Fast", "Balanced", "High quality")
+        val codecNames = avail.map {
+            if (it == Exporter.Codec.H265) "${it.label}  (smallest files)" else it.label
+        }
+        // Default to HEVC when the device can encode it: same quality as H.264
+        // at roughly 60 % of the bitrate, which is most of the "long video, few
+        // MB" win. H.264 stays one tap away for maximum compatibility.
+        var codecIdx = avail.indexOfFirst { it == Exporter.Codec.H265 }
+            .let { if (it >= 0) it else avail.indexOfFirst { c -> c == Exporter.Codec.H264 } }
+            .coerceAtLeast(0)
+        val qualityNames = EncoderConfig.Quality.entries.map { "${it.label} — ${it.hint}" }
         val resNames = arrayOf("Small (~480p)", "Medium (~720p)", "Large (~1080p)")
         val fpsNames = arrayOf("24 fps", "30 fps")
-        var quality = 1
+        var quality = EncoderConfig.Quality.BALANCED.ordinal
         var maxDim = 720
         var fps = 30
 
@@ -836,13 +847,41 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             return t
         }
 
-        valueRow("Format / codec", codecNames[codecIdx], codecNames) { codecIdx = it }
-        valueRow("Resolution", resNames[1], resNames.toList()) { maxDim = intArrayOf(480, 720, 1080)[it] }
-        valueRow("Quality", qualityNames[1], qualityNames.toList()) { quality = it }
-        valueRow("Frame rate", fpsNames[1], fpsNames.toList()) { fps = if (it == 0) 24 else 30 }
+        // forward declaration so every picker can refresh the size estimate
+        var estimate: TextView? = null
+        fun refreshEstimate() {
+            val (w, h) = Exporter.chooseSize(p.aspect.canvasW, p.aspect.canvasH, maxDim)
+            val mime = avail[codecIdx].mime
+            val q = EncoderConfig.Quality.of(quality)
+            val perMin = EncoderConfig.megabytesPerMinute(q, w, h, fps, mime)
+            val total = EncoderConfig.predictedBytes(q, w, h, fps, mime, p.durationMs())
+            estimate?.text =
+                "≈ ${UI.niceBytes(total)} for this project  ·  about " +
+                "${String.format(java.util.Locale.US, "%.1f", perMin)} MB per minute\n" +
+                "${w}×${h} @ ${fps}fps · ${avail[codecIdx].label} · long-GOP VBR (OBS-style)"
+        }
+
+        valueRow("Format / codec", codecNames[codecIdx], codecNames) { codecIdx = it; refreshEstimate() }
+        valueRow("Resolution", resNames[1], resNames.toList()) {
+            maxDim = intArrayOf(480, 720, 1080)[it]; refreshEstimate()
+        }
+        valueRow("Quality", qualityNames[quality], qualityNames) { quality = it; refreshEstimate() }
+        valueRow("Frame rate", fpsNames[1], fpsNames.toList()) {
+            fps = if (it == 0) 24 else 30; refreshEstimate()
+        }
+
+        val est = UI.label(this, "", dim = false, size = 12f)
+        val elp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT)
+        elp.setMargins(UI.dp(this, 14), UI.dp(this, 10), UI.dp(this, 14), UI.dp(this, 2))
+        est.layoutParams = elp
+        panelContent.addView(est)
+        estimate = est
+        refreshEstimate()
 
         val info = UI.label(this,
             "H.264/H.265 → MP4 · VP8/VP9 → WebM. What you see is exactly what exports.\n" +
+            "Saved to Movies/AhmedReactionStudio (Gallery).\n" +
             "Duration ${UI.fmtTime(p.durationMs())} · ${p.layers.size} sources",
             dim = true, size = 10.5f)
         val ilp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
@@ -931,6 +970,11 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             bar(if (rec) R.drawable.ic_stop else R.drawable.ic_camera,
                 if (rec) UI.DANGER else UI.OK) { toggleLiveCameraRecord(l) }
             bar(R.drawable.ic_switch, UI.FG) { switchCameraFacing(l) }
+            // one-tap light: LED when the lens has one, screen flash otherwise
+            val lit = liveCam?.torch == true || screenLight
+            bar(R.drawable.ic_flash, if (lit) UI.ACCENT2 else UI.FG) {
+                if (liveCam?.hasFlashUnit == true) toggleTorch(l) else toggleScreenLight()
+            }
         }
         bar(if (l.locked) R.drawable.ic_lock else R.drawable.ic_lock_open,
             if (l.locked) UI.ACCENT2 else UI.FG) { ctrl.toggleLocked(l.id) }
@@ -1676,11 +1720,13 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         val p = proj!!
         if (exportRunning) { UI.toast(this, "An export is already running"); return }
 
-        val dir = File(getExternalFilesDir(android.os.Environment.DIRECTORY_MOVIES), "AhmedStudio")
-        dir.mkdirs()
+        // Encode into the private cache first: always writable, and a failed or
+        // cancelled export never leaves a half file in the user's Gallery.
+        // MediaSave then moves it somewhere the phone can actually see.
         val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
-        val out = File(dir, "AhmedReaction_${p.name.replace(" ", "_")}_$stamp.${codec.ext}")
-        val mime = if (codec.webm) "video/webm" else "video/mp4"
+        val fileName = "AhmedReaction_${p.name.replace(" ", "_")}_$stamp.${codec.ext}"
+        val out = File(cacheDir, fileName)
+        val mime = MediaSave.mimeFor(codec.ext)
 
         flushSave()
         exportRunning = true
@@ -1705,17 +1751,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
                     exportRunning = false
                     exportDialog?.dismiss(); exportDialog = null
                     if (res.ok && res.file != null) {
-                        UI.publishToGallery(this, res.file, mime) { uri ->
-                            AlertDialog.Builder(this)
-                                .setTitle("Export complete")
-                                .setMessage("Saved to Gallery / Movies/AhmedReactionStudio\n\n${res.file.absolutePath}\n${UI.niceBytes(res.file.length())}")
-                                .setPositiveButton("Share") { _, _ ->
-                                    if (uri != null) UI.shareUri(this, uri, mime)
-                                    else UI.toast(this, "Saved (find it in Movies/AhmedStudio)")
-                                }
-                                .setNegativeButton("Close", null)
-                                .show()
-                        }
+                        publishAndReport(res.file, fileName, mime, "Export complete")
                     } else {
                         UI.toast(this, res.message)
                     }
@@ -1844,92 +1880,62 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         }
     }
 
-    /** Copy the finished take to a public folder named after the app, then offer to view it. */
+    /** Copy the finished take somewhere the phone can really see, then report it. */
     private fun saveRecordingToPublic(src: File, showUi: Boolean) {
         val p = proj
         val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
             .format(java.util.Date())
         val name = "AhmedReaction_${p?.name?.replace(" ", "_") ?: "project"}_$stamp.mp4"
-        val size = src.length()
-        var path: String? = null
-        var uri: Uri? = null
-        if (Build.VERSION.SDK_INT >= 29) {
-            // scoped storage: public Movies/<app> folder, visible in every file manager
-            uri = publishViaMediaStore(src, name)
-            if (uri == null) {
-                // fallback: app-external Movies folder
-                val dir = File(getExternalFilesDir(Environment.DIRECTORY_MOVIES), "AhmedReactionStudio")
-                dir.mkdirs()
-                val dest = File(dir, name)
-                src.copyTo(dest, overwrite = true)
-                path = dest.absolutePath
-            }
-        } else {
-            // legacy: a folder named after the app at the SD card root
-            try {
-                val dir = File(Environment.getExternalStorageDirectory(), "AhmedReactionStudio")
-                dir.mkdirs()
-                val dest = File(dir, name)
-                src.copyTo(dest, overwrite = true)
-                MediaScannerConnection.scanFile(this, arrayOf(dest.absolutePath),
-                    arrayOf("video/mp4"), null)
-                path = dest.absolutePath
-                uri = legacyContentUri(dest)
-            } catch (e: Exception) {
-                path = null
-                UI.toast(this, "Could not write to the SD card: ${e.message}")
-            }
+        if (showUi) publishAndReport(src, name, "video/mp4", "Recording saved")
+        else MediaSave.publishVideo(this, src, name, "video/mp4")
+    }
+
+    /**
+     * Save [src] publicly and tell the user THE TRUTH about where it went.
+     *
+     * The previous code announced "Saved to Gallery" unconditionally, even when
+     * the MediaStore insert had failed and the only copy sat in
+     * /Android/data/<pkg>/… where no file manager could reach it. Now the
+     * dialog reports the verified location and byte count, and a save that
+     * genuinely failed says so instead of pretending.
+     */
+    private fun publishAndReport(src: File, name: String, mime: String, title: String) {
+        val progress = ProgressDialog(this).apply {
+            setMessage("Saving to your phone…")
+            setCancelable(false)
+            show()
         }
-        try { src.delete() } catch (_: Exception) { }
-        if (showUi) showRecordedDialog(path, uri, size)
-    }
-
-    private fun publishViaMediaStore(src: File, name: String): Uri? {
-        return try {
-            val values = ContentValues().apply {
-                put(MediaStore.MediaColumns.DISPLAY_NAME, name)
-                put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
-                put(MediaStore.MediaColumns.RELATIVE_PATH, "Movies/AhmedReactionStudio")
-                put(MediaStore.Video.Media.IS_PENDING, 1)
-            }
-            val resolver = contentResolver
-            val ins = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-            if (ins != null) {
-                resolver.openOutputStream(ins)?.use { out -> src.inputStream().copyTo(out) }
-                values.clear()
-                values.put(MediaStore.Video.Media.IS_PENDING, 0)
-                resolver.update(ins, values, null, null)
-            }
-            ins
-        } catch (_: Exception) { null }
-    }
-
-    private fun legacyContentUri(f: File): Uri? {
-        return try {
-            val values = ContentValues().apply {
-                put(MediaStore.Video.Media.DATA, f.absolutePath)
-                put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-                put(MediaStore.Video.Media.DISPLAY_NAME, f.name)
-            }
-            contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-        } catch (_: Exception) { null }
-    }
-
-    private fun showRecordedDialog(path: String?, uri: Uri?, size: Long) {
-        val where = path ?: "Movies/AhmedReactionStudio"
-        AlertDialog.Builder(this)
-            .setTitle("Recording saved")
-            .setMessage("${UI.niceBytes(size)} · saved to\n$where")
-            .setPositiveButton("View") { _, _ -> viewRecording(uri, path) }
-            .setNeutralButton("Share") { _, _ ->
-                when {
-                    uri != null -> UI.shareUri(this, uri, "video/mp4")
-                    path != null -> UI.shareUri(this, Uri.fromFile(File(path)), "video/mp4")
-                    else -> UI.toast(this, "Saved to $where")
+        Thread {
+            val saved = try { MediaSave.publishVideo(this, src, name, mime) } catch (_: Throwable) { null }
+            runOnUiThread {
+                try { progress.dismiss() } catch (_: Exception) { }
+                if (saved == null) {
+                    AlertDialog.Builder(this)
+                        .setTitle("Could not save the video")
+                        .setMessage("The video was encoded but no writable public folder " +
+                            "accepted it. Free some storage and try again — nothing was lost " +
+                            "until you close this dialog.")
+                        .setPositiveButton("OK", null)
+                        .show()
+                    return@runOnUiThread
                 }
+                val where = if (saved.publiclyVisible)
+                    "Saved to ${saved.location}"
+                else
+                    "Public folders were unavailable, so it was saved inside the app folder:\n${saved.location}"
+                AlertDialog.Builder(this)
+                    .setTitle(title)
+                    .setMessage("$where\n\n${UI.niceBytes(saved.bytes)}")
+                    .setPositiveButton("View") { _, _ -> viewRecording(saved.uri, saved.path) }
+                    .setNeutralButton("Share") { _, _ ->
+                        val u = saved.uri ?: saved.path?.let { Uri.fromFile(File(it)) }
+                        if (u != null) UI.shareUri(this, u, mime)
+                        else UI.toast(this, saved.location)
+                    }
+                    .setNegativeButton("Close", null)
+                    .show()
             }
-            .setNegativeButton("Close", null)
-            .show()
+        }.start()
     }
 
     private fun viewRecording(uri: Uri?, path: String?) {
@@ -2233,6 +2239,81 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         l.mirror = !l.mirror
         liveCam?.setMirror(l.mirror)
         markDirty(); refreshAll()
+    }
+
+    // ---------------- flashlight (LED torch + screen light) ----------------
+
+    override fun isTorchOn(l: Layer): Boolean =
+        l.id == liveCamLayerId && liveCam?.torch == true
+
+    override fun hasTorch(l: Layer): Boolean =
+        l.id == liveCamLayerId && liveCam?.hasFlashUnit == true
+
+    override fun toggleTorch(l: Layer) {
+        val cam = liveCam
+        if (cam == null || l.id != liveCamLayerId) {
+            UI.toast(this, "The live camera is not running")
+            return
+        }
+        if (!cam.toggleTorch() && !cam.torch) {
+            UI.toast(this, "This camera has no flash — try the screen light")
+            return
+        }
+        UI.toast(this, if (cam.torch) "Flashlight on" else "Flashlight off")
+        refreshAll()
+    }
+
+    override fun isScreenLightOn(): Boolean = screenLight
+
+    /**
+     * SCREEN FLASH for the front camera.
+     *
+     * Front lenses almost never have an LED, so the phone itself becomes the
+     * lamp: a bright warm-white panel is laid over the stage surround and the
+     * window brightness is forced to maximum. It lights the face without
+     * touching the composition — the overlay sits OUTSIDE the exported canvas
+     * area, so nothing it does can end up in the recording or the export.
+     */
+    override fun toggleScreenLight() {
+        screenLight = !screenLight
+        applyScreenLight()
+        UI.toast(this, if (screenLight) "Screen light on" else "Screen light off")
+        refreshAll()
+    }
+
+    private fun applyScreenLight() {
+        // brightness
+        try {
+            val lp = window.attributes
+            lp.screenBrightness = if (screenLight) 1f else -1f
+            window.attributes = lp
+        } catch (_: Exception) { }
+        // the glow panel itself
+        if (screenLight) {
+            if (screenLightView == null) {
+                val v = View(this)
+                v.setBackgroundColor(Color.argb(235, 255, 246, 232))
+                v.isClickable = false
+                v.isFocusable = false
+                rootFrame.addView(v, FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT))
+                screenLightView = v
+            }
+            // keep it under the wheel / sheets but over the stage surround
+            screenLightView?.let { v ->
+                v.visibility = View.VISIBLE
+                v.bringToFront()
+                wheel.bringToFront()
+                if (this::sheet.isInitialized) sheet.bringToFront()
+            }
+        } else {
+            screenLightView?.visibility = View.GONE
+        }
+    }
+
+    override fun openFlashRing(l: Layer) {
+        openWheelLevel(RadialMenus.flash(this, l.id), -1f, -1f)
     }
 
     override fun toast(msg: String) { UI.toast(this, msg) }

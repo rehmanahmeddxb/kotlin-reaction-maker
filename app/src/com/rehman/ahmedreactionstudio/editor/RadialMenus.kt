@@ -72,6 +72,15 @@ object RadialMenus {
         fun toggleCameraRecord(l: Layer)
         fun switchCameraFacing(l: Layer)
         fun toggleCameraMirror(l: Layer)
+        /** hardware LED torch state of the camera that is open right now */
+        fun isTorchOn(l: Layer): Boolean
+        /** true when the CURRENTLY selected camera actually has an LED */
+        fun hasTorch(l: Layer): Boolean
+        fun toggleTorch(l: Layer)
+        /** screen flash: the canvas glows white to light a front-camera face */
+        fun isScreenLightOn(): Boolean
+        fun toggleScreenLight()
+        fun openFlashRing(l: Layer)
 
         fun toast(msg: String)
     }
@@ -157,6 +166,10 @@ object RadialMenus {
                 })
                 out.add(item(R.drawable.ic_loop, if (l.mirror) "Mirror: on" else "Mirror: off",
                     active = l.mirror, keepOpen = true) { h.toggleCameraMirror(l) })
+                out.add(folder(R.drawable.ic_flash, "Light",
+                    badge = if (h.isTorchOn(l) || h.isScreenLightOn()) "ON" else null) {
+                    flash(h, l.id)
+                })
             } else if (l.isClip()) {
                 out.add(item(if (l.playing) R.drawable.ic_pause else R.drawable.ic_play,
                     if (l.playing) "Pause" else "Play", active = !l.playing, keepOpen = true) {
@@ -192,6 +205,45 @@ object RadialMenus {
                 h.ctrl.duplicate(l.id)
             })
             out.add(item(R.drawable.ic_delete, "Delete", danger = true) { h.ctrl.delete(l.id) })
+            out
+        }
+    }
+
+    /**
+     * LIGHT RING — flashlight for both cameras.
+     *
+     * Back cameras get the real LED torch. Front cameras almost never have an
+     * LED, so they get a SCREEN FLASH instead: the canvas is flooded with a
+     * bright warm-white overlay and the window brightness is pushed to maximum,
+     * which is exactly the trick stock camera apps use for selfies. Both are
+     * offered here, and both stay tappable with the wheel open so you can dial
+     * the lighting in while watching the preview.
+     */
+    fun flash(h: Host, id: String): RadialMenuView.Level = RadialMenuView.Level(
+        R.drawable.ic_flash, "Light", "torch · screen flash · front and back"
+    ) {
+        val l = h.project.layerById(id)
+        if (l == null) emptyList() else {
+            val out = ArrayList<RadialMenuView.Item>()
+            val torchOn = h.isTorchOn(l)
+            val canTorch = h.hasTorch(l)
+            out.add(item(R.drawable.ic_flash,
+                when {
+                    !canTorch -> "No LED on this camera"
+                    torchOn -> "Flashlight: on"
+                    else -> "Flashlight: off"
+                },
+                active = torchOn, keepOpen = true) {
+                if (canTorch) h.toggleTorch(l)
+                else h.toast("This camera has no flash — use the screen light instead")
+            })
+            val screenOn = h.isScreenLightOn()
+            out.add(item(R.drawable.ic_eye,
+                if (screenOn) "Screen light: on" else "Screen light: off",
+                active = screenOn, keepOpen = true) { h.toggleScreenLight() })
+            out.add(item(R.drawable.ic_switch,
+                if (l.camFacing == 0) "Switch to back cam" else "Switch to front cam",
+                keepOpen = true) { h.switchCameraFacing(l) })
             out
         }
     }

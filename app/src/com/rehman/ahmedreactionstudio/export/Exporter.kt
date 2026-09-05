@@ -63,7 +63,8 @@ object Exporter {
     data class Options(
         val fps: Int = 30,
         val maxDim: Int = 720,
-        val quality: Int = 1,          // 0 fast, 1 balanced, 2 high
+        /** index into [EncoderConfig.Quality]: 0 tiny, 1 small, 2 balanced, 3 high */
+        val quality: Int = 2,
         val codec: Codec = Codec.H264,
         val outFile: File
     )
@@ -134,8 +135,7 @@ object Exporter {
             try {
                 val (w, h) = chooseSize(p.aspect.canvasW, p.aspect.canvasH, opts.maxDim)
                 val fps = opts.fps
-                val bpp = doubleArrayOf(0.06, 0.12, 0.18)[opts.quality.coerceIn(0, 2)]
-                val bitrate = (w * h * fps * bpp).toInt().coerceIn(400_000, 24_000_000)
+                val quality = EncoderConfig.Quality.of(opts.quality)
                 val durationMs = p.durationMs()
                 val totalFrames = (durationMs * fps / 1000L).toInt().coerceAtLeast(1)
 
@@ -150,11 +150,12 @@ object Exporter {
                 // NV12 packing for SemiPlanar; I420 packing for Planar; Flexible treated as NV12
                 val nv12 = colorFmt != MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar
 
-                val format = MediaFormat.createVideoFormat(opts.codec.mime, w, h)
-                format.setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFmt)
-                format.setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
-                format.setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-                format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                // OBS-class tuning: long GOP + VBR + B-frames + resolution-aware
+                // bitrate. This is where "hours of footage in a few hundred MB"
+                // comes from; see EncoderConfig for the reasoning.
+                val format = EncoderConfig.videoFormat(
+                    opts.codec.mime, w, h, fps, colorFmt, quality, liveRecorder = false
+                )
                 codec = MediaCodec.createByCodecName(encName)
                 codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                 codec.start()
