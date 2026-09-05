@@ -167,6 +167,10 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     /** live camera feed → canvas (one at a time; see LiveCamera) */
     private var liveCam: LiveCamera? = null
     private var liveCamLayerId: String? = null
+    /** true after we've auto-opened the fullscreen recorder once for a
+     *  live-camera failure, so a busy camera can never bounce between
+     *  screens in a loop; reset whenever a live camera starts cleanly. */
+    private var cameraFallbackShown = false
 
     /** screen flash (front-camera lighting): overlay panel + max brightness */
     private var screenLight = false
@@ -252,12 +256,20 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         updateRecordButton()
     }
 
-    private fun applyOrientationFor(@Suppress("UNUSED_PARAMETER") a: Aspect) {
-        // STEP 1 viewport fix: never force-rotate the phone for a canvas
-        // aspect. Every canvas (16:9, 9:16, 1:1) contain-fits every device
-        // orientation via ViewportFit, so locking fought the user, hid the
-        // composition mid-rotate, and made 16:9-in-portrait untestable.
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    private fun applyOrientationFor(a: Aspect) {
+        // Follow the canvas: picking a 16:9 canvas rotates the studio into
+        // landscape (where the landscape chrome/rail lives and the canvas
+        // fills the width), picking 9:16 goes portrait. 1:1 is neutral — it
+        // contain-fits either way, so we don't fight the user. The editor
+        // declares configChanges for orientation, so this rotation re-lays
+        // the chrome via onConfigurationChanged instead of restarting the
+        // activity — the camera, decoders and master clock keep running.
+        val want = when (a) {
+            Aspect.R169 -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            Aspect.R916 -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+            Aspect.R11 -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+        if (requestedOrientation != want) requestedOrientation = want
     }
 
     override fun onSaveInstanceState(out: Bundle) {
@@ -3388,19 +3400,38 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
                 when (state) {
                     "permission" -> UI.toast(this, "Camera permission is needed")
                     "nocamera" -> {
-                        UI.toast(this, "No camera on this device — using the fullscreen recorder")
-                        removeLiveCameraLayer(); openCamera()
+                        // No camera2 device at all. Leave the layer in place
+                        // (so undo still works) but stop the feed; only the
+                        // first failure auto-opens the fullscreen recorder,
+                        // never repeatedly, or a busy camera would bounce the
+                        // user between two screens in a loop.
+                        stopLiveCamera(evict = true)
+                        if (!cameraFallbackShown) {
+                            cameraFallbackShown = true
+                            UI.toast(this, "No live camera available — opening the recorder once")
+                            openCamera()
+                        } else UI.toast(this, "No camera available on this device")
                     }
                     "error" -> {
-                        UI.toast(this, "Camera busy — falling back to the fullscreen recorder")
-                        removeLiveCameraLayer(); openCamera()
+                        stopLiveCamera(evict = true)
+                        if (!cameraFallbackShown) {
+                            cameraFallbackShown = true
+                            UI.toast(this, "Camera busy — opening the fullscreen recorder once")
+                            openCamera()
+                        } else UI.toast(this, "Camera is busy — close other camera apps and retry")
+                    }
+                    "disconnected" -> {
+                        // Camera went away (another app grabbed it, USB cam
+                        // unplugged). Keep the layer: it revives on resume.
+                        UI.toast(this, "Camera disconnected — it reconnects when available")
                     }
                     "recfail" -> UI.toast(this, "Could not record this camera take")
+                    "busy" -> UI.toast(this, "Camera is busy with the take — stop it first")
                     "torcherror" -> UI.toast(this,
                         liveCam?.torchLastError()?.takeIf { it.isNotBlank() }
                             ?: "Hardware torch unavailable")
                     "recording" -> { recChip.text = "● STOP CAMERA TAKE"; recChip.contentDescription = "Stop the camera take"; recChip.visibility = if (fullCanvas) View.GONE else View.VISIBLE }
-                    "live" -> refreshAll()
+                    "live" -> { cameraFallbackShown = false; refreshAll() }
                 }
             }
         })
