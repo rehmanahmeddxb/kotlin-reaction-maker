@@ -172,11 +172,12 @@ class CompositionRecorder(
         try {
             outFile?.parentFile?.mkdirs()
             // video encoder
-            val vf = MediaFormat.createVideoFormat(videoMime, w, h)
-            vf.setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFmt)
-            vf.setInteger(MediaFormat.KEY_BIT_RATE, (w * h * fps * 0.12).toInt().coerceIn(400_000, 24_000_000))
-            vf.setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-            vf.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+            // Same OBS-class tuning as the exporter, with a 2 s GOP and no
+            // B-frames because this path runs in real time.
+            val vf = EncoderConfig.videoFormat(
+                videoMime, w, h, fps, colorFmt,
+                EncoderConfig.Quality.BALANCED, liveRecorder = true
+            )
             codec = MediaCodec.createByCodecName(encName)
             codec!!.configure(vf, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             codec!!.start()

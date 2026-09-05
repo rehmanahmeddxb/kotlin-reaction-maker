@@ -152,37 +152,13 @@ object UI {
     }
 
     /**
-     * Publish an exported file to the system gallery (MediaStore) and offer to
-     * share it. MediaStore content URIs are shareable without FileProvider, and
-     * grantable read permission covers the chooser target (API 29+).
+     * Saving a finished video lives in [com.rehman.ahmedreactionstudio.export.MediaSave].
+     *
+     * The old `publishToGallery` helper that used to sit here reported success
+     * even when its MediaStore insert had thrown or written zero bytes, which is
+     * why exports appeared to vanish. Use MediaSave.publishVideo instead — it
+     * verifies the bytes and tells you where the file really landed.
      */
-    fun publishToGallery(act: Activity, file: java.io.File, mime: String = "video/mp4", onDone: (android.net.Uri?) -> Unit) {
-        try {
-            if (android.os.Build.VERSION.SDK_INT >= 29) {
-                val values = android.content.ContentValues().apply {
-                    put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, file.name)
-                    put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime)
-                    put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
-                        "Movies/AhmedReactionStudio")
-                    put(android.provider.MediaStore.Video.Media.IS_PENDING, 1)
-                }
-                val resolver = act.contentResolver
-                val uri = resolver.insert(android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-                if (uri != null) {
-                    resolver.openOutputStream(uri)?.use { out -> file.inputStream().copyTo(out) }
-                    values.clear()
-                    values.put(android.provider.MediaStore.Video.Media.IS_PENDING, 0)
-                    resolver.update(uri, values, null, null)
-                    onDone(uri)
-                    return
-                }
-            }
-            onDone(null)
-        } catch (e: Exception) {
-            toast(act, "Save to gallery failed: ${e.message}")
-            onDone(null)
-        }
-    }
 
     fun shareUri(act: Activity, uri: android.net.Uri, mime: String = "video/mp4") {
         try {

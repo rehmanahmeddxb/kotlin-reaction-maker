@@ -64,6 +64,12 @@ class LiveCamera(
 
     @Volatile private var facing = CameraCharacteristics.LENS_FACING_FRONT
     @Volatile private var mirror = true
+    /** hardware torch (LED) state; re-applied after every session rebuild */
+    @Volatile var torch = false
+        private set
+    /** whether the CURRENTLY open camera has an LED at all */
+    @Volatile var hasFlashUnit = false
+        private set
     @Volatile var recording = false
         private set
     @Volatile private var opening = false
@@ -93,6 +99,35 @@ class LiveCamera(
         ctx.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
 
     fun isFront(): Boolean = facing == CameraCharacteristics.LENS_FACING_FRONT
+
+    /**
+     * Turn the LED torch on/off for the camera that is open right now.
+     *
+     * The flag is stored and re-applied inside [repeatRequest], so the torch
+     * survives a session rebuild (starting/stopping a take) instead of silently
+     * switching itself off — which is what makes a torch toggle feel broken.
+     * Returns false when this camera has no flash unit.
+     */
+    fun setTorch(on: Boolean): Boolean {
+        if (on && !hasFlashUnit) return false
+        torch = on
+        handler?.post { repeatRequest() }
+        return true
+    }
+
+    fun toggleTorch(): Boolean = setTorch(!torch)
+
+    /** Does the camera facing [front] have an LED? Answers without opening it. */
+    fun flashAvailable(front: Boolean): Boolean = try {
+        val want = if (front) CameraCharacteristics.LENS_FACING_FRONT
+        else CameraCharacteristics.LENS_FACING_BACK
+        val m = cm()
+        m.cameraIdList.any { id ->
+            val ch = m.getCameraCharacteristics(id)
+            ch.get(CameraCharacteristics.LENS_FACING) == want &&
+                ch.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+        }
+    } catch (_: Exception) { false }
 
     fun setMirror(m: Boolean) { mirror = m }
 
@@ -135,6 +170,9 @@ class LiveCamera(
     }
 
     private fun releaseAll() {
+        // never walk away leaving the LED burning
+        torch = false
+        try { repeatRequest() } catch (_: Exception) { }
         stopRecordingLocked(discard = true)
         closeCameraOnly()
         bufA = null; bufB = null
@@ -169,6 +207,9 @@ class LiveCamera(
         try {
             val ch = cm().getCameraCharacteristics(id)
             sensorOrientation = ch.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+            hasFlashUnit = ch.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+            // a torch request cannot survive a move to a camera with no LED
+            if (!hasFlashUnit) torch = false
             val map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             val sizes = map?.getOutputSizes(ImageFormat.YUV_420_888)
             feedSize = sizes?.filter { it.width <= 1280 && it.height <= 1280 }
@@ -252,6 +293,18 @@ class LiveCamera(
             b.addTarget(r.surface)
             if (recording) recorder?.surface?.let { b.addTarget(it) }
             b.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+            // Torch must be set on EVERY repeating request: a new session (e.g.
+            // after starting a take) starts from a clean request builder, so a
+            // torch applied once would quietly go dark.
+            b.set(
+                CaptureRequest.FLASH_MODE,
+                if (torch && hasFlashUnit) CaptureRequest.FLASH_MODE_TORCH
+                else CaptureRequest.FLASH_MODE_OFF
+            )
+            if (torch && hasFlashUnit) {
+                // stop AE from switching the LED back off between frames
+                b.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+            }
             s.setRepeatingRequest(b.build(), null, handler)
         } catch (_: Exception) { }
     }
