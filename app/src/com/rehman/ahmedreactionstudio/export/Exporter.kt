@@ -16,6 +16,7 @@ import com.rehman.ahmedreactionstudio.core.Project
 import com.rehman.ahmedreactionstudio.core.ProjectStore
 import com.rehman.ahmedreactionstudio.core.gpu.GpuVideoPipeline
 import java.io.File
+import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 import kotlin.math.max
@@ -613,6 +614,7 @@ object Exporter {
         val mixed = ShortArray(n)
         mixer.limiter.apply(mix, n, mixed)
         buf.clear()
+        buf.order(ByteOrder.nativeOrder())   // MediaCodec PCM is native-endian
         buf.asShortBuffer().put(mixed)
         codec.queueInputBuffer(inIdx, 0, mixed.size * 2, audioPts(baseSamples), 0)
         return true

@@ -52,11 +52,21 @@ get:
 - **Main canvas** — the layer box *is* the canvas (1 × 1). How the frame
   fills it is per-source: `fit = fill` cover-crops (full bleed), `fit = fit`
   letterboxes the **whole frame** inside the canvas (camera default — nothing
-  gets cut). The selection frame and all eight handles stay on screen.
+  gets cut).
 - **Overlays / PiP** — the box keeps the *source* aspect ratio, is fitted into
   the reaction-cam area and pinned to a corner, so a portrait camera take is
   never squashed into a landscape sliver. Dragging keeps at least 40 % of the
   layer on canvas.
+- **Selection frame (KineMaster/CapCut-style)** — exactly one source is
+  selected, and its orange editing frame (border, 8 transform handles,
+  rotate knob, label) is drawn around the source's **exact visible bounds**
+  — the same `LayerFit.drawnFrame` rect the compositor draws the picture
+  into — following position, size, scale and rotation, on 16:9 / 9:16 / 1:1
+  and while video plays. It never surrounds the empty letterbox of a
+  `fit`-mode source (no more border around the whole canvas for a portrait
+  camera main) and never a second source. Unselected sources keep only a
+  very subtle outline. All of it is one `StageView.onDraw` pass — no extra
+  Android views, nothing to churn per video frame, nothing exported.
 - **Preview decoding (GPU path)** — continuous hardware decode per clip:
   `MediaExtractor` → `MediaCodec` → OES `SurfaceTexture` → GL blit → bitmap,
   same model as MX Player / ExoPlayer (not seek-grab thumbnails). Falls back

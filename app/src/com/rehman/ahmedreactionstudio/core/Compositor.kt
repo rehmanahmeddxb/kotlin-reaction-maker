@@ -39,9 +39,51 @@ object Compositor {
         if (rotation == 90 || rotation == 270) Pair(sh, sw) else Pair(sw, sh)
 
     /**
+     * The EXACT on-canvas bounds of what this layer visually occupies, in the
+     * pixel space of a W×H composition:
+     *  - COVER (`fill`) and text: the layer box — the drawn frame is clipped
+     *    to it, so what you SEE ends at the box edge, not at the frame edge
+     *  - CONTAIN (`fit`): the letterboxed drawn frame — the picture, not the
+     *    dead space around it
+     * When no frame exists yet (no bitmap) it degrades to the box so the layer
+     * stays selectable/grabbable.
+     *
+     * `StageView` draws the selection border, the 8 handles and the rotate knob
+     * around precisely this rect, and hit-testing uses it too. It shares the
+     * [LayerFit.drawnFrame] formula with [drawLayer], so the chrome and the
+     * picture cannot drift apart — the border belongs to the SOURCE, not to
+     * the canvas, and follows position/size/rotation automatically.
+     */
+    fun chromeRect(l: Layer, b: Bitmap?, W: Int, H: Int, out: RectF) {
+        val cx = l.cx * W
+        val cy = l.cy * H
+        var w = l.wN * W
+        var h = l.hN * H
+        if (l.type != LayerType.TEXT && b != null && !b.isRecycled) {
+            val (effW, effH) = if (l.srcW > 0) effectiveSize(l.srcW, l.srcH, l.srcRotation)
+            else Pair(b.width, b.height)
+            val (fw, fh) = LayerFit.drawnFrame(w, h, effW, effH, l.fit)
+            if (fw >= 1f && fh >= 1f) {
+                // visible = frame ∩ box (cover overflows the box and is clipped;
+                // contain is fully inside it)
+                w = minOf(w, fw)
+                h = minOf(h, fh)
+            }
+        }
+        w = w.coerceAtLeast(1f)
+        h = h.coerceAtLeast(1f)
+        out.set(cx - w / 2f, cy - h / 2f, cx + w / 2f, cy + h / 2f)
+    }
+
+    /**
      * Draws the full composition into [canvas] (size W x H).
      * @param bitmapFor returns the decoded bitmap for a media layer, or null
      *                  (caller owns caching; the compositor never decodes).
+     * @param selectionId reserved: the id the EDITOR currently edits. The
+     *                    compositor never draws any chrome — selection UI is
+     *                    the StageView's job (drawn around [chromeRect]) so
+     *                    preview == export by construction and no border can
+     *                    ever leak into a recording or an export.
      * @param textLayerOverrides optional id->text to preview live typing
      */
     fun draw(
@@ -90,27 +132,28 @@ object Compositor {
             if (b != null && !b.isRecycled) {
                 val (effW, effH) = if (l.srcW > 0) effectiveSize(l.srcW, l.srcH, l.srcRotation)
                 else Pair(b.width, b.height)
-                if (effW <= 0 || effH <= 0) { if (rotated) canvas.restore(); return }
-                val alpha = (l.opacity * 255f).toInt().coerceIn(0, 255)
-                ctx.p.alpha = alpha
-                canvas.save()
-                canvas.clipRect(ctx.rect)
                 // Per-source fit mode (OBS plan §3):
                 //  FILL = COVER  — the frame fills its box (full-bleed mains,
                 //                  edges cropped when aspects differ)
                 //  FIT  = CONTAIN — the WHOLE frame is visible inside the box,
                 //                  letterboxed; this is what stops camera takes
                 //                  being "cut out" on a different-aspect canvas.
-                val sc = if (l.fit == Layer.FIT_FIT) kotlin.math.min(boxW / effW, boxH / effH)
-                         else kotlin.math.max(boxW / effW, boxH / effH)
-                val dw = effW * sc
-                val dh = effH * sc
-                val dx = cx - dw / 2f
-                val dy = cy - dh / 2f
-                ctx.dst.set(dx, dy, dx + dw, dy + dh)
-                canvas.drawBitmap(b, null, ctx.dst, ctx.p)
-                canvas.restore()
-                ctx.p.alpha = 255
+                // The size math is LayerFit.drawnFrame — THE formula, shared
+                // with Compositor.chromeRect, so the editor's selection border
+                // surrounds exactly this rect.
+                val (dw, dh) = LayerFit.drawnFrame(boxW, boxH, effW, effH, l.fit)
+                if (dw >= 1f && dh >= 1f) {
+                    val alpha = (l.opacity * 255f).toInt().coerceIn(0, 255)
+                    ctx.p.alpha = alpha
+                    canvas.save()
+                    canvas.clipRect(ctx.rect)
+                    val dx = cx - dw / 2f
+                    val dy = cy - dh / 2f
+                    ctx.dst.set(dx, dy, dx + dw, dy + dh)
+                    canvas.drawBitmap(b, null, ctx.dst, ctx.p)
+                    canvas.restore()
+                    ctx.p.alpha = 255
+                }
             }
         }
         if (rotated) canvas.restore()

@@ -54,6 +54,9 @@ for rel in (
     "export/ExportValidator.kt",
     "export/CompositionRecorder.kt",
     "export/Exporter.kt",
+    "export/AudioDecode.kt",
+    "export/AudioMixer.kt",
+    "export/AudioMath.kt",
     "editor/PreviewEngine.kt",
     "editor/LiveCamera.kt",
     "core/gpu/GlUtil.kt",
@@ -74,8 +77,17 @@ must_contain("export/CompositionRecorder.kt", "YuvWriter.fillInput", "recorder u
 must_contain("export/Exporter.kt", "COLOR_FormatYUV420Flexible", "Flexible preferred")
 
 # ---- PTS / muxer ----
-must_contain("export/Exporter.kt", "vPts.next", "monotonic video PTS")
-must_contain("export/CompositionRecorder.kt", "videoPts.next", "recorder monotonic video PTS")
+# STEP 3: MonotonicPts guards are OUTPUT-ONLY (muxer timeline). Encoder inputs
+# pass their own monotonic timelines directly (video: frame/wall clock,
+# audio: sample count). Sharing one clock for inputs+outputs compressed
+# encoder-delayed timestamps, so the guard lives in writeOut/writeTrack as
+# `clock.next(info.presentationTimeUs)` with per-track clock instances.
+must_contain("export/Exporter.kt", "clock.next(info.presentationTimeUs)", "monotonic muxer PTS (output guard)")
+must_contain("export/CompositionRecorder.kt", "clock.next(info.presentationTimeUs)", "recorder monotonic muxer PTS (output guard)")
+must_contain("export/Exporter.kt", "val vPts = MonotonicPts()", "video output clock instance")
+must_contain("export/Exporter.kt", "val aClock = MonotonicPts()", "audio output clock instance")
+must_contain("export/CompositionRecorder.kt", "private val videoPts = MonotonicPts()", "recorder video output clock")
+must_contain("export/CompositionRecorder.kt", "private val audioPtsClock = MonotonicPts()", "recorder audio output clock")
 must_contain("export/CompositionRecorder.kt", "BUFFER_FLAG_END_OF_STREAM", "recorder sends EOS")
 must_contain("export/Exporter.kt", "muxerFailed", "muxer.start fail-loud")
 must_contain("export/CompositionRecorder.kt", "muxer.start failed", "recorder muxer.start fail-loud")
@@ -119,6 +131,35 @@ must_contain("export/ExportValidator.kt", "pts < last", "reject backwards timest
 # ---- default playable baseline ----
 must_contain("export/CompositionRecorder.kt", "MIMETYPE_VIDEO_AVC", "RECORD is H.264")
 must_contain("editor/EditorActivity.kt", "Exporter.Codec.H264", "H.264 default")
+
+# ---- STEP 3 audio pipeline ----
+# One format everywhere (mixer/decode/encode/PTS agree — no assumed rates).
+must_contain("export/AudioMixer.kt", "object AudioConfig", "single audio format truth")
+must_contain("export/AudioMixer.kt", "SAMPLE_RATE", "central sample rate")
+must_contain("export/AudioMixer.kt", "enum class AudioSourceState", "per-source states")
+must_contain("export/AudioMixer.kt", "TEMPORARILY_EMPTY", "empty != ended")
+must_contain("export/AudioMixer.kt", "class AudioMixer", "shared mixer")
+must_contain("export/AudioMixer.kt", "fun ptsUs", "sample-count PTS")
+# Native byte order on every raw-audio ByteBuffer (BIG_ENDIAN default = distortion).
+must_contain("export/AudioDecode.kt", "ByteOrder.nativeOrder()", "decode PCM byte order")
+must_contain("export/CompositionRecorder.kt", "ByteOrder.nativeOrder()", "recorder PCM byte order")
+must_contain("export/Exporter.kt", "ByteOrder.nativeOrder()", "exporter PCM byte order")
+# Recorder: dedicated audio thread + serialized muxer (MediaMuxer is not thread-safe).
+must_contain("export/CompositionRecorder.kt", "compo-rec-audio", "dedicated audio thread")
+must_contain("export/CompositionRecorder.kt", "muxerLock", "muxer synchronization")
+# Phase 2: recorder + exporter share ONE clip cursor (AudioMath.ClipCursor —
+# composition-time -> media-time with loop / pause / speed, never past durMs)
+# and ONE limiter, instead of each carrying its own mixing arithmetic.
+must_contain("export/CompositionRecorder.kt", "ClipCursor", "shared clip cursor (recorder)")
+must_contain("export/Exporter.kt", "ClipCursor", "shared clip cursor (exporter)")
+must_contain("export/AudioMath.kt", "class ClipCursor", "clip cursor definition")
+must_contain("export/AudioMath.kt", "class Limiter", "clip-safe limiter")
+must_contain("export/AudioMath.kt", "class Resampler", "48k->44.1k mic resampler")
+must_contain("export/CompositionRecorder.kt", "samplesEncoded * 1_000_000L / AUDIO_RATE", "audio PTS from samples encoded")
+must_not_match("export/CompositionRecorder.kt", r"Thread\.sleep", "no sleep-based audio sync in the recorder")
+# Clip duration truth is decoded frames, not retriever-ms estimates.
+must_not_match("export/Exporter.kt", r"durMs\s*\*\s*44100", "no ms-derived clip duration in exporter")
+must_not_match("export/CompositionRecorder.kt", r"durMs\s*\*\s*AUDIO_RATE", "no ms-derived clip duration in recorder")
 
 
 # ---- MonotonicPts algorithm (mirrors YuvWriter.kt) ----
@@ -182,9 +223,133 @@ def test_bt709_range() -> None:
         oks.append(f"BT.709 limited white = {white}")
 
 
+def test_audio_pts() -> None:
+    # Mirrors AudioConfig.ptsUs: samples * 1_000_000 / 44100 (integer math).
+    def pts_us(samples: int) -> int:
+        return samples * 1_000_000 // 44100
+
+    if pts_us(0) != 0:
+        errors.append("audio PTS of 0 samples must be 0")
+    else:
+        oks.append("audio PTS(0) = 0")
+    if pts_us(44100) != 1_000_000:
+        errors.append("audio PTS of 1 second must be 1_000_000 us")
+    else:
+        oks.append("audio PTS(44100) = 1s")
+    # 1024-frame AAC chunks must be strictly increasing with no jumps.
+    seq = [pts_us(i * 1024) for i in range(200)]
+    if any(seq[i] <= seq[i - 1] for i in range(1, len(seq))):
+        errors.append("audio chunk PTS not strictly increasing")
+    else:
+        oks.append("audio chunk PTS strictly increasing over 200 chunks")
+    step = seq[1] - seq[0]
+    if not (23_000 <= step <= 23_500):
+        errors.append(f"audio chunk step {step} us, want ~23220 us")
+    else:
+        oks.append(f"audio chunk step = {step} us (~23.2 ms)")
+
+
+def test_audio_mixer() -> None:
+    # Mirrors ClipAudioSource.mixInto + AudioMixer: per-source states, and the
+    # two invariants TEMPORARILY_EMPTY != ENDED and ONE-ENDED != GLOBAL-EOS.
+    ACTIVE, TEMPTY, ENDED, MUTED = "ACTIVE", "TEMPORARILY_EMPTY", "ENDED", "MUTED"
+
+    class Clip:
+        def __init__(self, pcm, volume=1.0, loop=False, muted=False):
+            self.pcm = pcm
+            self.volume = volume
+            self.loop = loop
+            self.muted = muted
+
+        def mix_into(self, base, out):
+            if self.muted:
+                return MUTED
+            total = len(self.pcm)
+            if total <= 0:
+                return ENDED
+            produced = False
+            past_end = False
+            for i in range(len(out)):
+                p = base + i
+                if p < total:
+                    idx = p
+                elif self.loop:
+                    idx = p % total
+                else:
+                    idx = -1
+                if idx < 0 or idx >= total:
+                    past_end = True
+                    continue
+                produced = True
+                if self.volume != 0.0:
+                    v = out[i] + int(self.pcm[idx] * self.volume)
+                    out[i] = max(-32768, min(32767, v))
+            if produced:
+                return ACTIVE
+            return ENDED if past_end else ACTIVE
+
+    # 1. basic mix: two constant clips sum (with clipping).
+    a = Clip([1000] * 44100)
+    b = Clip([2000] * 44100)
+    out = [0] * 1024
+    sa, sb = a.mix_into(0, out), b.mix_into(0, out)
+    if sa != ACTIVE or sb != ACTIVE or any(v != 3000 for v in out):
+        errors.append("mixer basic sum failed")
+    else:
+        oks.append("mixer sums two clips sample-by-sample")
+    # 2. clipping, not overflow.
+    c = Clip([30000] * 44100)
+    d = Clip([30000] * 44100)
+    out2 = [0] * 8
+    c.mix_into(0, out2)
+    d.mix_into(0, out2)
+    if any(v != 32767 for v in out2):
+        errors.append("mixer must clip at 32767")
+    else:
+        oks.append("mixer clips at int16 range")
+    # 3. non-loop clip ends -> ENDED + silence, mixer continues other clips.
+    short = Clip([500] * 100, loop=False)
+    long = Clip([700] * 44100, loop=False)
+    tail = [0] * 16
+    st_short = short.mix_into(1000, tail)  # fully past its 100 frames
+    st_long = long.mix_into(1000, tail)
+    if st_short != ENDED or st_long != ACTIVE or any(v != 700 for v in tail):
+        errors.append("one ENDED clip must not stop the mix")
+    else:
+        oks.append("ENDED clip -> silence, other clips continue (no global EOS)")
+    # 4. looping wraps instead of ending.
+    looper = Clip([i % 100 for i in range(200)], loop=True)
+    wrap = [0] * 8
+    st = looper.mix_into(198, wrap)  # frames 198,199,0,1,2,3,4,5
+    if st != ACTIVE or wrap != [98, 99, 0, 1, 2, 3, 4, 5]:
+        errors.append(f"loop wrap failed: {wrap}")
+    else:
+        oks.append("looping clip wraps at its end")
+    # 5. muted mixes silence but stays addressable (unmuting resumes).
+    m = Clip([900] * 44100, muted=True)
+    mo = [0] * 8
+    if m.mix_into(0, mo) != MUTED or any(v != 0 for v in mo):
+        errors.append("muted clip must mix silence")
+    else:
+        m.muted = False
+        if m.mix_into(0, mo) != ACTIVE or any(v != 900 for v in mo):
+            errors.append("unmuted clip must resume")
+        else:
+            oks.append("MUTED <-> ACTIVE without losing the source")
+    # 6. partial tail (base inside, end past): ACTIVE, real samples then silence.
+    part = Clip([111] * 10, loop=False)
+    po = [0] * 8
+    if part.mix_into(8, po) != ACTIVE or po != [111, 111, 0, 0, 0, 0, 0, 0]:
+        errors.append(f"partial tail failed: {po}")
+    else:
+        oks.append("partial tail mixes samples then silence, still ACTIVE")
+
+
 test_pts()
 test_yuv_packed_size()
 test_bt709_range()
+test_audio_pts()
+test_audio_mixer()
 
 print(f"{len(oks)} checks passed")
 for line in oks:

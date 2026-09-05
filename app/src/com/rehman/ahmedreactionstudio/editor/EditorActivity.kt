@@ -945,7 +945,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
                 if (!micOk) requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), REQ_RECORD_PERM)
                 else UI.toast(this, "Microphone is mixed into every recording")
             }
-            val lit = liveCam?.torch == true || liveCam?.bothTorchesOn() == true || screenLight
+            val lit = liveCam?.isTorchLitForFront() == true || liveCam?.isTorchLitForBack() == true || screenLight
             dockBtn(ctxBar, R.drawable.ic_flash, "Torch", "Camera light", active = lit) {
                 if (live != null) openFlashRing(live) else toggleScreenLight()
             }
@@ -988,7 +988,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
                 if (rec) "Stop the camera take" else "Record a camera take", active = rec) { toggleLiveCameraRecord(l) }
             dockBtn(ctxBar, R.drawable.ic_switch, "Switch", "Switch between front and back camera") { switchCameraFacing(l) }
             dockBtn(ctxBar, R.drawable.ic_loop, "Mirror", if (l.mirror) "Mirror off" else "Mirror on", active = l.mirror) { toggleCameraMirror(l) }
-            val lit = liveCam?.torch == true || liveCam?.bothTorchesOn() == true || screenLight
+            val lit = liveCam?.isTorchLitForFront() == true || liveCam?.isTorchLitForBack() == true || screenLight
             dockBtn(ctxBar, R.drawable.ic_flash, "Light", "Camera light", active = lit) { openFlashRing(l) }
         }
         dockBtn(ctxBar, R.drawable.ic_drag, "Move", "Centre ${l.name} on the canvas (drag it on the canvas to move freely)") {
@@ -1846,7 +1846,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
                 if (l.mirror) "Mirror off" else "Mirror on") { toggleCameraMirror(l) }
             // one-tap light: opens the full Light ring (Front / Back / Both / Screen) so
             // devices with LEDs on both sides expose all three options while recording
-            val lit = liveCam?.torch == true || liveCam?.bothTorchesOn() == true || screenLight
+            val lit = liveCam?.isTorchLitForFront() == true || liveCam?.isTorchLitForBack() == true || screenLight
             bar(R.drawable.ic_flash, if (lit) UI.ACCENT2 else UI.FG, "Camera light") { openFlashRing(l) }
         }
         bar(if (l.locked) R.drawable.ic_lock else R.drawable.ic_lock_open,
@@ -2208,10 +2208,13 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         // reads the stage on every call, so it stays correct after a rotate,
         // an aspect change or a layer resize without any extra plumbing.
         engine.layerTargetPx = { l ->
-            val boxLong = maxOf(l.wN * stage.canvasW, l.hN * stage.canvasH)
+            // decode at the size of the VISIBLE frame (a pillarboxed FIT main
+            // on a 16:9 canvas is a narrow strip — it must not pay for a
+            // full-canvas decode)
+            val frameLong = stage.visibleFrameMaxPx(l).toFloat()
             // headroom: a layer dragged larger keeps looking sharp for the
             // one frame it takes the decoder to notice
-            (boxLong * 1.25f).toInt().coerceIn(240, 1440)
+            (frameLong * 1.25f).toInt().coerceIn(240, 1440)
         }
     }
 
@@ -3162,6 +3165,9 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
                         removeLiveCameraLayer(); openCamera()
                     }
                     "recfail" -> UI.toast(this, "Could not record this camera take")
+                    "torcherror" -> UI.toast(this,
+                        liveCam?.torchLastError()?.takeIf { it.isNotBlank() }
+                            ?: "Hardware torch unavailable")
                     "recording" -> { recChip.text = "● STOP CAMERA TAKE"; recChip.contentDescription = "Stop the camera take"; recChip.visibility = View.VISIBLE }
                     "live" -> refreshAll()
                 }
@@ -3418,8 +3424,16 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             UI.toast(this, "The live camera is not running")
             return
         }
+        if (!cam.hasFlashUnit) {
+            // no LED on this side — say so instead of faking a torch
+            UI.toast(this, if (cam.isFront())
+                "Front camera has no LED — use the screen light"
+            else "This device has no rear flash")
+            return
+        }
         if (!cam.toggleTorch() && !cam.torch) {
-            UI.toast(this, "This camera has no flash — try the screen light")
+            UI.toast(this, cam.torchLastError().takeIf { it.isNotBlank() }
+                ?: "This camera has no flash — try the screen light")
             return
         }
         UI.toast(this, if (cam.torch) "Flashlight on" else "Flashlight off")
@@ -3428,8 +3442,13 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     override fun toggleFrontTorch() {
         val cam = liveCam
         if (cam == null) { UI.toast(this, "Live camera not running"); return }
+        if (!cam.hasFlashForFront()) {
+            UI.toast(this, "Front camera has no LED — use the screen light")
+            return
+        }
         if (!cam.toggleFrontTorch() && !cam.isTorchOnForFront()) {
-            UI.toast(this, "Front camera has no flash")
+            UI.toast(this, cam.torchLastError().takeIf { it.isNotBlank() }
+                ?: "Front flash unavailable")
             return
         }
         UI.toast(this, if (cam.isTorchOnForFront()) "Front flash on" else "Front flash off")
@@ -3438,18 +3457,31 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     override fun toggleBackTorch() {
         val cam = liveCam
         if (cam == null) { UI.toast(this, "Live camera not running"); return }
-        if (!cam.toggleBackTorch() && !cam.isTorchOnForBack()) {
-            UI.toast(this, "Back camera has no flash")
+        if (!cam.hasFlashForBack()) {
+            UI.toast(this, "This device has no rear flash")
             return
         }
-        UI.toast(this, if (cam.isTorchOnForBack()) "Back flash on" else "Back flash off")
+        if (!cam.toggleBackTorch() && !cam.isTorchOnForBack()) {
+            UI.toast(this, cam.torchLastError().takeIf { it.isNotBlank() }
+                ?: "Rear flash unavailable")
+            return
+        }
+        UI.toast(this, if (cam.isTorchOnForBack()) "Rear flash on (LED)" else "Rear flash off")
         refreshAll()
     }
     override fun toggleBothTorch() {
         val cam = liveCam
         if (cam == null) { UI.toast(this, "Live camera not running"); return }
+        if (!cam.hasFlashForFront() && !cam.hasFlashForBack()) {
+            UI.toast(this, "This device has no camera flash — use the screen light")
+            return
+        }
         val turnOn = !cam.bothTorchesFullyOn()
-        cam.setBothTorches(turnOn)
+        if (turnOn && !cam.setBothTorches(true)) {
+            UI.toast(this, "No camera flash is available")
+            return
+        }
+        if (!turnOn) cam.setBothTorches(false)
         UI.toast(this, if (turnOn) "Both flashes on" else "Both flashes off")
         refreshAll()
     }

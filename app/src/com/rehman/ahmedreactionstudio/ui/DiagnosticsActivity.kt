@@ -14,6 +14,7 @@ import android.os.StatFs
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.rehman.ahmedreactionstudio.camera.TorchController
 import com.rehman.ahmedreactionstudio.editor.EditorActivity
 import com.rehman.ahmedreactionstudio.util.UI
 import java.io.File
@@ -81,6 +82,15 @@ class DiagnosticsActivity : Activity() {
                 val flash = ch.get(android.hardware.camera2.CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
                 row("  $face camera $id", if (flash) "hardware flash" else "no flash")
             }
+        } catch (_: Exception) { }
+
+        // hardware torch: which camera id owns the LED, per side
+        try {
+            val t = TorchController(this)
+            t.start()
+            row("Torch: rear", t.describe(false))
+            row("Torch: front", t.describe(true))
+            t.shutdown()
         } catch (_: Exception) { }
 
         // codecs

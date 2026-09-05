@@ -222,7 +222,9 @@ layer list inside the Layers panel).
 | Test | Result |
 |---|---|
 | `TC_ROOT=/tmp/ahmed-tc ./build-apk.sh` | **BUILD OK** (9 incremental builds during the work, all green at the end; compile API 34, minSdk 26, targetSdk 30). |
-| `python3 tools/validate-pipeline.py` | **PIPELINE STATIC VALIDATION OK** (P0 guards intact: MonotonicPts, strided YUV, ExportValidator, no literal-0 EOS PTS, etc.). |
+| `python3 tools/validate-pipeline.py` | **PIPELINE STATIC VALIDATION OK** — 81 checks (P0 guards intact: MonotonicPts, strided YUV, ExportValidator, no literal-0 EOS PTS; plus `main`'s STEP-3 mixer unit checks and the Phase-2 guards: shared ClipCursor/Limiter/Resampler, samples-derived PTS, no `Thread.sleep` in the recorder). |
+| `python3 tools/validate-torch.py` | **TORCH STATIC VALIDATION OK** (34 checks, from `main` STEP 4). |
+| `bash tools/step2-geom-check.sh` | **STEP2 GEOMETRY CHECK: all green** (from `main` STEP 2 — border == drawn frame). |
 | `bash tools/audio-math-test/run.sh` | **32 passed, 0 failed** — PTS strictly increasing over 25 839 frames; 10 min of frames = 600 000 ms ± 19.6 ms; the *old* drop-but-advance rule shortens 10 min by 30 019 ms (the "sped-up" bug) vs **0 ms** with the new rule; 48 k→44.1 k resampler preserves pitch (3 999 vs 4 000 zero crossings) with no chunk-boundary clicks; `ClipCursor` wraps at `durMs`, non-loop clip ends silent, 2× speed halves duration, muted still advances, loop-aware seek; `Limiter` transparent below ceiling, 60 000-peak → 32 000 with waveform correlation 1.0000; drift guard ignores 50 ms, re-anchors at 500 ms. |
 | `bash tools/viewport-fit-test/run.sh` | **199 passed, 0 failed** — 3 devices (1080×2400 @2.625 with 84 px cutout, 720×1280 @2, 1600×2560 tablet) × portrait/landscape × 16:9, 9:16, 1:1: canvas inside the free viewport, aspect preserved, centred, max scale; panel open → still fully visible and not larger; dock expanded → monotonic shrink; Full Canvas ≥ chrome layout and clears bars/cutout; ≥ 120 dp short side on phones with chrome closed; the explicit `min(availW/canvasW, availH/canvasH)` formula; negative insets clamp; zero-size source safe. |
 | `bash tools/layer-model-test/run.sh` | **28 passed, 0 failed** — 1st…4th PiP take four different corners, 5th cascades, aspect kept, inside canvas, deterministic, background/hidden do not reserve corners; hit-test: topmost wins, hidden/transparent skipped, outside → null, rotated layer hit where drawn, locked still hit; z-order up/down/front/back incl. no-ops at the ends, undo snapshot per move; clamp keeps ≥ 40 % visible. |
@@ -230,7 +232,21 @@ layer list inside the Layers panel).
 
 ---
 
-## 6. Remaining limitations — stated honestly
+## 6. Reconciliation with `main` (PRs #16–#19, merged during this work)
+
+While this branch was in progress, four PRs landed on `main` that addressed
+the same areas with a different, smaller implementation ("STEP 1–4"). This
+branch merges `main` and resolves as follows:
+
+| `main` change | Outcome on this branch |
+|---|---|
+| STEP 1 `ViewportFit.fit(top, bottom)` + `setChromeInsets` | **Superseded** by 4-side `ViewportFit.contain` with WindowInsets + cutout, landscape rail, dock / contextual bar / Full Canvas. STEP 1 also dropped the per-aspect orientation lock; this branch keeps the lock (existing behaviour) — the rail makes every aspect fit in both orientations anyway. |
+| STEP 2 `Compositor.chromeRect` / `LayerFit.drawnFrame` (border around the *visible picture*, not the box) | **Adopted.** `StageView.drawChrome` / `hitHandle` / the unselected hairlines now use `chromeRectOf` (= `Compositor.chromeRect`), and the decode target uses `visibleFrameMaxPx`. `tools/step2-geom-check.sh` passes. |
+| STEP 3 `AudioMixer.kt` (`AudioConfig`, `ClipAudioSource`, `AudioMixer`) + recorder patch | **Superseded** by `AudioMath.kt` + the rewritten recorder: STEP 3 still paced the loop with `Thread.sleep`, derived video PTS from `SystemClock.elapsedRealtime()` and had no resampler / limiter / mic-timestamp anchor / camera-take exclusion — all explicit requirements. `AudioMixer.kt` stays in the tree (AudioDecode uses `AudioConfig.SAMPLE_RATE`) and its unit checks in `validate-pipeline.py` still run; the recorder/exporter guards were re-pointed at the shared `ClipCursor`/`Limiter`/`Resampler` and a "no `Thread.sleep` in the recorder" rule. |
+| STEP 3 `AudioDecode`: adopt decoder output format, `ByteOrder.nativeOrder()` | **Adopted**, and the same native-order fix applied to the recorder's and exporter's AAC input buffers. |
+| STEP 4 `TorchController` (hardware torch), `LiveCamera` torch API, `CameraActivity`, `validate-torch.py` | **Kept in full**; the editor's torch call sites were updated to the new API (`hasFlashUnit`, `isTorchLitFor*`, `torchLastError`, `setBothTorches` result). `validate-torch.py` passes (34 checks). |
+
+## 7. Remaining limitations — stated honestly
 
 * **Not device-verified.** The sandbox has no Android device, emulator,
   `MediaCodec`, `AudioRecord` or `WindowInsets` runtime. Everything that

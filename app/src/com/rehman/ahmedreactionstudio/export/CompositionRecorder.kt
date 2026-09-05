@@ -19,6 +19,7 @@ import com.rehman.ahmedreactionstudio.core.Compositor
 import com.rehman.ahmedreactionstudio.core.Layer
 import com.rehman.ahmedreactionstudio.core.Project
 import java.io.File
+import java.nio.ByteOrder
 import java.nio.ByteBuffer
 import java.util.ArrayDeque
 import java.util.concurrent.ArrayBlockingQueue
@@ -191,7 +192,7 @@ class CompositionRecorder(
 
     // ---- mux ----
     private var muxer: MediaMuxer? = null
-    private val muxLock = Any()
+    private val muxerLock = Any()
     @Volatile private var muxerStarted = false
     @Volatile private var muxerFailed = false
     @Volatile private var videoTrack = -1
@@ -557,7 +558,7 @@ class CompositionRecorder(
     // mix + encode thread
     // =====================================================================
 
-    private inner class AudioThread(private val ac: MediaCodec) : Thread("compo-audio") {
+    private inner class AudioThread(private val ac: MediaCodec) : Thread("compo-rec-audio") {
         private val info = MediaCodec.BufferInfo()
         private val frame = ShortArray(AUDIO_FRAME)
         private val mix = FloatArray(AUDIO_FRAME)
@@ -729,6 +730,10 @@ class CompositionRecorder(
                         audioFailed = true; report("AAC encoder returned no input buffer"); return false
                     }
                     buf.clear()
+                    // MediaCodec raw-audio buffers are NATIVE byte order; a
+                    // ByteBuffer defaults to BIG_ENDIAN and asShortBuffer()
+                    // inherits it → every sample byte-swapped → harsh noise.
+                    buf.order(ByteOrder.nativeOrder())
                     val bytes = if (pcm != null && n > 0) { buf.asShortBuffer().put(pcm, 0, n); n * 2 } else 0
                     val ptsUs = audioPtsClock.next(samplesEncoded * 1_000_000L / AUDIO_RATE)
                     val flags = if (eos) MediaCodec.BUFFER_FLAG_END_OF_STREAM else 0
@@ -788,7 +793,7 @@ class CompositionRecorder(
     // muxer (shared by both encoder threads)
     // =====================================================================
 
-    private fun addTrack(fmt: MediaFormat, video: Boolean): Boolean = synchronized(muxLock) {
+    private fun addTrack(fmt: MediaFormat, video: Boolean): Boolean = synchronized(muxerLock) {
         val m = muxer ?: return false
         if (muxerStarted) return false
         try {
@@ -803,7 +808,7 @@ class CompositionRecorder(
     }
 
     private fun tryStartMuxer() {
-        synchronized(muxLock) {
+        synchronized(muxerLock) {
             if (muxerStarted || muxerFailed) return
             if (videoTrack < 0) return
             if (audioEnabled && audioTrack < 0 && !audioGaveUp) return
@@ -857,7 +862,7 @@ class CompositionRecorder(
                     if (end <= buf.capacity()) {
                         buf.position(info.offset)
                         buf.limit(end)
-                        synchronized(muxLock) {
+                        synchronized(muxerLock) {
                             val m = muxer
                             if (muxerStarted && m != null) {
                                 m.writeSampleData(track, buf, info)
@@ -1004,7 +1009,7 @@ class CompositionRecorder(
         audioCodec = null
         // 3. container
         var muxOk = false
-        synchronized(muxLock) {
+        synchronized(muxerLock) {
             try {
                 if (muxerStarted) {
                     muxer?.stop()

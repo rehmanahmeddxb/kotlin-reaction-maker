@@ -43,8 +43,11 @@ import kotlin.math.abs
  *  - camera open/close is serialized on a background handler with an
  *    `opening/started` state machine, so rapid switch/torch taps and resume
  *    can never create two sessions or touch a released device;
- *  - torch (flash) works on whichever camera reports FLASH_INFO_AVAILABLE
- *    (front OR back), and falls back to a screen-light for selfie flashes;
+ *  - the flashlight is a REAL hardware torch: [TorchController] drives the
+ *    camera LED with `CameraManager.setTorchMode()`, which works without an
+ *    open camera device and therefore survives session rebuilds (record
+ *    start/stop, facing switch, preview restart). The white screen overlay is
+ *    only ever used as the honest fallback for a side that has no LED;
  *  - the permission result actually opens the camera once granted.
  */
 class CameraActivity : Activity() {
@@ -66,8 +69,16 @@ class CameraActivity : Activity() {
     private var bgHandler: Handler? = null
     private var previewSize = android.util.Size(1280, 720)
     private var sensorOrientation = 90
-    private var torchOn = false
-    private var torchSupported = false
+    /** hardware LED torch: the only object allowed to touch a real flash unit */
+    private val torch = TorchController(this)
+    /** user-facing torch state (ON/OFF) — mirrored by the button label */
+    @Volatile private var torchOn = false
+    /**
+     * True only when the framework refused torch mode for an open camera that
+     * does report a flash unit; the LED is then driven through
+     * `CaptureRequest.FLASH_MODE_TORCH` while a session exists.
+     */
+    @Volatile private var torchViaRequest = false
     private var opening = false
     private var started = false
     private var maxZoom = 1f
@@ -287,13 +298,22 @@ class CameraActivity : Activity() {
     override fun onResume() {
         super.onResume()
         startBg()
+        // inventory the LEDs before the UI asks for them
+        try { torch.start() } catch (_: Exception) { }
         if (hasPermissions() && texture.isAvailable) openCamera()
     }
 
     override fun onPause() {
+        // leaving the screen: camera closed + LED off (closeCamera -> torchOff)
         closeCamera()
         stopBg()
         super.onPause()
+    }
+
+    override fun onDestroy() {
+        // belt and braces: unregister the torch callback and kill every LED
+        try { torch.shutdown() } catch (_: Exception) { }
+        super.onDestroy()
     }
 
     private fun cm(): CameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
@@ -337,9 +357,9 @@ class CameraActivity : Activity() {
         cameraId = chosen
         val ch = cm().getCameraCharacteristics(chosen)
         sensorOrientation = ch.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
-        // flash is enabled for ANY camera (front or back) that has a hardware flash unit
-        val hwFlash = ch.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) ?: false
-        torchSupported = hwFlash
+        // Refresh the LED inventory every time we (re)open a camera: the button
+        // must never claim a hardware torch the device does not expose.
+        torch.refresh()
         runOnUiThread { updateTorchLabel() }
 
         maxZoom = ch.get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM) ?: 1f
@@ -361,11 +381,13 @@ class CameraActivity : Activity() {
             }
             override fun onDisconnected(camera: CameraDevice) {
                 opening = false; started = false
+                torchOff()          // camera gone — its LED must not stay on
                 try { camera.close() } catch (_: Exception) { }
                 device = null
             }
             override fun onError(camera: CameraDevice, error: Int) {
                 opening = false; started = false
+                torchOff()          // camera in use / error — never leave the LED on
                 try { camera.close() } catch (_: Exception) { }
                 device = null
                 runOnUiThread { statusLabel.text = "Camera error $error" }
@@ -435,10 +457,14 @@ class CameraActivity : Activity() {
                 if (rs != null) builder.addTarget(rs)
             }
             builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
-            // hardware torch only when the active camera supports it
-            if (torchSupported) {
-                builder.set(CaptureRequest.FLASH_MODE,
-                    if (torchOn) CaptureRequest.FLASH_MODE_TORCH else CaptureRequest.FLASH_MODE_OFF)
+            // The LED is driven by CameraManager.setTorchMode(). FLASH_MODE_TORCH
+            // is only the fallback for devices that refuse torch mode; using both
+            // at once is what made the torch die on every session rebuild.
+            builder.set(CaptureRequest.FLASH_MODE,
+                if (torchOn && torchViaRequest) CaptureRequest.FLASH_MODE_TORCH
+                else CaptureRequest.FLASH_MODE_OFF)
+            if (torchOn && torchViaRequest) {
+                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
             }
             // digital zoom
             val id = cameraId
@@ -476,39 +502,115 @@ class CameraActivity : Activity() {
         try { previewSurface?.release() } catch (_: Exception) { }
         previewSurface = null
         opening = false; started = false
+        // The LED is independent of the camera device, so closing the camera has
+        // to switch it off. This covers pause / stop / switch / error / finish:
+        // no path can leave the rear LED burning.
+        torchOff()
+    }
+
+    private fun isFront(): Boolean = facing == CameraCharacteristics.LENS_FACING_FRONT
+
+    /** Does the side we are previewing own a real LED? Never assumed. */
+    private fun hwTorch(): Boolean = torch.hasFlash(isFront())
+
+    /** LED off + screen light off + state reset (switch / close / stop / error). */
+    private fun torchOff() {
+        torchOn = false
+        torchViaRequest = false
+        try { torch.releaseAll() } catch (_: Exception) { }
+        runOnUiThread { setScreenLight(false) }
+    }
+
+    /** White overlay — the honest fallback for a side with no LED (selfies). */
+    private fun setScreenLight(on: Boolean) {
+        try {
+            flashView.animate().alpha(if (on) 0.85f else 0f).setDuration(120).start()
+        } catch (_: Exception) { }
     }
 
     private fun toggleCamera() {
         if (recording || opening) return
+        // never carry a burning LED across a camera switch
+        torchOff()
         facing = if (facing == CameraCharacteristics.LENS_FACING_BACK)
             CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK
-        torchOn = false
         zoomSlider.progress = 0
         openCamera()
     }
 
+    /** Button label always matches reality: ON / OFF / unavailable. */
     private fun updateTorchLabel() {
+        val front = isFront()
         when {
-            torchSupported ->
-                torchBtn.text = if (torchOn) "Hardware torch ON" else "Hardware torch"
-            facing == CameraCharacteristics.LENS_FACING_FRONT ->
+            hwTorch() -> {
+                torchBtn.isEnabled = true
+                torchBtn.text = if (torchOn) {
+                    if (front) "Front torch ON" else "Torch ON"
+                } else {
+                    if (front) "Front torch" else "Torch"
+                }
+            }
+            front -> {
+                // no LED on this side — the screen is the lamp, say so
+                torchBtn.isEnabled = true
                 torchBtn.text = if (torchOn) "Screen light ON" else "Screen light"
+            }
             else -> {
-                torchBtn.text = "No hardware torch"
+                torchOn = false
+                setScreenLight(false)
+                torchBtn.text = "No flash"
                 torchBtn.isEnabled = false
-                return
             }
         }
-        torchBtn.isEnabled = true
     }
 
     private fun toggleTorch() {
-        torchOn = !torchOn
-        // selfie cameras without hardware flash: use the white screen as a light
-        flashView.animate().alpha(if (torchOn && !torchSupported &&
-            facing == CameraCharacteristics.LENS_FACING_FRONT) 0.85f else 0f).setDuration(120).start()
-        if (torchSupported) applyParams()
+        val front = isFront()
+        val want = !torchOn
+        torchOn = want
+        if (hwTorch()) {
+            // real hardware torch through CameraManager.setTorchMode()
+            setScreenLight(false)
+            applyTorch()
+        } else if (front) {
+            // no front LED: keep the existing screen-light fallback
+            setScreenLight(want)
+        } else {
+            // back camera without a flash unit — never fake it
+            torchOn = false
+            setScreenLight(false)
+            UI.toast(this, "This device has no rear flash")
+        }
         updateTorchLabel()
+    }
+
+    /** Runs the LED command on the camera thread, then reports the true state. */
+    private fun applyTorch() {
+        val h = bgHandler
+        if (h == null) { applyTorchLocked(); return }
+        h.post { applyTorchLocked() }
+    }
+
+    private fun applyTorchLocked() {
+        val front = isFront()
+        if (!hwTorch()) { torchViaRequest = false; return }
+        if (torchOn) {
+            val ok = torch.setTorch(front, true)
+            torchViaRequest = !ok
+            if (!ok && !torchViaRequest) {
+                // the OS refused outright: don't lie about the torch being on
+                torchOn = false
+                runOnUiThread {
+                    UI.toast(this@CameraActivity, torch.failureText())
+                    updateTorchLabel()
+                }
+            }
+            applyParams()
+        } else {
+            torch.setTorch(front, false)
+            torchViaRequest = false
+            applyParams()
+        }
     }
 
     // ---------- recording ----------
@@ -616,6 +718,7 @@ class CameraActivity : Activity() {
     private fun stopRecordingLocked() {
         val r = recorder ?: return
         recording = false
+        torchOff()      // a finished take must not leave the rear LED burning
         timerHandler.removeCallbacks(timerTick)
         var ok = true
         try { r.stop() } catch (_: Exception) { ok = false }
@@ -633,6 +736,7 @@ class CameraActivity : Activity() {
             recordBtn.contentDescription = "Start recording"
             timerLabel.text = "00:00"
             statusLabel.text = ""
+            updateTorchLabel()
         }
 
         if (!ok || f == null || !f.exists() || f.length() < 50_000) {

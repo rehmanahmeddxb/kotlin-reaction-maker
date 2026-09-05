@@ -5,6 +5,7 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 /** A clip's audio track decoded to mono 16-bit PCM at a fixed sample rate. */
 class PcmClip(val data: ShortArray, val sampleRate: Int)
@@ -18,7 +19,7 @@ class PcmClip(val data: ShortArray, val sampleRate: Int)
  */
 object AudioDecode {
 
-    private const val TARGET_RATE = 44100
+    private val TARGET_RATE = AudioConfig.SAMPLE_RATE
 
     fun toPcmMono(path: String): PcmClip? {
         val extractor = MediaExtractor()
@@ -76,11 +77,20 @@ object AudioDecode {
             val outIdx = codec.dequeueOutputBuffer(info, 10_000)
             when {
                 outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                    // The decoder output format is authoritative: always adopt
+                    // it (the old code kept stale extractor values, so a file
+                    // whose container said mono but decoded stereo — or vice
+                    // versa — was downmixed with the wrong channel count,
+                    // producing half-speed/double-speed garbage).
                     val of = codec.outputFormat
-                    if (nativeRate <= 0 && of.containsKey(MediaFormat.KEY_SAMPLE_RATE))
-                        nativeRate = of.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                    if (nativeChannels <= 0 && of.containsKey(MediaFormat.KEY_CHANNEL_COUNT))
-                        nativeChannels = of.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                    if (of.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                        val r = of.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                        if (r > 0) nativeRate = r
+                    }
+                    if (of.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                        val c = of.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                        if (c > 0) nativeChannels = c
+                    }
                     if (of.containsKey(MediaFormat.KEY_PCM_ENCODING))
                         pcmFloat = of.getInteger(MediaFormat.KEY_PCM_ENCODING) == AudioFormat.ENCODING_PCM_FLOAT
                 }
@@ -115,6 +125,11 @@ object AudioDecode {
 
     /** Read [size] bytes of decoder output as 16-bit samples (handles float PCM). */
     private fun readSamples(buf: ByteBuffer, size: Int, pcmFloat: Boolean): ShortArray {
+        // STEP 3: MediaCodec raw-audio buffers are NATIVE byte order
+        // (little-endian on Android). ByteBuffer defaults to BIG_ENDIAN, so
+        // reading without this swaps every sample's bytes -> harsh distorted
+        // noise. The official MediaCodec docs show exactly this call.
+        try { buf.order(ByteOrder.nativeOrder()) } catch (_: Exception) { }
         return if (pcmFloat) {
             val n = size / 4
             val arr = ShortArray(n)

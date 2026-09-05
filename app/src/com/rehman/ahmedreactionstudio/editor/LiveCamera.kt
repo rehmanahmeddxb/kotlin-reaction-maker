@@ -18,6 +18,7 @@ import android.os.HandlerThread
 import android.os.SystemClock
 import android.util.Size
 import android.view.Surface
+import com.rehman.ahmedreactionstudio.camera.TorchController
 import java.io.File
 
 /**
@@ -30,10 +31,17 @@ import java.io.File
  * shared Compositor draws it with the same z-order / fit / opacity / transform
  * as a video layer. Drag, resize, rotate and snap all work on it.
  *
- * Flashlight: both front and back LEDs are controllable. The torch state is
- * remembered PER FACING (frontTorch / backTorch) so switching cameras does not
- * lose the user's choice. "Both on" uses CameraManager.setTorchMode for the
- * idle camera so both LEDs can burn while only one preview is shown.
+ * Flashlight: the real LED is driven by [TorchController]
+ * (`CameraManager.setTorchMode`), Android's proper torch mechanism, so the
+ * torch keeps burning across session rebuilds (recording start/stop, facing
+ * switch, preview restart) and is switched off on every exit path.
+ * The torch state is remembered PER FACING (frontTorch / backTorch) while the
+ * camera runs, and each side is only lit when the user explicitly switched it
+ * on — switching cameras clears the side we leave, so a rear LED can never be
+ * left burning by accident. The capture-request `FLASH_MODE_TORCH` path is only
+ * used as a fallback on devices whose framework refuses torch mode for the open
+ * camera. A side with no LED is never faked: the editor's screen light is the
+ * documented fallback and the UI says so.
  *
  * Implementation notes that matter on real devices:
  *  - YUV_420_888 → ARGB is done inline with integer math and the rotation +
@@ -67,12 +75,29 @@ class LiveCamera(
     private var recorder: MediaRecorder? = null
     private var recordFile: File? = null
 
+    /** the ONLY object allowed to touch a real LED: CameraManager.setTorchMode */
+    private val torchCtl = TorchController(ctx)
+
     @Volatile private var facing = CameraCharacteristics.LENS_FACING_FRONT
     @Volatile private var mirror = true
     /** torch wanted for front camera (persists across switches) */
     @Volatile private var frontTorch = false
     /** torch wanted for back camera (persists across switches) */
     @Volatile private var backTorch = false
+    /**
+     * "Both flashes" is an explicit user choice: only then do we keep the LED
+     * of the idle camera burning. Default off, so switching cameras can never
+     * leave the rear LED on behind a front preview.
+     */
+    @Volatile private var bothTorches = false
+    /**
+     * True when setTorchMode was refused by the framework for an open camera
+     * that does report a flash unit — we then drive the LED through the
+     * capture request (FLASH_MODE_TORCH) while a session exists.
+     */
+    @Volatile private var torchViaRequest = false
+    /** last torch failure reported to the UI ("" = none) */
+    @Volatile private var lastTorchError = ""
     /** hardware torch (LED) state of currently open camera; re-applied after every session rebuild */
     var torch: Boolean
         get() = if (isFront()) frontTorch else backTorch
@@ -127,56 +152,59 @@ class LiveCamera(
 
     fun isFront(): Boolean = facing == CameraCharacteristics.LENS_FACING_FRONT
 
-    /** true when torch is wanted for the given facing (persisted) */
+    /** true when the torch is wanted for the given facing (persisted) */
     fun isTorchOnForFront(): Boolean = frontTorch
     fun isTorchOnForBack(): Boolean = backTorch
     fun hasFlashForFront(): Boolean = frontHasFlash
     fun hasFlashForBack(): Boolean = backHasFlash
+    /** true only when the LED of that facing is actually burning right now */
+    fun isTorchLitForFront(): Boolean = torchCtl.isTorchOn(true)
+    fun isTorchLitForBack(): Boolean = torchCtl.isTorchOn(false)
 
-    /** Turn both LEDs on/off together (uses setTorchMode for idle camera). */
+    /** "Both flashes" — the only mode that keeps the idle camera's LED on. */
+    fun bothTorchesMode(): Boolean = bothTorches
+
+    /**
+     * Turn both LEDs on/off together. Both are driven with
+     * `CameraManager.setTorchMode`, so this works even though only one camera
+     * can be open for preview at a time.
+     */
     fun setBothTorches(on: Boolean): Boolean {
+        refreshFlashCache()
         var changed = false
         if (frontHasFlash) { frontTorch = on; changed = true }
         if (backHasFlash) { backTorch = on; changed = true }
-        if (changed) {
-            handler?.post {
-                repeatRequest()
-                applyIdleTorch()
-            }
-        }
-        return changed
+        if (!changed) return false
+        bothTorches = on
+        handler?.post { applyTorch() }
+        return true
     }
 
     fun bothTorchesOn(): Boolean = (frontHasFlash && frontTorch) || (backHasFlash && backTorch)
-    fun bothTorchesFullyOn(): Boolean = (!frontHasFlash || frontTorch) && (!backHasFlash || backTorch) && (frontHasFlash || backHasFlash)
+    fun bothTorchesFullyOn(): Boolean = bothTorches && (frontHasFlash || backHasFlash) &&
+        (!frontHasFlash || frontTorch) && (!backHasFlash || backTorch)
 
     /**
      * Turn the LED torch on/off for the camera that is open right now.
      * Also remembers per-facing so switching preserves the choice.
-     * Returns false when this camera has no flash unit.
+     * Returns false when this camera has no flash unit or the OS refused.
      */
     fun setTorch(on: Boolean): Boolean {
         if (on && !hasFlashUnit) return false
         if (isFront()) frontTorch = on else backTorch = on
-        handler?.post {
-            repeatRequest()
-            // also update idle camera's torch so "both on" stays consistent
-            applyIdleTorch()
-        }
+        if (!on) bothTorches = false
+        handler?.post { applyTorch() }
         return true
     }
 
     /** Set torch for a specific facing (even when that camera is not open). */
     fun setTorchFor(front: Boolean, on: Boolean): Boolean {
+        refreshFlashCache()
         val has = if (front) frontHasFlash else backHasFlash
         if (on && !has) return false
         if (front) frontTorch = on else backTorch = on
-        // if that facing is currently open, update its repeating request; otherwise use setTorchMode
-        if ((front && isFront()) || (!front && !isFront())) {
-            handler?.post { repeatRequest() }
-        } else {
-            handler?.post { applyIdleTorch() }
-        }
+        if (!on) bothTorches = false
+        handler?.post { applyTorch() }
         return true
     }
 
@@ -185,56 +213,99 @@ class LiveCamera(
     fun toggleBackTorch(): Boolean = setTorchFor(false, !backTorch)
 
     /** Does the camera facing [front] have an LED? Answers without opening it. */
-    fun flashAvailable(front: Boolean): Boolean = try {
-        val want = if (front) CameraCharacteristics.LENS_FACING_FRONT
-        else CameraCharacteristics.LENS_FACING_BACK
-        val m = cm()
-        m.cameraIdList.any { id ->
-            val ch = m.getCameraCharacteristics(id)
-            ch.get(CameraCharacteristics.LENS_FACING) == want &&
-                ch.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
-        }
-    } catch (_: Exception) { false }
+    fun flashAvailable(front: Boolean): Boolean = torchCtl.hasFlash(front)
+
+    /**
+     * Why the last torch toggle failed ("" when it worked). Lets the UI say
+     * "camera in use by another app" instead of a generic no-flash message.
+     */
+    fun torchLastError(): String = if (torchCtl.lastFail == TorchController.Fail.NONE) "" else torchCtl.failureText()
 
     fun setMirror(m: Boolean) { mirror = m }
 
     private fun cm(): CameraManager =
         ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
+    /**
+     * Re-read which sides own a real LED. TorchController filters on
+     * LENS_FACING + FLASH_INFO_AVAILABLE, so a front camera without a physical
+     * LED reports false and the UI keeps offering the screen light instead of
+     * pretending a hardware torch exists.
+     */
     private fun refreshFlashCache() {
-        try {
-            val m = cm()
-            for (id in m.cameraIdList) {
-                val ch = m.getCameraCharacteristics(id)
-                val facingVal = ch.get(CameraCharacteristics.LENS_FACING)
-                val has = ch.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
-                if (facingVal == CameraCharacteristics.LENS_FACING_FRONT) frontHasFlash = has
-                if (facingVal == CameraCharacteristics.LENS_FACING_BACK) backHasFlash = has
-            }
-        } catch (_: Exception) { }
+        torchCtl.start()
+        torchCtl.refresh()
+        frontHasFlash = torchCtl.hasFlash(true)
+        backHasFlash = torchCtl.hasFlash(false)
+        hasFlashUnit = if (isFront()) frontHasFlash else backHasFlash
     }
 
-    private fun applyIdleTorch() {
-        // Turn on/off torch for the camera that is NOT currently open, so both LEDs can be on simultaneously
-        try {
-            val m = cm()
-            val idleFront = !isFront()
-            val wantOn = if (idleFront) frontTorch else backTorch
-            val has = if (idleFront) frontHasFlash else backHasFlash
-            if (!has) return
-            // find idle camera id
-            val idleId = m.cameraIdList.firstOrNull { id ->
-                val ch = m.getCameraCharacteristics(id)
-                val f = ch.get(CameraCharacteristics.LENS_FACING)
-                (idleFront && f == CameraCharacteristics.LENS_FACING_FRONT) ||
-                    (!idleFront && f == CameraCharacteristics.LENS_FACING_BACK)
-            } ?: return
-            // don't touch the active camera (managed via CaptureRequest)
-            if (idleId == activeCameraId) return
-            try {
-                m.setTorchMode(idleId, wantOn)
-            } catch (_: Exception) { }
-        } catch (_: Exception) { }
+    /**
+     * Apply the wanted torch state to the hardware. Runs on the camera thread.
+     *
+     *  - every side is driven with CameraManager.setTorchMode() (no camera
+     *    device needs to be open, so the LED survives session rebuilds);
+     *  - the LED of a side is only ON when the user switched it on for that
+     *    side; switching cameras clears the side we leave, so a rear LED is
+     *    never left burning by accident;
+     *  - if the framework refuses torch mode for the OPEN camera and that
+     *    camera does report a flash unit, the LED is driven through
+     *    FLASH_MODE_TORCH on the live capture request instead.
+     */
+    private fun applyTorch() {
+        // Both sides are driven from the user's intent: setTorchMode() works
+        // without opening a camera, so an explicitly enabled rear LED keeps
+        // burning behind a front preview (and vice versa) — that is the whole
+        // point of the Front / Back / Both ring. It is never a silent
+        // carry-over: switchFacing() clears the side we are leaving.
+        applySide(isFront())
+        applySide(!isFront())
+        repeatRequest()
+    }
+
+    /** Drive one side's LED; the active side may fall back to the request. */
+    private fun applySide(front: Boolean) {
+        val want = if (front) frontTorch else backTorch
+        val active = front == isFront()
+        if (!want) {
+            torchCtl.setTorch(front, false)
+            if (active) torchViaRequest = false
+            noteTorchError("")
+            return
+        }
+        val ok = torchCtl.setTorch(front, true)
+        val has = if (front) frontHasFlash else backHasFlash
+        // fall back to the capture-request torch only for the side we have a
+        // session for, and only when it really reports a flash unit
+        if (active) torchViaRequest = !ok && has
+        when {
+            ok -> noteTorchError("")
+            !ok && has && active -> noteTorchError("")
+            else -> {
+                noteTorchError(torchCtl.failureText())
+                // never claim a torch we could not actually switch on
+                if (front) frontTorch = false else backTorch = false
+            }
+        }
+    }
+
+    /**
+     * Report a torch failure once (not on every session rebuild) so the UI can
+     * say "camera in use by another app" instead of silently doing nothing.
+     */
+    private fun noteTorchError(msg: String) {
+        if (msg == lastTorchError) return
+        lastTorchError = msg
+        if (msg.isNotEmpty()) onState("torcherror")
+    }
+
+    /** Turn every LED off and forget the wanted state (stop/error/switch away). */
+    private fun torchOff() {
+        torchCtl.releaseAll()
+        frontTorch = false
+        backTorch = false
+        bothTorches = false
+        torchViaRequest = false
     }
 
     // ---------------- lifecycle ----------------
@@ -256,7 +327,15 @@ class LiveCamera(
 
     fun switchFacing() {
         if (recording) { onState("busy"); return }
-        val front = !isFront()
+        val wasFront = isFront()
+        // The LED we are leaving must not stay on: unless the user explicitly
+        // asked for "both flashes", switching cameras turns the outgoing torch
+        // off, so a rear LED can never burn behind a front preview.
+        if (!bothTorches) {
+            torchCtl.setTorch(wasFront, false)
+            if (wasFront) frontTorch = false else backTorch = false
+        }
+        val front = !wasFront
         facing = if (front) CameraCharacteristics.LENS_FACING_FRONT
         else CameraCharacteristics.LENS_FACING_BACK
         mirror = front
@@ -266,23 +345,21 @@ class LiveCamera(
     fun stop() {
         running = false
         val h = handler
-        if (h == null) { releaseAll(); return }
-        h.post { releaseAll() }
+        if (h == null) { releaseAll(); shutdownTorch(); return }
+        h.post { releaseAll(); shutdownTorch() }
         thread?.quitSafely()
         thread = null
         handler = null
     }
 
+    /** Last thing we ever do with the LEDs: everything off, callback unhooked. */
+    private fun shutdownTorch() {
+        try { torchCtl.shutdown() } catch (_: Exception) { }
+    }
+
     private fun releaseAll() {
-        // never walk away leaving the LED burning — turn off both via manager
-        try {
-            val m = cm()
-            for (id in m.cameraIdList) {
-                try { m.setTorchMode(id, false) } catch (_: Exception) { }
-            }
-        } catch (_: Exception) { }
-        frontTorch = false
-        backTorch = false
+        // never walk away leaving the LED burning — every id, both facings
+        torchOff()
         try { repeatRequest() } catch (_: Exception) { }
         stopRecordingLocked(discard = true)
         closeCameraOnly()
@@ -300,8 +377,10 @@ class LiveCamera(
         try { reader?.close() } catch (_: Exception) { }
         reader = null
         opening = false
-        // ensure idle torch reflects latest wanted state (e.g. after close, before reopen)
-        try { applyIdleTorch() } catch (_: Exception) { }
+        // The torch is independent of the camera device, so closing the device
+        // has to switch the LED off explicitly; re-opening re-applies the state
+        // the user asked for (see applyTorch).
+        try { torchCtl.releaseAll() } catch (_: Exception) { }
     }
 
     private fun pickCameraId(): String? {
@@ -323,8 +402,9 @@ class LiveCamera(
         try {
             val ch = cm().getCameraCharacteristics(id)
             sensorOrientation = ch.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
-            hasFlashUnit = ch.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
             refreshFlashCache()
+            // FLASH_INFO_AVAILABLE of the camera we actually opened
+            hasFlashUnit = ch.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
             val map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             val sizes = map?.getOutputSizes(ImageFormat.YUV_420_888)
             feedSize = sizes?.filter { it.width <= 1280 && it.height <= 1280 }
@@ -355,11 +435,14 @@ class LiveCamera(
                     device = d
                     opening = false
                     createSession()
-                    // ensure idle torch is applied now that active camera is known
-                    applyIdleTorch()
+                    // light the LED through CameraManager even before/without a
+                    // session — that is the whole point of setTorchMode
+                    try { applyTorch() } catch (_: Exception) { }
                 }
                 override fun onDisconnected(d: CameraDevice) {
                     opening = false
+                    // camera gone: never leave its LED burning
+                    torchOff()
                     try { d.close() } catch (_: Exception) { }
                     device = null
                     activeCameraId = null
@@ -367,6 +450,7 @@ class LiveCamera(
                 }
                 override fun onError(d: CameraDevice, err: Int) {
                     opening = false
+                    torchOff()
                     try { d.close() } catch (_: Exception) { }
                     device = null
                     activeCameraId = null
@@ -376,6 +460,7 @@ class LiveCamera(
         } catch (e: Exception) {
             opening = false
             activeCameraId = null
+            torchOff()
             onState("error")
         }
     }
@@ -391,8 +476,9 @@ class LiveCamera(
             d.createCaptureSession(targets, object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(s: CameraCaptureSession) {
                     session = s
-                    repeatRequest()
-                    applyIdleTorch()
+                    // re-apply the LED state after every session rebuild
+                    // (recording start/stop, facing switch, error recovery)
+                    applyTorch()
                     onState(if (recording) "recording" else "live")
                 }
                 override fun onConfigureFailed(s: CameraCaptureSession) {
@@ -415,12 +501,17 @@ class LiveCamera(
             if (recording) recorder?.surface?.let { b.addTarget(it) }
             b.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
             val wantTorch = if (isFront()) frontTorch else backTorch
+            // The LED is driven by CameraManager.setTorchMode(). FLASH_MODE_TORCH
+            // is only the fallback for devices that refuse torch mode while a
+            // session is open — mixing both is what made the "torch" flicker or
+            // die on session rebuilds.
+            val useRequestTorch = wantTorch && hasFlashUnit && torchViaRequest
             b.set(
                 CaptureRequest.FLASH_MODE,
-                if (wantTorch && hasFlashUnit) CaptureRequest.FLASH_MODE_TORCH
+                if (useRequestTorch) CaptureRequest.FLASH_MODE_TORCH
                 else CaptureRequest.FLASH_MODE_OFF
             )
-            if (wantTorch && hasFlashUnit) {
+            if (useRequestTorch) {
                 b.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
             }
             s.setRepeatingRequest(b.build(), null, handler)
@@ -500,6 +591,8 @@ class LiveCamera(
     private fun stopRecordingLocked(discard: Boolean): File? {
         val r = recorder ?: return null
         recording = false
+        // a finished take must not leave the rear LED burning
+        torchOff()
         var ok = true
         try { r.stop() } catch (_: Exception) { ok = false }
         try { r.release() } catch (_: Exception) { }

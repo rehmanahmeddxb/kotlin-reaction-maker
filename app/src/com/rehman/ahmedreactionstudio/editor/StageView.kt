@@ -214,22 +214,55 @@ class StageView @JvmOverloads constructor(
         framePaint.strokeWidth = UI.dpf(context, 1f)
         framePaint.color = Color.argb(90, 255, 255, 255)
         canvas.drawRect(canvasRect, framePaint)
-        val selId = hp.selectedId() ?: return
-        val l = p.layerById(selId) ?: return
-        // a hidden source is not on the canvas, so it has no frame either
-        if (!l.visible) return
+        val selId = hp.selectedId()
         canvas.save()
         canvas.translate(canvasRect.left, canvasRect.top)
-        drawChrome(canvas, l)
+        // unselected, visible, non-background sources: a subtle neutral
+        // hairline around the visible picture — enough to see WHERE a source
+        // is (and that it is a source) without competing with the selection
+        for (o in p.layers) {
+            if (o.id == selId || !o.visible || o.opacity <= 0.01f || LayerFit.isFullBleed(o)) continue
+            val r = chromeRectOf(o)
+            canvas.save()
+            canvas.rotate(o.rotDeg, r.centerX(), r.centerY())
+            framePaint.strokeWidth = UI.dpf(context, 1f)
+            framePaint.color = if (o.locked) Color.argb(70, 255, 255, 255) else Color.argb(48, 255, 255, 255)
+            canvas.drawRect(r, framePaint)
+            canvas.restore()
+        }
+        val l = selId?.let { p.layerById(it) }
+        // a hidden source is not on the canvas, so it has no frame either
+        if (l != null && l.visible) drawChrome(canvas, l)
         canvas.restore()
     }
 
+    /** the layer's BOX (what gestures resize) */
     private fun rectOf(l: Layer): RectF {
         val cxp = l.cx * cw
         val cyp = l.cy * ch
         tmpRect.set(cxp - l.wN * cw / 2f, cyp - l.hN * ch / 2f,
             cxp + l.wN * cw / 2f, cyp + l.hN * ch / 2f)
         return tmpRect
+    }
+
+    /**
+     * The layer's VISIBLE picture (box ∩ drawn frame, via Compositor.chromeRect
+     * — the same formula the renderer uses). A FIT layer that is pillarboxed
+     * inside its box gets its frame around the picture, not the dead space,
+     * so the border always sits on what the user actually sees. Falls back to
+     * the box while no frame has been decoded yet (stays grabbable).
+     */
+    private val chromeTmp = RectF()
+    private fun chromeRectOf(l: Layer): RectF {
+        val hp = host
+        Compositor.chromeRect(l, hp?.bitmapOf(l), cw, ch, chromeTmp)
+        return chromeTmp
+    }
+
+    /** longest side (px) of the visible frame — the decode target the engine needs */
+    fun visibleFrameMaxPx(l: Layer): Int {
+        val r = chromeRectOf(l)
+        return maxOf(r.width(), r.height()).toInt().coerceAtLeast(1)
     }
 
     /**
@@ -247,7 +280,7 @@ class StageView @JvmOverloads constructor(
      *  - hidden layers are never selected-drawn (see onDraw).
      */
     private fun drawChrome(canvas: Canvas, l: Layer) {
-        val r = RectF(rectOf(l))
+        val r = RectF(chromeRectOf(l))
         val locked = l.locked
         val accent = if (locked) UI.FG2 else UI.ACCENT
         canvas.save()
@@ -353,7 +386,7 @@ class StageView @JvmOverloads constructor(
     }
 
     private fun hitHandle(x: Float, y: Float, l: Layer): String? {
-        val r = rectOf(l)
+        val r = chromeRectOf(l)   // handles sit on the visible frame
         val halfW = r.width() / 2f
         val halfH = r.height() / 2f
         val (px, py) = toLayerLocal(x, y, l, r)
