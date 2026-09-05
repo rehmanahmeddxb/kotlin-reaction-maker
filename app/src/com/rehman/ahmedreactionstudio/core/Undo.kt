@@ -42,6 +42,7 @@ class UndoStack(private val maxDepth: Int = 50) {
 fun layersJsonOf(p: Project): JSONObject {
     val o = JSONObject()
     o.put("id", p.id)
+    o.put("aspect", p.aspect.code)
     val arr = org.json.JSONArray()
     for (l in p.layers) arr.put(l.toJson())
     o.put("layers", arr)
@@ -49,6 +50,10 @@ fun layersJsonOf(p: Project): JSONObject {
 }
 
 fun applyLayersJson(p: Project, o: JSONObject) {
+    // aspect rides along so canvas-ratio changes are undoable too
+    if (o.has("aspect")) {
+        try { p.aspect = Aspect.from(o.getString("aspect")) } catch (_: Exception) { }
+    }
     p.layers.clear()
     val arr = o.optJSONArray("layers") ?: return
     for (i in 0 until arr.length()) {

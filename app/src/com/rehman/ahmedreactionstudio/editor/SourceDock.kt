@@ -34,6 +34,7 @@ class SourceDock(
     private val selectedId: () -> String?,
     private val onSelect: (String?) -> Unit,
     private val onQuickToggle: (Layer, String) -> Unit,   // "vis" | "mute"
+    private val onPlayToggle: (Layer) -> Unit,
     private val onLongPress: (Layer) -> Unit,
     private val onReorderStart: () -> Unit,
     private val onReorder: (fromLayerIdx: Int, toFinalLayerIdx: Int) -> Unit,
@@ -48,7 +49,7 @@ class SourceDock(
         container.removeAllViews()
         val p = projectRef()
         if (p.layers.isEmpty()) {
-            val t = UI.label(act, "No sources yet — tap  +  to add one.", dim = true, size = 12f)
+            val t = UI.label(act, "No sources yet — open Add below to add one.", dim = true, size = 12f)
             val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT)
             lp.setMargins(UI.dp(act, 14), UI.dp(act, 10), UI.dp(act, 14), UI.dp(act, 10))
@@ -83,7 +84,8 @@ class SourceDock(
         eye.layoutParams = IconBtn.sized(act, 38)
         eye.setIcon(
             if (l.visible) R.drawable.ic_eye else R.drawable.ic_eye_off,
-            if (l.visible) UI.FG else Color.argb(120, 255, 255, 255))
+            if (l.visible) UI.FG else Color.argb(120, 255, 255, 255),
+            if (l.visible) "Hide ${l.name}" else "Show ${l.name}")
         eye.setOnClickListener { onQuickToggle(l, "vis") }
         row.addView(eye)
 
@@ -94,7 +96,8 @@ class SourceDock(
             val effMuted = l.muted || mutedBySolo(l)
             mute.setIcon(
                 if (effMuted) R.drawable.ic_volume_off else R.drawable.ic_volume,
-                if (effMuted) UI.DANGER else UI.FG)
+                if (effMuted) UI.DANGER else UI.FG,
+                if (effMuted) "Unmute ${l.name}" else "Mute ${l.name}")
             mute.setOnClickListener { onQuickToggle(l, "mute") }
             row.addView(mute)
         } else {
@@ -130,6 +133,14 @@ class SourceDock(
         st.textSize = 9.5f
         st.setTextColor(statusColor(l))
         st.maxLines = 1
+        if (l.isClip()) {
+            // the PAUSED/playing line is itself the play switch: one tap,
+            // no ring dive, and TalkBack announces the state + action
+            st.isClickable = true
+            st.isFocusable = true
+            st.contentDescription = if (l.playing) "Pause ${l.name}" else "Play ${l.name}"
+            st.setOnClickListener { onPlayToggle(l) }
+        }
         col.addView(st)
         row.addView(col)
 
@@ -143,11 +154,13 @@ class SourceDock(
         val handle = ImageView(act)
         handle.setImageDrawable(Ic.get(act, R.drawable.ic_drag, Color.argb(170, 255, 255, 255)))
         handle.setPadding(UI.dp(act, 8), UI.dp(act, 8), UI.dp(act, 8), UI.dp(act, 8))
+        handle.contentDescription = "Drag to reorder ${l.name}"
         val hlp = LinearLayout.LayoutParams(UI.dp(act, 38), UI.dp(act, 38))
         handle.layoutParams = hlp
         handle.setOnTouchListener { _, ev -> handleTouch(ev, row, l) }
         row.addView(handle)
 
+        row.contentDescription = "Select ${l.name}. ${statusOf(l)}"
         row.setOnClickListener { onSelect(if (selectedId() == l.id) null else l.id) }
         row.setOnLongClickListener { onLongPress(l); true }
         return row
@@ -222,6 +235,7 @@ class SourceDock(
             }
             MotionEvent.ACTION_MOVE -> {
                 val r = dragRow ?: return true
+                autoScroll(ev)
                 val p = projectRef()
                 val n = p.layers.size
                 if (n < 2) return true
@@ -261,5 +275,31 @@ class SourceDock(
         val loc = IntArray(2)
         v.getLocationOnScreen(loc)
         return loc
+    }
+
+    /** the ScrollView hosting the dock, if any (for edge auto-scroll) */
+    private fun hostScroller(): android.widget.ScrollView? {
+        var p: android.view.ViewParent? = container.parent
+        while (p != null) {
+            if (p is android.widget.ScrollView) return p
+            p = p.parent
+        }
+        return null
+    }
+
+    /**
+     * Edge auto-scroll while dragging: without it a row can never be dropped
+     * onto an off-screen position, which made long dock lists un-reorderable.
+     */
+    private fun autoScroll(ev: MotionEvent) {
+        val sv = hostScroller() ?: return
+        val loc = locationOf(sv)
+        val edge = UI.dp(act, 64)
+        val step = UI.dp(act, 14)
+        val y = ev.rawY - loc[1]
+        when {
+            y < edge -> sv.smoothScrollBy(0, -step)
+            y > sv.height - edge -> sv.smoothScrollBy(0, step)
+        }
     }
 }

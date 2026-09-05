@@ -131,6 +131,13 @@ class DiagnosticsActivity : Activity() {
             UI.toast(this, "Copied")
         }
         col.addView(copy)
-        setContentView(col)
+        // The row list can be taller than small screens: scroll, with padding.
+        val scroll = android.widget.ScrollView(this)
+        scroll.isVerticalScrollBarEnabled = false
+        col.layoutParams = android.view.ViewGroup.LayoutParams(
+            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+            android.view.ViewGroup.LayoutParams.WRAP_CONTENT)
+        scroll.addView(col)
+        setContentView(scroll)
     }
 }

@@ -91,32 +91,44 @@ object RadialMenus {
         fun toggleScreenLight()
         fun openFlashRing(l: Layer)
 
+        // preview health overlay (also toggled from the editor overflow)
+        fun isStatsHudOn(): Boolean
+        fun toggleStatsHud()
+
         fun toast(msg: String)
     }
 
     private fun item(
         icon: Int, label: String, active: Boolean = false, danger: Boolean = false,
-        badge: String? = null, keepOpen: Boolean = false, action: () -> Unit
-    ) = RadialMenuView.Item(icon, label, active, danger, badge, null, keepOpen, action)
+        badge: String? = null, keepOpen: Boolean = false, enabled: Boolean = true,
+        action: () -> Unit
+    ) = RadialMenuView.Item(icon, label, active, danger, badge, null, keepOpen, enabled, action)
 
     private fun folder(
         icon: Int, label: String, badge: String? = null, sub: () -> RadialMenuView.Level
-    ) = RadialMenuView.Item(icon, label, false, false, badge, sub, false, null)
+    ) = RadialMenuView.Item(icon, label, false, false, badge, sub, false, true, null)
 
     // ================= ROOT =================
 
+    /**
+     * Root ring, kept to 7 petals so it NEVER pages (8/page). One-tap jobs
+     * live on the persistent bottom bar; the ring is the power-user shortcut.
+     * Deleted rings and where their verbs went:
+     *  - Controls → transport row (±10 s buttons flank it) + Snapshot in Project
+     *  - Dock     → Layers bottom-bar sheet (with ‹ › selection steppers)
+     *  - Mixing   → Audio sheet (single mixer: mute/solo/loop/level per channel)
+     */
     fun root(h: Host): RadialMenuView.Level = RadialMenuView.Level(
         R.drawable.ic_wheel, "Studio", "tap a petal · tap the hub to close"
     ) {
         val n = h.project.layers.size
         val live = h.project.layers.firstOrNull { it.isLive() }
         val lightBadge = if (h.isScreenLightOn() || (live != null && (h.isTorchOn(live) || h.isFrontTorchOn() || h.isBackTorchOn())) || h.isBothTorchOn()) "ON" else null
+        val audioN = h.project.layers.count { it.isClip() }
         listOf(
             folder(R.drawable.ic_layers, "Sources", badge = if (n > 0) "$n" else null) { sources(h) },
             folder(R.drawable.ic_add, "Add") { add(h) },
-            folder(R.drawable.ic_play, "Controls") { controls(h) },
-            folder(R.drawable.ic_drag, "Dock") { dock(h) },
-            folder(R.drawable.ic_volume, "Mixing") { mixing(h) },
+            item(R.drawable.ic_volume, "Audio", badge = if (audioN > 0) "$audioN" else null) { h.openMixerPanel() },
             folder(R.drawable.ic_flash, "Light", badge = lightBadge) { lightRoot(h) },
             folder(R.drawable.ic_aspect, "Canvas") { canvas(h) },
             folder(R.drawable.ic_export, "Export") { export(h) },
@@ -149,9 +161,9 @@ object RadialMenus {
         val bothOn = h.isBothTorchOn()
         val screenOn = h.isScreenLightOn()
         if (frontHas) out.add(item(R.drawable.ic_flash, if (frontOn) "Front flash: on" else "Front flash: off", active = frontOn, badge = if (frontOn) "LED" else null, keepOpen = true) { h.toggleFrontTorch() })
-        else out.add(item(R.drawable.ic_flash, "Front: no LED (use screen)", keepOpen = false) { h.toast("Front has no LED — use screen light") })
+        else out.add(item(R.drawable.ic_flash, "Front: no LED — use screen light", enabled = false) { })
         if (backHas) out.add(item(R.drawable.ic_flash, if (backOn) "Back flash: on" else "Back flash: off", active = backOn, badge = if (backOn) "LED" else null, keepOpen = true) { h.toggleBackTorch() })
-        else out.add(item(R.drawable.ic_flash, "Back: no LED", keepOpen = false) { h.toast("Back has no LED") })
+        else out.add(item(R.drawable.ic_flash, "Back: no LED", enabled = false) { })
         if (frontHas && backHas) out.add(item(R.drawable.ic_flash, if (bothOn) "Both flashes: on" else "Both flashes: off", active = bothOn, keepOpen = true) { h.toggleBothTorch() })
         out.add(item(R.drawable.ic_eye, if (screenOn) "Screen light: on" else "Screen light: off", active = screenOn, badge = if (screenOn) "BRIGHT" else null, keepOpen = true) { h.toggleScreenLight() })
         out.add(item(R.drawable.ic_switch, if (l.camFacing == 0) "Switch to back cam" else "Switch to front cam", keepOpen = true) { h.switchCameraFacing(l) })
@@ -236,8 +248,10 @@ object RadialMenus {
                 out.add(item(R.drawable.ic_edit, "Edit text") { h.editText(l) })
                 out.add(item(R.drawable.ic_palette, "Colour", keepOpen = true) { h.cycleTextColor(l) })
             } else {
+                // Naming standard (used in every surface): Fit = whole frame,
+                // Fill = crop to box. Never "Fill" for background promotion.
                 out.add(item(if (l.fit == Layer.FIT_FIT) R.drawable.ic_fit else R.drawable.ic_fill,
-                    if (l.fit == Layer.FIT_FIT) "Whole frame" else "Fill box",
+                    if (l.fit == Layer.FIT_FIT) "Fit: whole frame" else "Fill: crop to box",
                     active = l.fit == Layer.FIT_FIT, keepOpen = true) { h.ctrl.toggleFit(l.id) })
             }
 
@@ -274,12 +288,12 @@ object RadialMenus {
         if (l == null) emptyList() else listOf(
             item(R.drawable.ic_up, "To front", keepOpen = true) { h.ctrl.moveZ(l.id, "front") },
             item(R.drawable.ic_down, "To back", keepOpen = true) { h.ctrl.moveZ(l.id, "back") },
-            item(R.drawable.ic_center, "Centre", keepOpen = true) { h.ctrl.center(l.id) },
-            item(R.drawable.ic_fit, "Corner: top-left", keepOpen = true) { h.ctrl.anchor(l.id, "tl") },
-            item(R.drawable.ic_fit, "Corner: top-right", keepOpen = true) { h.ctrl.anchor(l.id, "tr") },
-            item(R.drawable.ic_fit, "Corner: bottom-left", keepOpen = true) { h.ctrl.anchor(l.id, "bl") },
-            item(R.drawable.ic_fit, "Corner: bottom-right", keepOpen = true) { h.ctrl.anchor(l.id, "br") },
-            item(R.drawable.ic_fill, "Fill canvas", keepOpen = true) {
+            item(R.drawable.ic_reset, "Centre + unrotate", keepOpen = true) { h.ctrl.resetGeometry(l.id) },
+            item(R.drawable.ic_corner_tl, "Corner: top-left", keepOpen = true) { h.ctrl.anchor(l.id, "tl") },
+            item(R.drawable.ic_corner_tr, "Corner: top-right", keepOpen = true) { h.ctrl.anchor(l.id, "tr") },
+            item(R.drawable.ic_corner_bl, "Corner: bottom-left", keepOpen = true) { h.ctrl.anchor(l.id, "bl") },
+            item(R.drawable.ic_corner_br, "Corner: bottom-right", keepOpen = true) { h.ctrl.anchor(l.id, "br") },
+            item(R.drawable.ic_fill, "Set as background") {
                 h.ctrl.setAsCanvasBackground(l.id)
             }
         )
@@ -296,125 +310,11 @@ object RadialMenus {
             item(R.drawable.ic_video, "Video file") { h.addVideo() },
             item(R.drawable.ic_image, "Image") { h.addImage() },
             item(R.drawable.ic_screen, "Screen record") { h.addScreen() },
-            item(R.drawable.ic_text, "Text overlay") { h.addTextSource() },
-            item(R.drawable.ic_switch, "Fullscreen take (fallback)") { h.addCameraTake() }
+            item(R.drawable.ic_text, "Text overlay") { h.addTextSource() }
+            // NOTE: the old 6th item "Fullscreen take (fallback)" is gone on
+            // purpose — the fullscreen recorder now only appears automatically
+            // when the live camera fails on a device. One camera path to learn.
         )
-    }
-
-    // ================= CONTROLS =================
-
-    fun controls(h: Host): RadialMenuView.Level = RadialMenuView.Level(
-        R.drawable.ic_play, "Controls", "transport · time · history"
-    ) {
-        val playing = h.anyPlaying()
-        listOf(
-            item(if (playing) R.drawable.ic_pause else R.drawable.ic_play,
-                if (playing) "Pause all" else "Play all", active = playing, keepOpen = true) {
-                h.toggleMasterPlay()
-            },
-            item(R.drawable.ic_loop, "Restart", keepOpen = true) { h.restart() },
-            item(R.drawable.ic_back, "− 10 s", keepOpen = true) { h.nudge(-10_000L) },
-            item(R.drawable.ic_export, "+ 10 s", keepOpen = true) { h.nudge(10_000L) },
-            item(R.drawable.ic_image, "Snapshot frame") { h.snapshotFrame() },
-            item(R.drawable.ic_undo, "Undo", keepOpen = true) { h.undo() },
-            item(R.drawable.ic_redo, "Redo", keepOpen = true) { h.redo() }
-        )
-    }
-
-    // ================= DOCK =================
-
-    fun dock(h: Host): RadialMenuView.Level = RadialMenuView.Level(
-        R.drawable.ic_drag, "Dock", "the mixer list · selection · z-order"
-    ) {
-        val p = h.project
-        val sel = h.selected()
-        val out = ArrayList<RadialMenuView.Item>()
-        out.add(item(R.drawable.ic_layers, "Open source dock") { h.openDockPanel() })
-        out.add(item(R.drawable.ic_down, "Select next", keepOpen = true) { step(h, +1) })
-        out.add(item(R.drawable.ic_up, "Select previous", keepOpen = true) { step(h, -1) })
-        if (sel != null) {
-            out.add(item(R.drawable.ic_up, "Raise selection", keepOpen = true) {
-                h.ctrl.moveZ(sel.id, "up")
-            })
-            out.add(item(R.drawable.ic_down, "Lower selection", keepOpen = true) {
-                h.ctrl.moveZ(sel.id, "down")
-            })
-            out.add(item(R.drawable.ic_settings, "Advanced for selection") { h.openAdvanced(sel) })
-        }
-        out.add(item(R.drawable.ic_close, "Deselect", keepOpen = true) { h.selectId(null) })
-        if (p.layers.size > 1) out.add(folder(R.drawable.ic_layers, "Jump to source") { sources(h) })
-        out
-    }
-
-    private fun step(h: Host, dir: Int) {
-        val p = h.project
-        if (p.layers.isEmpty()) return
-        val cur = h.selected()
-        val i = if (cur == null) -1 else p.layers.indexOf(cur)
-        val next = ((if (i < 0) 0 else i + dir) % p.layers.size + p.layers.size) % p.layers.size
-        h.selectId(p.layers[next].id)
-    }
-
-    // ================= MIXING =================
-
-    fun mixing(h: Host): RadialMenuView.Level = RadialMenuView.Level(
-        R.drawable.ic_volume, "Mixing", "per-source audio · solo · levels"
-    ) {
-        val p = h.project
-        val audio = p.layers.filter { it.isClip() }
-        val out = ArrayList<RadialMenuView.Item>()
-        if (audio.isEmpty()) {
-            out.add(item(R.drawable.ic_info, "No audio sources yet") {
-                h.toast("Add a video, screen recording or camera take first")
-            })
-        } else {
-            val allMuted = audio.all { it.muted }
-            out.add(item(if (allMuted) R.drawable.ic_volume else R.drawable.ic_volume_off,
-                if (allMuted) "Unmute all" else "Mute all", active = allMuted, keepOpen = true) {
-                for (l in audio) if (l.muted == allMuted) h.ctrl.toggleMuted(l.id)
-            })
-            if (audio.any { it.solo }) out.add(item(R.drawable.ic_star, "Clear solos",
-                active = true, keepOpen = true) {
-                for (l in audio) if (l.solo) h.ctrl.toggleSolo(l.id)
-            })
-            for (l in audio) {
-                val m = h.ctrl.effectiveMuted(l)
-                out.add(folder(Ic.typeIcon(l.type), l.name.ifBlank { l.type.label },
-                    badge = if (l.solo) "SOLO" else if (m) "MUTED" else null) { channel(h, l.id) })
-            }
-        }
-        out.add(item(R.drawable.ic_layers, "Open mixer panel") { h.openMixerPanel() })
-        out
-    }
-
-    /** One mixer channel: mute, solo, coarse volume steps. */
-    fun channel(h: Host, id: String): RadialMenuView.Level = RadialMenuView.Level(
-        R.drawable.ic_volume, h.project.layerById(id)?.name?.ifBlank { "Channel" } ?: "Channel",
-        "channel strip"
-    ) {
-        val l = h.project.layerById(id)
-        if (l == null) emptyList() else {
-            val m = h.ctrl.effectiveMuted(l)
-            listOf(
-                item(if (m) R.drawable.ic_volume else R.drawable.ic_volume_off,
-                    if (m) "Unmute" else "Mute", active = m, keepOpen = true) {
-                    h.ctrl.toggleMuted(l.id)
-                },
-                item(R.drawable.ic_star, if (l.solo) "Solo: on" else "Solo",
-                    active = l.solo, keepOpen = true) { h.ctrl.toggleSolo(l.id) },
-                item(R.drawable.ic_up, "Volume +10 %",
-                    badge = "${(l.volume * 100).toInt()}%", keepOpen = true) {
-                    h.ctrl.setVolume(l.id, l.volume + 0.1f)
-                },
-                item(R.drawable.ic_down, "Volume −10 %", keepOpen = true) {
-                    h.ctrl.setVolume(l.id, l.volume - 0.1f)
-                },
-                item(R.drawable.ic_check, "Volume 100 %", keepOpen = true) {
-                    h.ctrl.setVolume(l.id, 1f)
-                },
-                item(R.drawable.ic_settings, "Advanced…") { h.openAdvanced(l) }
-            )
-        }
     }
 
     // ================= CANVAS =================
@@ -472,9 +372,13 @@ object RadialMenus {
     fun project(h: Host): RadialMenuView.Level = RadialMenuView.Level(
         R.drawable.ic_settings, "Project", h.project.name
     ) {
+        val hudOn = h.isStatsHudOn()
         listOf(
             item(R.drawable.ic_edit, "Rename project") { h.renameProject() },
             item(R.drawable.ic_check, "Save now", keepOpen = true) { h.saveNow() },
+            item(R.drawable.ic_image, "Snapshot frame") { h.snapshotFrame() },
+            item(R.drawable.ic_info, if (hudOn) "Stats overlay: on" else "Stats overlay: off",
+                active = hudOn, keepOpen = true) { h.toggleStatsHud() },
             item(R.drawable.ic_undo, "Undo", keepOpen = true) { h.undo() },
             item(R.drawable.ic_redo, "Redo", keepOpen = true) { h.redo() },
             item(R.drawable.ic_info, "Diagnostics") { h.openDiagnostics() },

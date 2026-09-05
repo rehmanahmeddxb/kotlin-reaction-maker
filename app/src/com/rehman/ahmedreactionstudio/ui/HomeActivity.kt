@@ -80,7 +80,8 @@ class HomeActivity : Activity() {
         tt.addView(sub)
         header.addView(tt)
 
-        val diagBtn = UI.chip(this, "\u2699")
+        val diagBtn = UI.chip(this, "ⓘ Diag")
+        diagBtn.contentDescription = "Open diagnostics"
         diagBtn.setOnClickListener {
             startActivity(Intent(this, DiagnosticsActivity::class.java))
         }
@@ -221,14 +222,25 @@ class HomeActivity : Activity() {
             fg.cornerRadius = UI.dpf(ctx, 8f)
             fg.setColor(UI.BG3)
             frame.background = fg
+            // Thumbnails decode off the UI thread (downsampled: the view is 66dp)
+            // so list scrolling never janks on big snapshot files. The tag
+            // guards against recycled rows receiving a stale bitmap.
+            thumb.tag = null
+            thumb.setImageDrawable(null)
+            thumb.scaleType = ImageView.ScaleType.CENTER_CROP
             if (imgFile.exists()) {
-                try {
-                    val bmp = BitmapFactory.decodeFile(imgFile.absolutePath)
-                    if (bmp != null) {
-                        thumb.setImageBitmap(bmp)
-                        thumb.scaleType = ImageView.ScaleType.CENTER_CROP
-                    }
-                } catch (_: Exception) { }
+                val path = imgFile.absolutePath
+                thumb.tag = path
+                Thread {
+                    try {
+                        val opts = BitmapFactory.Options().apply { inSampleSize = 4 }
+                        val bmp = BitmapFactory.decodeFile(path, opts)
+                        thumb.post {
+                            if (thumb.tag == path && bmp != null) thumb.setImageBitmap(bmp)
+                            else try { bmp?.recycle() } catch (_: Exception) { }
+                        }
+                    } catch (_: Exception) { }
+                }.start()
             }
             frame.addView(thumb, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))

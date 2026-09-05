@@ -87,6 +87,12 @@ class SourceController(
 
     fun center(id: String?) = withLayer(id) { it.cx = 0.5f; it.cy = 0.5f }
 
+    /** Reset position + rotation to the calm default, keeping the size. */
+    fun resetGeometry(id: String?) = withLayer(id) {
+        it.cx = 0.5f; it.cy = 0.5f; it.rotDeg = 0f
+        LayerFit.clampInside(it)
+    }
+
     /** Promote a source to the canvas background: full bleed + bottom of z. */
     fun setAsCanvasBackground(id: String?) {
         val l = p.layerById(id ?: return) ?: return

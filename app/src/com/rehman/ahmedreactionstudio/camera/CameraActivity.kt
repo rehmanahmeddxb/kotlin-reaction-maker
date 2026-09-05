@@ -250,10 +250,12 @@ class CameraActivity : Activity() {
         recordBtn.gravity = Gravity.CENTER
         recordBtn.setTextColor(Color.WHITE)
         recordBtn.textSize = 26f
+        recordBtn.contentDescription = "Start recording"
         val rg = android.graphics.drawable.GradientDrawable()
         rg.cornerRadius = UI.dpf(this, 34f)
         rg.setColor(0xFFE53935.toInt())
         recordBtn.background = rg
+        recordBtn.tag = rg
         recordBtn.layoutParams = LinearLayout.LayoutParams(UI.dp(this, 68), UI.dp(this, 68))
         recordBtn.setOnClickListener { toggleRecord() }
         row.addView(recordBtn)
@@ -586,7 +588,9 @@ class CameraActivity : Activity() {
                     timerHandler.post(timerTick)
                     runOnUiThread {
                         recordBtn.text = "■"
-                        recordBtn.setBackgroundColor(0xFFD32F2F.toInt())
+                        (recordBtn.tag as? android.graphics.drawable.GradientDrawable)
+                            ?.setColor(0xFFD32F2F.toInt())
+                        recordBtn.contentDescription = "Stop recording"
                         statusLabel.text = "Recording …"
                     }
                 }
@@ -624,7 +628,9 @@ class CameraActivity : Activity() {
         if (device != null) createPreviewSession()
         runOnUiThread {
             recordBtn.text = "●"
-            recordBtn.setBackgroundColor(0xFFE53935.toInt())
+            (recordBtn.tag as? android.graphics.drawable.GradientDrawable)
+                ?.setColor(0xFFE53935.toInt())
+            recordBtn.contentDescription = "Start recording"
             timerLabel.text = "00:00"
             statusLabel.text = ""
         }
