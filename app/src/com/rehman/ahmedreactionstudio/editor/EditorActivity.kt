@@ -499,7 +499,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP))
 
         val back = IconBtn(this)
-        back.layoutParams = IconBtn.sized(this, 40)
+        back.layoutParams = IconBtn.sized(this, 44)
         back.setIcon(R.drawable.ic_back, UI.FG, "Back")
         back.setOnClickListener { onBackPressed() }
         top.addView(back)
@@ -548,25 +548,25 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         updateAspectChip()
 
         val undoB = IconBtn(this)
-        undoB.layoutParams = IconBtn.sized(this, 40)
+        undoB.layoutParams = IconBtn.sized(this, 44)
         undoB.setIcon(R.drawable.ic_undo, UI.FG, "Undo")
         undoB.setOnClickListener { doUndo() }
         top.addView(undoB)
 
         val redoB = IconBtn(this)
-        redoB.layoutParams = IconBtn.sized(this, 40)
+        redoB.layoutParams = IconBtn.sized(this, 44)
         redoB.setIcon(R.drawable.ic_redo, UI.FG, "Redo")
         redoB.setOnClickListener { doRedo() }
         top.addView(redoB)
 
         val full = IconBtn(this)
-        full.layoutParams = IconBtn.sized(this, 40)
+        full.layoutParams = IconBtn.sized(this, 44)
         full.setIcon(R.drawable.ic_fullscreen, UI.FG, "Full canvas: hide all controls")
         full.setOnClickListener { setFullCanvas(true) }
         top.addView(full)
 
         val diag = IconBtn(this)
-        diag.layoutParams = IconBtn.sized(this, 40)
+        diag.layoutParams = IconBtn.sized(this, 44)
         diag.setIcon(R.drawable.ic_settings, UI.FG, "Diagnostics")
         diag.setOnClickListener { startActivity(Intent(this, DiagnosticsActivity::class.java)) }
         top.addView(diag)
