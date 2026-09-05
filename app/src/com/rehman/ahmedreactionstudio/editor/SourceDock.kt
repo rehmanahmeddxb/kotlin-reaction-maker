@@ -41,7 +41,7 @@ class SourceDock(
     private val onReorderEnd: () -> Unit
 ) {
 
-    private val ROW_DP = 50
+    private val ROW_DP = 52
     private var dragRow: LinearLayout? = null
     private var dragLayer: Layer? = null
 
@@ -49,7 +49,7 @@ class SourceDock(
         container.removeAllViews()
         val p = projectRef()
         if (p.layers.isEmpty()) {
-            val t = UI.label(act, "No sources yet — open Add below to add one.", dim = true, size = 12f)
+            val t = UI.label(act, "No sources yet — tap Add to create one.", dim = true, size = 12.5f)
             val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT)
             lp.setMargins(UI.dp(act, 14), UI.dp(act, 10), UI.dp(act, 14), UI.dp(act, 10))
@@ -68,9 +68,9 @@ class SourceDock(
         val row = LinearLayout(act)
         row.orientation = LinearLayout.HORIZONTAL
         row.gravity = Gravity.CENTER_VERTICAL
-        row.setPadding(UI.dp(act, 6), 0, UI.dp(act, 6), 0)
+        row.setPadding(UI.dp(act, 8), 0, UI.dp(act, 8), 0)
         val bg = GradientDrawable()
-        bg.cornerRadius = UI.dpf(act, 12f)
+        bg.cornerRadius = UI.dpf(act, 14f)
         bg.setColor(if (selected) Color.argb(70, 255, 90, 44) else Color.argb(120, 20, 23, 31))
         bg.setStroke(UI.dp(act, 1),
             if (selected) Color.argb(255, 255, 130, 80) else Color.argb(40, 255, 255, 255))
@@ -81,7 +81,7 @@ class SourceDock(
 
         // --- eye (visibility) ---
         val eye = IconBtn(act)
-        eye.layoutParams = IconBtn.sized(act, 38)
+        eye.layoutParams = IconBtn.sized(act, 44)
         eye.setIcon(
             if (l.visible) R.drawable.ic_eye else R.drawable.ic_eye_off,
             if (l.visible) UI.FG else Color.argb(120, 255, 255, 255),
@@ -92,7 +92,7 @@ class SourceDock(
         // --- mute (only meaningful for video-like sources) ---
         if (l.isClip()) {
             val mute = IconBtn(act)
-            mute.layoutParams = IconBtn.sized(act, 38)
+            mute.layoutParams = IconBtn.sized(act, 44)
             val effMuted = l.muted || mutedBySolo(l)
             mute.setIcon(
                 if (effMuted) R.drawable.ic_volume_off else R.drawable.ic_volume,
@@ -102,15 +102,15 @@ class SourceDock(
             row.addView(mute)
         } else {
             val spacer = View(act)
-            row.addView(spacer, LinearLayout.LayoutParams(UI.dp(act, 38), UI.dp(act, 38)))
+            row.addView(spacer, LinearLayout.LayoutParams(UI.dp(act, 44), UI.dp(act, 44)))
         }
 
         // --- type icon ---
         val typeIc = ImageView(act)
         typeIc.setImageDrawable(Ic.get(act, Ic.typeIcon(l.type),
             if (l.visible) UI.ACCENT2 else Color.argb(120, 255, 255, 255)))
-        val tlp = LinearLayout.LayoutParams(UI.dp(act, 17), UI.dp(act, 17))
-        tlp.setMargins(UI.dp(act, 6), 0, UI.dp(act, 8), 0)
+        val tlp = LinearLayout.LayoutParams(UI.dp(act, 18), UI.dp(act, 18))
+        tlp.setMargins(UI.dp(act, 8), 0, UI.dp(act, 10), 0)
         typeIc.layoutParams = tlp
         row.addView(typeIc)
 
@@ -123,14 +123,14 @@ class SourceDock(
         val nm = TextView(act)
         nm.text = l.name.ifBlank { l.type.name }
         nm.setTextColor(if (l.visible) Color.WHITE else Color.argb(150, 255, 255, 255))
-        nm.textSize = 12.5f
+        nm.textSize = 13f
         nm.typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         nm.maxLines = 1
         col.addView(nm)
 
         val st = TextView(act)
         st.text = statusOf(l)
-        st.textSize = 9.5f
+        st.textSize = 10f
         st.setTextColor(statusColor(l))
         st.maxLines = 1
         if (l.isClip()) {
@@ -155,7 +155,7 @@ class SourceDock(
         handle.setImageDrawable(Ic.get(act, R.drawable.ic_drag, Color.argb(170, 255, 255, 255)))
         handle.setPadding(UI.dp(act, 8), UI.dp(act, 8), UI.dp(act, 8), UI.dp(act, 8))
         handle.contentDescription = "Drag to reorder ${l.name}"
-        val hlp = LinearLayout.LayoutParams(UI.dp(act, 38), UI.dp(act, 38))
+        val hlp = LinearLayout.LayoutParams(UI.dp(act, 44), UI.dp(act, 44))
         handle.layoutParams = hlp
         handle.setOnTouchListener { _, ev -> handleTouch(ev, row, l) }
         row.addView(handle)
