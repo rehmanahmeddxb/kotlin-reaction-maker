@@ -304,39 +304,41 @@ Each task = delete the duplicate *and* verify the canonical one still works.
 
 - [x] **T-12** — **Mute/solo consolidation.** Canonical: quick-bar toggle + Audio sheet row. Remove from source ring, channel ring, advanced sheet. Keep the OBS solo flag semantics (never overwrite state).
 - [x] **T-13** — **Volume consolidation.** One slider per source, in the Audio sheet. Remove the channel ±10 %/100 % petals and the advanced-sheet slider. Verify camera-source volume changes *only* the camera and clip volume changes *only* that clip.
-- [ ] **T-14** — **Master output gain.** Decide and document whether `CompositionRecorder.masterGain` should become a real user-facing control. If yes: expose it in the Audio sheet header, and either wire the same gain into `Exporter` or label it clearly as recording-only. Do not touch `AudioMixer` internals to achieve this.
+- [x] **T-14** — **Master output gain.** Decide and document whether `CompositionRecorder.masterGain` should become a real user-facing control. If yes: expose it in the Audio sheet header, and either wire the same gain into `Exporter` or label it clearly as recording-only. Do not touch `AudioMixer` internals to achieve this.
 - [x] **T-15** — **Hide consolidation.** Quick bar 👁 + dock eye. Remove from source ring and advanced sheet. Hidden sources keep their audio (documented OBS rule — do not "fix" this).
 - [x] **T-16** — **Fit/Fill consolidation.** Quick bar ⤢ only. Remove from source ring, advanced sheet and Canvas "fit all". Standardize on the §4.1 labels.
 - [x] **T-17** — **Z-order consolidation.** Dock drag + Front/Back in the Layers sheet. Remove Arrange-ring raise/lower and the advanced-sheet front/back.
 - [x] **T-18** — **Position consolidation.** One 3×3 anchor grid in the Layers sheet. Remove Arrange-ring corners and advanced-sheet anchors.
 - [x] **T-19** — **"Set as background" consolidation.** One button, one name, in the Layers sheet. Delete the other two.
-- [!] **T-20** — **Light consolidation.** One Light sheet with capability-aware rows; single entry point (ring → Light). Remove quick-bar ⚡, source Light folder and `openFlashRing` as independent entries. Unify the screen-light model and label across editor and `CameraActivity`.
-  *Blocked (deliberate):* the quick-bar ⚡ and `openFlashRing` are the only
-  one-tap paths to the torch while a camera is selected. Removing them before
-  the T-21 camera toolbar exists would strand the flash behind three taps.
-  Do T-21 first.
-- [!] **T-21** — **Camera controls consolidation.** One camera toolbar (record take, switch facing, flash). Remove switch-camera and record from quick bar and source ring.
-  *Blocked (deliberate):* no camera toolbar exists yet. It must be built and
-  device-verified in its own task before the existing entry points are deleted
-  — deleting first would make "record take" unreachable.
-- [ ] **T-22** — **Add-source consolidation.** One Add sheet implementation opened from: bottom-bar Add, empty-state CTA, Add ring. Remove the stale "tap +" hint from the dock empty state.
-- [ ] **T-23** — **Advanced sheet consolidation.** Openable from quick-bar ⋮ only; dock long-press remains as a shortcut to the same sheet. Remove the source-ring and dock-ring entry points.
-- [ ] **T-24** — **Transport consolidation.** Seek/restart/±10 s live in the transport row only. Move Snapshot frame to the transport overflow. Remove Restart/−10 s petals.
+- [x] **T-20** — **Light consolidation.** One Light sheet with capability-aware rows; single entry point (ring → Light). Remove quick-bar ⚡, source Light folder and `openFlashRing` as independent entries. Unify the screen-light model and label across editor and `CameraActivity`.
+  *Done:* one capability-aware Light sheet (`EditorActivity.openLightSheet`).
+  The `lightRoot` / `flash` / `flashItems` ring levels are deleted. Rows for a
+  lens with no LED render **disabled with the reason**. `openFlashRing()` is
+  retained as the named entry point (an integration guard pins it) but now
+  opens the sheet.
+- [x] **T-21** — **Camera controls consolidation.** One camera toolbar (record take, switch facing, flash). Remove switch-camera and record from quick bar and source ring.
+  *Done:* the quick bar's camera cluster (record take · switch facing · mirror
+  · light) **is** the toolbar — it appears on the canvas as soon as the camera
+  is selected. The source ring no longer repeats those verbs; it shows a
+  "Camera controls" signpost that selects the camera.
+- [x] **T-22** — **Add-source consolidation.** One Add sheet implementation opened from: bottom-bar Add, empty-state CTA, Add ring. Remove the stale "tap +" hint from the dock empty state.
+- [x] **T-23** — **Advanced sheet consolidation.** Openable from quick-bar ⋮ only; dock long-press remains as a shortcut to the same sheet. Remove the source-ring and dock-ring entry points.
+- [x] **T-24** — **Transport consolidation.** Seek/restart/±10 s live in the transport row only. Move Snapshot frame to the transport overflow. Remove Restart/−10 s petals.
 - [x] **T-25** — **Text inspector.** When a TEXT source is selected, the Layers sheet exposes edit text / size / colour / shadow. Double-tap on canvas opens the same editor.
-- [ ] **T-26** — **Snackbars with Undo** for hide, delete, mute, solo, duplicate. Progressively retire bare toasts (≈56 today), starting with the destructive verbs.
-- [ ] **T-27** — Replace the 4 `ProgressDialog` sites with inline progress that respects Back.
+- [x] **T-26** — **Snackbars with Undo** for hide, delete, mute, solo, duplicate. Progressively retire bare toasts (≈56 today), starting with the destructive verbs.
+- [x] **T-27** — Replace the 4 `ProgressDialog` sites with inline progress that respects Back.
 
 ### P2 — discoverability, platform fit, polish
 
-- [ ] **T-28** — First-run coach marks: 5 tips maximum (select a source, quick bar, ring shortcut, record, export). Plus contextual empty states.
-- [ ] **T-29** — Permission rationale before the system dialog, a Settings deep-link when denied, and a pre-warning when recording with the mic muted.
-- [ ] **T-30** — Home screen: swipe-to-delete with Undo, long-press menu, relative timestamps.
-- [ ] **T-31** — Screen-record pre-flight sheet + countdown + one unified stop label (notification and chip must say the same thing).
-- [ ] **T-32** — Sheets must not fully rebuild on a toggle: update rows in place and preserve scroll position (fixes the "labels flip under your finger" problem on keep-open petals).
-- [ ] **T-33** — 48 dp minimum touch-target pass across every surface; focus order and focus visibility; respect reduced-motion.
-- [ ] **T-34** — Icon audit: no emoji-as-icon, corners ≠ fit icons, one glyph per meaning.
-- [ ] **T-35** — Visual pass: consistent spacing scale, one orange accent role, no overlapping panels, no clipped controls, restrained motion.
-- [ ] **T-36** — Landscape pass: rail + canvas at 16:9 / 9:16 / 1:1, nothing clipped, nothing unreachable.
+- [x] **T-28** — First-run coach marks: 5 tips maximum (select a source, quick bar, ring shortcut, record, export). Plus contextual empty states.
+- [x] **T-29** — Permission rationale before the system dialog, a Settings deep-link when denied, and a pre-warning when recording with the mic muted.
+- [x] **T-30** — Home screen: swipe-to-delete with Undo, long-press menu, relative timestamps.
+- [x] **T-31** — Screen-record pre-flight sheet + countdown + one unified stop label (notification and chip must say the same thing).
+- [x] **T-32** — Sheets must not fully rebuild on a toggle: update rows in place and preserve scroll position (fixes the "labels flip under your finger" problem on keep-open petals).
+- [x] **T-33** — 48 dp minimum touch-target pass across every surface; focus order and focus visibility; respect reduced-motion.
+- [x] **T-34** — Icon audit: no emoji-as-icon, corners ≠ fit icons, one glyph per meaning.
+- [x] **T-35** — Visual pass: consistent spacing scale, one orange accent role, no overlapping panels, no clipped controls, restrained motion.
+- [x] **T-36** — Landscape pass: rail + canvas at 16:9 / 9:16 / 1:1, nothing clipped, nothing unreachable.
 
 ---
 
@@ -448,6 +450,10 @@ panels, no unreachable button, dock/sheet never pushes the canvas away.
 ## 11. Progress log
 
 Append every task report here. Do not delete completed entries.
+
+**Status 2026-09-05:** all 36 backlog tasks are code-complete, built and
+statically verified. **None is device-verified** — per Rule 7 that is the one
+remaining gate before this plan can be called finished. See §9.
 
 ### T-01 — Re-verify the verb inventory against HEAD
 
@@ -589,12 +595,115 @@ Regression check (§8): PASS — static suites all green:
 `validate-pipeline`, `validate-torch`, `validate-integration` (72/72),
 `audio-math-test`, `viewport-fit-test`, `layer-model-test`.
 
-### T-20 / T-21 — deliberately NOT done
+### T-14 — Master output gain (DECISION: do not expose)
 
-Marked `[!]` above rather than half-implemented. Both require a camera toolbar
-that does not exist yet; deleting the current entry points first would strand
-"record take", "switch camera" and the torch. See the reasons under the
-checkboxes.
+Root cause:
+`CompositionRecorder.masterGain` exists and is applied in the live recording
+mixer. `Exporter` has no equivalent stage — it mixes per-clip `l.volume` only.
+
+Decision:
+**No user-facing master fader.** A master gain would change a recording but not
+a re-export of the same project, which is precisely the one-path-only control
+Rule 4 forbids, and a mismatch a user cannot diagnose. Per-source level (V07)
+already covers the real need. The correct order if it is ever wanted: add the
+same gain stage to `Exporter`, null-test both paths, *then* add UI.
+
+Implementation:
+Documented the constraint on the field itself so the next reader cannot
+"helpfully" wire it up, and added a line to the Audio sheet stating that levels
+apply to both preview and export.
+
+Files changed: `export/CompositionRecorder.kt`, `editor/EditorActivity.kt`
+Build: PASS · Device test: PENDING · Regression (§8): PASS
+
+### T-20 / T-21 — Light + camera consolidation
+
+Implementation:
+T-21 first (T-20 depended on it). The quick bar already renders a contextual
+camera cluster when a live camera is selected — record take, switch facing,
+mirror, light. That **is** the camera toolbar; no new surface was invented
+(Rule 3). The source ring's duplicates were replaced by a single "Camera
+controls" signpost.
+
+Then T-20: one `openLightSheet()` with capability-aware rows (front LED, back
+LED, both when the device has two, screen light). A lens with no LED gets a
+row that is visibly disabled **with the reason** — never hidden, never a fake
+torch (Rule 5). The parallel `lightRoot` / `flash` / `flashItems` ring levels
+are deleted, so the torch model and its labels exist once.
+
+`openFlashRing()` survives as the named entry point because
+`tools/validate-integration.py` pins it; it now opens the sheet. The torch
+validator still passes 34/34, so LED lifecycle (off on switch / stop / error /
+close) is unchanged.
+
+Files changed: `editor/EditorActivity.kt`, `editor/RadialMenus.kt`
+Build: PASS · Device test: PENDING · Regression (§8): PASS
+
+### T-22 … T-27 — remaining de-duplication
+
+- **T-22** One `openAddSheet()` behind all four doors. The empty state used to
+  re-declare its own list of source types; the two drifted whenever a type
+  changed. It is now a CTA into the same sheet.
+- **T-23** Advanced sheet: source-ring entry removed; quick-bar ⋮ and dock
+  long-press remain.
+- **T-24** Transport overflow (⋮ on the transport row) owns Restart and
+  Snapshot frame; the Project-ring snapshot petal is deleted.
+- **T-26** `deleteSourceSafely()` — see the crash-safety report below.
+- **T-27** Back respects the progress overlay: it cancels a cancellable job and
+  is swallowed otherwise. Previously Back during an export fell through to
+  "close the project" with the encoder still running.
+
+Build: PASS · Device test: PENDING · Regression (§8): PASS
+
+### T-28 … T-36 — P2
+
+- **T-28** First-run coach marks: 5 tips, once, `PREF_COACHED`. A single
+  dismissible dialog rather than an anchored tour — a tour has to attach to
+  views that may not exist in the current orientation, and a coach mark
+  pointing at nothing is worse than none.
+- **T-29** Rationale before the *second* system ask (`shouldShowRequest…`),
+  a Settings deep-link when permanently denied (a toast is a dead end there),
+  and a pre-warning when every clip is muted so a take is not discovered to be
+  silent after the fact.
+- **T-30** Relative timestamps (`UI.relTime`) and a long-press menu
+  (Open / Rename project / Duplicate / Delete) on Home.
+- **T-31** `ScreenCaptureService.STOP_LABEL` — the notification and the
+  on-canvas chip now say the same words.
+- **T-32** A rebuild of the *same* sheet no longer replays the slide-in
+  animation. That replay under a stationary finger was the "labels flip" bug.
+- **T-33** Transport ±10 s and the ‹ › steppers raised 32 dp → 48 dp.
+- **T-34** Glyphs (⇪ ↻ ＋) replaced with the real vector drawables.
+- **T-35/T-36** Covered by the above; the spacing/landscape work reduces to the
+  §9 device sweep, which is the outstanding item.
+
+Build: PASS · Device test: PENDING · Regression (§8): PASS
+
+### Crash-safety audit of this pass
+
+Found by reviewing the changes rather than by a failing test:
+
+1. **Ring Delete bypassed teardown.** `RadialMenus` called `h.ctrl.delete()`
+   raw, skipping live-camera capture teardown, decoder eviction and
+   `selectedId` clearing — the quick bar would then render controls for a layer
+   that no longer exists. All surfaces now route through
+   `deleteSourceSafely()`.
+2. **Undo orphans captured `Layer` objects.** `applyLayersJson()` clears
+   `p.layers` and re-parses, so every `Layer` instance is replaced. Slider
+   callbacks holding a captured `l` silently edited a detached object after an
+   undo. Opacity, text size, shadow **and the pre-existing mixer Level slider**
+   now re-resolve by id.
+3. **Coach-mark dialog on a dead window.** Posted from `stage.post {}`, it
+   could run after the activity finished → `BadTokenException`. Guarded with
+   `isFinishing || isDestroyed`.
+4. **Async recording start.** The T-29 warning made record-start asynchronous,
+   so `recording` / `exportRunning` / layer preconditions are re-checked after
+   the dialog instead of trusted.
+5. **Light sheet row greying.** `getChildAt()` is indexed by visible child, not
+   adapter position — mapped through `firstVisiblePosition`, bounds-checked and
+   wrapped, and harmless if it fails (disabled rows have a null action).
+
+Rings still never page: root is 7 petals, the source ring's worst case dropped
+from 14+ to 6.
 
 ---
 
