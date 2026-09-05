@@ -24,7 +24,23 @@ import com.rehman.ahmedreactionstudio.core.SourceController
  */
 object RadialMenus {
 
-    /** Everything the rings need from the editor. */
+    /**
+     * Everything the rings need from the editor.
+     *
+     * NOTE (post-consolidation): several members are no longer called by any
+     * ring — their verbs moved to a canonical non-ring home (UI Plan2 §4):
+     *   fitAllSources / toggleSourcePlay / toggleMasterPlay → quick bar + transport
+     *   snapshotFrame / restart / nudge                      → transport overflow
+     *   cycleTextColor                                       → Layers sheet text block
+     *   openAdvanced                                         → quick-bar ⋮
+     *   openDiagnostics                                      → editor top bar
+     *   the torch members                                    → the single Light sheet
+     *   addCameraTake                                        → automatic camera fallback
+     * They are deliberately KEPT on the interface: the editor still implements
+     * them, they are the tested entry points, and deleting them would be a
+     * wide refactor with no user-visible benefit. Do not re-add ring petals for
+     * them — that is exactly the duplication this pass removed.
+     */
     interface Host {
         val project: Project
         val ctrl: SourceController
@@ -54,6 +70,9 @@ object RadialMenus {
         fun openMixerPanel()
         fun openExportPanel()
         fun openAdvanced(l: Layer)
+        /** delete a source through the editor's safe path (camera teardown,
+         *  decoder eviction, selection clearing, Undo snackbar) */
+        fun deleteSource(l: Layer)
         fun quickExport()
 
         // canvas / project
@@ -91,7 +110,10 @@ object RadialMenus {
         /** screen flash: the canvas glows white to light a front-camera face */
         fun isScreenLightOn(): Boolean
         fun toggleScreenLight()
+        /** T-20: opens the single Light sheet (front / back / both / screen) */
         fun openFlashRing(l: Layer)
+        /** T-20: the Light sheet without needing a selected camera */
+        fun openLight()
 
         // preview health overlay (also toggled from the editor overflow)
         fun isStatsHudOn(): Boolean
@@ -131,46 +153,17 @@ object RadialMenus {
             folder(R.drawable.ic_layers, "Sources", badge = if (n > 0) "$n" else null) { sources(h) },
             folder(R.drawable.ic_add, "Add") { add(h) },
             item(R.drawable.ic_volume, "Audio", badge = if (audioN > 0) "$audioN" else null) { h.openMixerPanel() },
-            folder(R.drawable.ic_flash, "Light", badge = lightBadge) { lightRoot(h) },
+            item(R.drawable.ic_flash, "Light", badge = lightBadge) { h.openLight() },
             folder(R.drawable.ic_aspect, "Canvas") { canvas(h) },
             folder(R.drawable.ic_export, "Export") { export(h) },
             folder(R.drawable.ic_settings, "Project") { project(h) }
         )
     }
 
-    /** Top-level Light menu so flashlight is discoverable without selecting a source */
-    fun lightRoot(h: Host): RadialMenuView.Level = RadialMenuView.Level(
-        R.drawable.ic_flash, "Light", "front · back · both · screen flash"
-    ) {
-        val live = h.project.layers.firstOrNull { it.isLive() }
-        val out = ArrayList<RadialMenuView.Item>()
-        if (live != null) {
-            out.addAll(flashItems(h, live))
-        } else {
-            out.add(item(R.drawable.ic_camera, "Add live camera first") { h.addCameraLive() })
-            val screenOn = h.isScreenLightOn()
-            out.add(item(R.drawable.ic_eye, if (screenOn) "Screen light: on" else "Screen light: off", active = screenOn, keepOpen = true) { h.toggleScreenLight() })
-        }
-        out
-    }
-
-    private fun flashItems(h: Host, l: Layer): List<RadialMenuView.Item> {
-        val out = ArrayList<RadialMenuView.Item>()
-        val frontHas = h.hasFrontTorch()
-        val backHas = h.hasBackTorch()
-        val frontOn = h.isFrontTorchOn()
-        val backOn = h.isBackTorchOn()
-        val bothOn = h.isBothTorchOn()
-        val screenOn = h.isScreenLightOn()
-        if (frontHas) out.add(item(R.drawable.ic_flash, if (frontOn) "Front flash: on" else "Front flash: off", active = frontOn, badge = if (frontOn) "LED" else null, keepOpen = true) { h.toggleFrontTorch() })
-        else out.add(item(R.drawable.ic_flash, "Front: no LED — use screen light", enabled = false) { })
-        if (backHas) out.add(item(R.drawable.ic_flash, if (backOn) "Back flash: on" else "Back flash: off", active = backOn, badge = if (backOn) "LED" else null, keepOpen = true) { h.toggleBackTorch() })
-        else out.add(item(R.drawable.ic_flash, "Back: no LED", enabled = false) { })
-        if (frontHas && backHas) out.add(item(R.drawable.ic_flash, if (bothOn) "Both flashes: on" else "Both flashes: off", active = bothOn, keepOpen = true) { h.toggleBothTorch() })
-        out.add(item(R.drawable.ic_eye, if (screenOn) "Screen light: on" else "Screen light: off", active = screenOn, badge = if (screenOn) "BRIGHT" else null, keepOpen = true) { h.toggleScreenLight() })
-        out.add(item(R.drawable.ic_switch, if (l.camFacing == 0) "Switch to back cam" else "Switch to front cam", keepOpen = true) { h.switchCameraFacing(l) })
-        return out
-    }
+    // T-20 — the `lightRoot` / `flash` / `flashItems` ring levels are deleted.
+    // Front, back, both and screen light now live in ONE capability-aware
+    // Light sheet (EditorActivity.openLightSheet). Keeping a ring copy meant
+    // two torch models, two label sets and two places to fix a bug.
 
     // ================= SOURCES =================
 
@@ -222,18 +215,16 @@ object RadialMenus {
             // that have no other one-tap home.
 
             if (l.isLive()) {
-                val rec = h.isCameraRecording(l)
-                out.add(item(if (rec) R.drawable.ic_stop else R.drawable.ic_camera,
-                    if (rec) "Stop take" else "Record take",
-                    active = rec, danger = rec) { h.toggleCameraRecord(l) })
-                out.add(item(R.drawable.ic_switch, "Switch cam", keepOpen = true) {
-                    h.switchCameraFacing(l)
-                })
-                out.add(item(R.drawable.ic_loop, if (l.mirror) "Mirror: on" else "Mirror: off",
-                    active = l.mirror, keepOpen = true) { h.toggleCameraMirror(l) })
-                out.add(folder(R.drawable.ic_flash, "Light",
+                // T-21 — the camera toolbar is the quick bar's camera cluster
+                // (record take · switch facing · mirror · light), which appears
+                // on the canvas the moment the camera is selected. Record take
+                // and Switch cam are NOT repeated here; the ring only signposts
+                // the toolbar so the verbs keep a single home.
+                out.add(item(R.drawable.ic_camera, "Camera controls",
+                    badge = if (h.isCameraRecording(l)) "REC" else "LIVE") { h.selectId(l.id) })
+                out.add(item(R.drawable.ic_flash, "Light",
                     badge = if (h.isTorchOn(l) || h.isScreenLightOn()) "ON" else null) {
-                    flash(h, l.id)
+                    h.openLight()
                 })
             } else if (l.isClip()) {
                 // audio verbs (mute/solo/loop/level) live in the Audio sheet
@@ -249,22 +240,11 @@ object RadialMenus {
                 h.ctrl.toggleLocked(l.id)
             })
             out.add(item(R.drawable.ic_drag, "Layout & order…") { h.openDockPanel() })
-            out.add(item(R.drawable.ic_settings, "Advanced…") { h.openAdvanced(l) })
-            out.add(item(R.drawable.ic_delete, "Delete", danger = true) { h.ctrl.delete(l.id) })
+            // never ctrl.delete() raw: a live camera needs its capture session
+            // torn down and the engine needs the decoder evicted (V13)
+            out.add(item(R.drawable.ic_delete, "Delete", danger = true) { h.deleteSource(l) })
             out
         }
-    }
-
-    /**
-     * LIGHT RING — flashlight for both cameras + both-on + screen flash.
-     * Shows Front LED, Back LED, Both, and Screen Light as independent toggles
-     * so a device with LEDs on both sides can run front, back or both while recording.
-     */
-    fun flash(h: Host, id: String): RadialMenuView.Level = RadialMenuView.Level(
-        R.drawable.ic_flash, "Light", "front · back · both · screen flash"
-    ) {
-        val l = h.project.layerById(id) ?: return@Level emptyList()
-        flashItems(h, l)
     }
 
     // The ARRANGE ring is deleted (UI Plan2 T-17/T-18/T-19). Z-order,
@@ -348,7 +328,6 @@ object RadialMenus {
         listOf(
             item(R.drawable.ic_edit, "Rename project") { h.renameProject() },
             item(R.drawable.ic_check, "Save now", keepOpen = true) { h.saveNow() },
-            item(R.drawable.ic_image, "Snapshot frame") { h.snapshotFrame() },
             item(R.drawable.ic_info, if (hudOn) "Stats overlay: on" else "Stats overlay: off",
                 active = hudOn, keepOpen = true) { h.toggleStatsHud() },
             item(R.drawable.ic_undo, "Undo", keepOpen = true) { h.undo() },

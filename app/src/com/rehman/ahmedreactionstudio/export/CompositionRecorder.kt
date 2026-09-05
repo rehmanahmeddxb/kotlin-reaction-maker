@@ -178,7 +178,24 @@ class CompositionRecorder(
     private val audioDone = CountDownLatch(1)
     @Volatile private var audioFailed = false
     @Volatile private var audioGaveUp = false
-    /** microphone gain (1 = unity) and master gain applied to clip audio */
+    /**
+     * Microphone gain (1 = unity) and master gain applied to clip audio.
+     *
+     * UI Plan2 T-14 — DECISION (2026-09-05): these stay **internal**, with no
+     * user-facing control.
+     *
+     * `masterGain` is applied here, in the live recording mixer. `Exporter` has
+     * no equivalent stage (it mixes per-clip `l.volume` only). Surfacing a
+     * master fader would therefore change a recording but NOT a re-export of
+     * the same project — exactly the "control that only affects one path" that
+     * Rule 4 (preview == export) forbids, and the kind of silent mismatch that
+     * is very hard for a user to diagnose.
+     *
+     * Per-source level in the Audio sheet (V07) already covers the real need.
+     * If a master fader is ever wanted, the correct order is: add the same gain
+     * stage to `Exporter`, prove both paths null-test identical, and only then
+     * add the UI. Do not shortcut that by exposing this field.
+     */
     @Volatile var micGain = 1f
     @Volatile var masterGain = 1f
 

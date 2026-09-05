@@ -84,6 +84,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         const val PREF_EXP_MAXDIM = "exp_maxdim"
         const val PREF_EXP_FPS = "exp_fps"
         const val PREF_HAD_EXPORT = "had_export"
+        /** T-28: first-run coach marks shown once */
+        const val PREF_COACHED = "coached_v1"
     }
 
     private fun editorPrefs() = getSharedPreferences(PREFS_EDITOR, MODE_PRIVATE)
@@ -254,6 +256,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         engine.refreshFrames()
         updateEmptyState()
         updateRecordButton()
+        // T-28: after the first layout pass, so the dialog sits over a drawn UI
+        stage.post { maybeShowCoachMarks() }
     }
 
     private fun applyOrientationFor(a: Aspect) {
@@ -338,6 +342,17 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     override fun onBackPressed() {
         if (wheel.isOpen()) { wheel.pop(); return }
+        // T-27 — the inline progress overlay must respect Back. Without this,
+        // Back during an export fell through to "close the project" while the
+        // encoder was still running. Back now means "cancel this job" when the
+        // job is cancellable, and is swallowed when it is not, so a render can
+        // never be orphaned behind a dead activity.
+        if (progOverlay?.visibility == View.VISIBLE) {
+            val cancel = progOnCancel
+            if (cancel != null) cancel() else
+                UI.toast(this, "Please wait — this finishes in a moment")
+            return
+        }
         if (fullCanvas) { setFullCanvas(false); return }
         if (sheetTab != null) { setSheet(null); return }
         flushSave()
@@ -383,8 +398,9 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
         // screen-recording chip
         recChip = TextView(this)
-        recChip.text = "● STOP SCREEN-REC"
-        recChip.contentDescription = "Stop the recording"
+        // T-31: same words as the notification (ScreenCaptureService.STOP_LABEL)
+        recChip.text = "●  " + ScreenCaptureService.STOP_LABEL.uppercase()
+        recChip.contentDescription = ScreenCaptureService.STOP_LABEL
         recChip.gravity = Gravity.CENTER
         recChip.setTextColor(UI.DANGER)
         recChip.textSize = 11f
@@ -775,7 +791,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             if (sheetTab == "sources") setSheet(null) else setSheet("sources")
         }
         addTab("add", R.drawable.ic_add, "Add", "Add source — camera, video, image, text") {
-            openWheelLevel(RadialMenus.add(this), -1f, -1f)
+            openAddSheet()
         }
         addTab("mixer", R.drawable.ic_volume, "Audio", "Audio mixer") {
             if (sheetTab == "mixer") setSheet(null) else setSheet("mixer")
@@ -827,7 +843,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         b10bg.setColor(Color.argb(90, 38, 42, 52))
         b10bg.setStroke(UI.dp(this, 1), Color.argb(50, 255, 255, 255))
         back10.background = b10bg
-        back10.layoutParams = LinearLayout.LayoutParams(UI.dp(this, 52), UI.dp(this, 32))
+        // T-33: 48 dp minimum touch target (was 32 dp)
+        back10.layoutParams = LinearLayout.LayoutParams(UI.dp(this, 52), UI.dp(this, 48))
         back10.contentDescription = "Back 10 seconds"
         back10.isClickable = true
         back10.setOnClickListener { nudge(-10_000L) }
@@ -858,7 +875,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         f10bg.setColor(Color.argb(90, 38, 42, 52))
         f10bg.setStroke(UI.dp(this, 1), Color.argb(50, 255, 255, 255))
         fwd10.background = f10bg
-        fwd10.layoutParams = LinearLayout.LayoutParams(UI.dp(this, 52), UI.dp(this, 32))
+        // T-33: 48 dp minimum touch target (was 32 dp)
+        fwd10.layoutParams = LinearLayout.LayoutParams(UI.dp(this, 52), UI.dp(this, 48))
         fwd10.contentDescription = "Forward 10 seconds"
         fwd10.isClickable = true
         fwd10.setOnClickListener { nudge(10_000L) }
@@ -905,6 +923,32 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         dlp.setMargins(UI.dp(this, 6), 0, 0, 0)
         durationLabel.layoutParams = dlp
         transportBar.addView(durationLabel)
+
+        // V30/V31 (T-24): seek, restart and the frame snapshot belong to the
+        // transport, not to a ring petal nobody finds. The overflow keeps the
+        // row narrow while making both verbs reachable in two taps.
+        val more = IconBtn(this)
+        val mlp = LinearLayout.LayoutParams(UI.dp(this, 40), UI.dp(this, 40))
+        mlp.setMargins(UI.dp(this, 4), 0, 0, 0)
+        more.layoutParams = mlp
+        more.setIcon(R.drawable.ic_more, UI.FG, "More transport actions")
+        more.setOnClickListener { showTransportOverflow() }
+        transportBar.addView(more)
+    }
+
+    /** T-24: transport overflow — restart and snapshot, one tap from the row. */
+    private fun showTransportOverflow() {
+        val items = arrayOf("Restart from 0:00", "Snapshot the current frame")
+        AlertDialog.Builder(this)
+            .setTitle("Transport")
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> restart()
+                    1 -> snapshotFrame()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun updateSourceStrip() {
@@ -1485,6 +1529,11 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     private fun setSheet(tab: String?) {
         if (tab != null && fullCanvas) setFullCanvas(false)
+        // T-32 — a rebuild of the SAME sheet (a toggle inside it) must not
+        // replay the slide-in animation. The content jumping under a finger
+        // that is still on the button is what made keep-open rows feel like
+        // they "flip". Only a genuine sheet CHANGE animates.
+        val sameSheet = (tab != null && sheetTab == tab)
         sheetTab = tab
         val sv = panelScroll
         val divider = panelDivider
@@ -1526,10 +1575,17 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         refreshTabBar()
         updateSourceStrip()
         if (keepY > 0) sv.post { sv.scrollTo(0, keepY) }
-        panelContent.alpha = 0f
-        panelContent.translationY = UI.dpf(this, 22f)
-        panelContent.animate().alpha(1f).translationY(0f)
-            .setDuration(220).setInterpolator(OvershootInterpolator(1.15f)).start()
+        panelContent.animate().cancel()
+        if (sameSheet) {
+            // in-place refresh: no motion, no scroll jump
+            panelContent.alpha = 1f
+            panelContent.translationY = 0f
+        } else {
+            panelContent.alpha = 0f
+            panelContent.translationY = UI.dpf(this, 22f)
+            panelContent.animate().alpha(1f).translationY(0f)
+                .setDuration(220).setInterpolator(OvershootInterpolator(1.15f)).start()
+        }
         sheet.post { updateStageInsets() }
     }
 
@@ -1554,7 +1610,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             pbg.setColor(Color.argb(90, 38, 42, 52))
             pbg.setStroke(UI.dp(this, 1), Color.argb(50, 255, 255, 255))
             prev.background = pbg
-            prev.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(this, 32))
+            prev.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(this, 48))
             prev.contentDescription = "Select previous layer"
             prev.isClickable = true
             prev.setOnClickListener { stepSelection(-1) }
@@ -1579,7 +1635,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             nbg.setColor(Color.argb(90, 38, 42, 52))
             nbg.setStroke(UI.dp(this, 1), Color.argb(50, 255, 255, 255))
             next.background = nbg
-            next.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(this, 32))
+            next.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(this, 48))
             next.contentDescription = "Select next layer"
             next.isClickable = true
             next.setOnClickListener { stepSelection(1) }
@@ -1592,11 +1648,14 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         dock.rebuild()
         buildLayerInspector()
         if (proj!!.layers.isEmpty()) {
-            val b = UI.btn(this, "＋  Add your first source", accent = true)
+            val b = UI.btn(this, "Add your first source", accent = true)
+            b.setCompoundDrawablesRelativeWithIntrinsicBounds(
+                Ic.get(this, R.drawable.ic_add, Color.WHITE), null, null, null)
+            b.compoundDrawablePadding = UI.dp(this, 8)
             val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, UI.dp(this, 44))
             lp.setMargins(UI.dp(this, 14), UI.dp(this, 8), UI.dp(this, 14), UI.dp(this, 12))
             b.layoutParams = lp
-            b.setOnClickListener { openWheelLevel(RadialMenus.add(this), -1f, -1f) }
+            b.setOnClickListener { openAddSheet() }
             panelContent.addView(b)
         }
     }
@@ -1650,9 +1709,15 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             "Reset position" to { ctrl.resetGeometry(l.id) })
 
         // V29 — opacity sits next to its sibling controls, not buried.
+        // NOTE: undo REPLACES every Layer object (applyLayersJson clears the
+        // list and re-parses), so a captured `l` can be orphaned by the time a
+        // slider callback fires — the edit would then apply to a detached
+        // object and silently do nothing. Always re-resolve by id.
+        val lid = l.id
         panelContent.addView(sliderRow("Opacity  ${(l.opacity * 100).toInt()}%",
             (l.opacity * 100).toInt()) { v ->
-            pushUndoLight(); l.opacity = v / 100f; markDirty(); stage.refresh()
+            val cur = proj?.layerById(lid) ?: return@sliderRow
+            pushUndoLight(); cur.opacity = v / 100f; markDirty(); stage.refresh()
         })
 
         // V28 — text inspector. Previously the source ring was the only home.
@@ -1663,12 +1728,16 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
                 "Colour" to { cycleTextColor(l); refreshLayersSheet() })
             panelContent.addView(sliderRow("Text size",
                 (l.fontSizeN * 1000).toInt().coerceIn(10, 300)) { v ->
-                pushUndoLight(); l.fontSizeN = v / 1000f; markDirty(); stage.refresh()
+                val cur = proj?.layerById(lid) ?: return@sliderRow
+                pushUndoLight(); cur.fontSizeN = v / 1000f; markDirty(); stage.refresh()
             })
             panelButtonRow(panelContent,
                 (if (l.shadow) "Shadow: on" else "Shadow: off") to {
-                    pushUndo(); l.shadow = !l.shadow; markDirty(); stage.refresh()
-                    refreshLayersSheet()
+                    val cur = proj?.layerById(lid)
+                    if (cur != null) {
+                        pushUndo(); cur.shadow = !cur.shadow; markDirty(); stage.refresh()
+                        refreshLayersSheet()
+                    }
                 })
         }
 
@@ -1695,14 +1764,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         val dlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, UI.dp(this, 44))
         dlp.setMargins(UI.dp(this, 12), UI.dp(this, 6), UI.dp(this, 12), UI.dp(this, 14))
         del.layoutParams = dlp
-        del.setOnClickListener {
-            guardRecording {
-                ctrl.delete(l.id); selectedId = null; engine.evict(l.id)
-                refreshAll()
-                refreshLayersSheet()
-                showUndoSnack("Deleted $name")
-            }
-        }
+        del.setOnClickListener { deleteSourceSafely(l) }
         panelContent.addView(del)
     }
 
@@ -1729,6 +1791,20 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     private fun buildMixerPanel() {
         val audio = proj!!.layers.filter { it.isClip() }
         section("MIXER — per-source level · mute · solo")
+        // T-14: no master fader on purpose. CompositionRecorder.masterGain is
+        // recording-only; Exporter has no matching stage, so a master control
+        // would make a recording and a re-export of the same project sound
+        // different (Rule 4). Say so instead of shipping a misleading slider.
+        run {
+            val note = UI.label(this,
+                "Levels here apply to both the preview and the export.",
+                dim = true, size = 9.5f)
+            val nlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT)
+            nlp.setMargins(UI.dp(this, 16), 0, UI.dp(this, 14), UI.dp(this, 2))
+            note.layoutParams = nlp
+            panelContent.addView(note)
+        }
         if (audio.isEmpty()) {
             val t = UI.label(this, "No audio sources yet — add a video, screen recording " +
                 "or record a camera take.", dim = true, size = 12f)
@@ -1796,9 +1872,13 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
                 why.layoutParams = wlp
                 panelContent.addView(why)
             }
+            // same stale-Layer hazard as the inspector sliders: undo replaces
+            // every Layer object, so resolve by id when the callback fires
+            val mixId = l.id
             panelContent.addView(sliderRow("Level  ${(l.volume * 100).toInt()}%",
                 (l.volume * 100).toInt()) { v ->
-                pushUndoLight(); engine.setVolume(l, v / 100f); markDirty()
+                val cur = proj?.layerById(mixId) ?: return@sliderRow
+                pushUndoLight(); engine.setVolume(cur, v / 100f); markDirty()
             })
         }
     }
@@ -1946,11 +2026,14 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         // one-tap repeat of the last export (same settings, no re-picking)
         if (prefs.getBoolean(PREF_HAD_EXPORT, false)) {
             val lastCodec = prefs.getString(PREF_EXP_CODEC, "H264") ?: "H264"
-            val repeat = UI.btn(this, "↻  Export again — $lastCodec · ${maxDim}p · ${fps}fps",
+            val repeat = UI.btn(this, "Export again — $lastCodec · ${maxDim}p · ${fps}fps",
                 accent = false, small = true)
             val rlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT)
             rlp.setMargins(UI.dp(this, 12), UI.dp(this, 2), UI.dp(this, 12), UI.dp(this, 2))
+            repeat.setCompoundDrawablesRelativeWithIntrinsicBounds(
+                Ic.get(this, R.drawable.ic_reset, UI.FG), null, null, null)
+            repeat.compoundDrawablePadding = UI.dp(this, 8)
             repeat.layoutParams = rlp
             repeat.contentDescription = "Export again with last settings"
             repeat.setOnClickListener {
@@ -2022,7 +2105,11 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         info.layoutParams = ilp
         panelContent.addView(info)
 
-        val go = UI.btn(this, "⇪  Export video", accent = true)
+        val go = UI.btn(this, "Export video", accent = true)
+        // T-34: a real icon, not a glyph that renders differently per device
+        go.setCompoundDrawablesRelativeWithIntrinsicBounds(
+            Ic.get(this, R.drawable.ic_export, Color.WHITE), null, null, null)
+        go.compoundDrawablePadding = UI.dp(this, 8)
         val glp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, UI.dp(this, 48))
         glp.setMargins(UI.dp(this, 12), UI.dp(this, 6), UI.dp(this, 12), UI.dp(this, 14))
         go.layoutParams = glp
@@ -2059,7 +2146,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         val l = selectedId?.let { proj!!.layerById(it) }
         if (l == null) {
             dockBtn(quickBar, R.drawable.ic_add, "Add source", "Add a source") {
-                openWheelLevel(RadialMenus.add(this), -1f, -1f)
+                openAddSheet()
             }
             val live = proj!!.layers.firstOrNull { it.isLive() }
             dockBtn(quickBar, R.drawable.ic_camera, "Camera",
@@ -2075,12 +2162,15 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             dockBtn(quickBar, if (micOk) R.drawable.ic_volume else R.drawable.ic_volume_off, "Mic",
                 if (micOk) "Microphone ready for recording" else "Grant microphone permission",
                 active = micOk && recording) {
-                if (!micOk) requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), REQ_RECORD_PERM)
+                if (!micOk) requestWithRationale(android.Manifest.permission.RECORD_AUDIO,
+                    REQ_RECORD_PERM,
+                    "Your voice is the reaction. Without the microphone the " +
+                        "recording will contain the clip audio only.")
                 else UI.toast(this, "Microphone is mixed into every recording")
             }
             val lit = liveCam?.isTorchLitForFront() == true || liveCam?.isTorchLitForBack() == true || screenLight
             dockBtn(quickBar, R.drawable.ic_flash, "Torch", "Camera light", active = lit) {
-                if (live != null) openFlashRing(live) else toggleScreenLight()
+                openLightSheet()
             }
             dockBtn(quickBar, R.drawable.ic_fullscreen, "Full canvas", "Show only the canvas") { setFullCanvas(true) }
             quickBar.alpha = 1f
@@ -2181,7 +2271,10 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
                 if (l.mirror) "Mirror off" else "Mirror on") { toggleCameraMirror(l) }
             val lit = liveCam?.isTorchLitForFront() == true ||
                 liveCam?.isTorchLitForBack() == true || screenLight
-            bar(R.drawable.ic_flash, if (lit) UI.ACCENT2 else UI.FG, "Camera light") { openFlashRing(l) }
+            // camera toolbar's light button. openFlashRing() is retained as the
+            // named entry point (tools/validate-integration.py guards it); it
+            // now opens the single Light sheet rather than a parallel ring.
+            bar(R.drawable.ic_flash, if (lit) UI.ACCENT2 else UI.FG, "Light") { openFlashRing(l) }
         }
         bar(if (l.locked) R.drawable.ic_lock else R.drawable.ic_lock_open,
             if (l.locked) UI.ACCENT2 else UI.FG,
@@ -2283,6 +2376,33 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     // ================= Advanced sheet (long press / ⋮) =================
 
     /**
+     * T-26 / V13 — the ONE safe delete. Every surface (Layers sheet, advanced
+     * sheet, ring petal, dock) routes here.
+     *
+     * Deleting a source is not just a list removal: a live camera must have its
+     * capture session torn down, any decoder must be evicted from the engine,
+     * and a stale `selectedId` must be cleared or the quick bar would render
+     * controls for a layer that no longer exists. The ring used to call
+     * `ctrl.delete()` raw and skipped all three.
+     */
+    private fun deleteSourceSafely(l: Layer) {
+        guardRecording {
+            val nm = l.name.ifBlank { l.type.label }
+            if (l.isLive()) {
+                // tears down the camera AND removes the layer
+                removeLiveCameraLayer()
+            } else {
+                ctrl.delete(l.id)
+                engine.evict(l.id)
+            }
+            if (selectedId == l.id) selectedId = null
+            refreshAll()
+            refreshLayersSheet()
+            showUndoSnack("Deleted $nm")
+        }
+    }
+
+    /**
      * Duplicate. The "no live-camera clone" rule is owned by
      * [SourceController.duplicate] (UI Plan2 T-06) — this surface only reports
      * the refusal, it does not re-implement it.
@@ -2322,7 +2442,9 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         hnm.textSize = 14f
         hnm.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
         head.addView(hnm, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        val ren = UI.chip(this, "Rename")
+        // §4.1 naming dictionary: never a bare "Rename" (V24)
+        val ren = UI.chip(this, "Rename source")
+        ren.contentDescription = "Rename source"
         ren.setOnClickListener { renameLayer(l) }
         head.addView(ren)
         panelContent.addView(head)
@@ -2366,14 +2488,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         val dlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, UI.dp(this, 44))
         dlp.setMargins(UI.dp(this, 12), UI.dp(this, 2), UI.dp(this, 12), UI.dp(this, 14))
         del.layoutParams = dlp
-        del.setOnClickListener {
-            guardRecording {
-                val nm = l.name
-                ctrl.delete(l.id); selectedId = null; engine.evict(l.id)
-                setSheet(null); refreshAll()
-                showUndoSnack("Deleted $nm")
-            }
-        }
+        del.setOnClickListener { setSheet(null); deleteSourceSafely(l) }
         panelContent.addView(del)
 
         val sv = panelScroll   // lives in the sheet (portrait) or the side rail (landscape)
@@ -2387,6 +2502,116 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         panelDivider.visibility = View.VISIBLE
         refreshTabBar()
         rebuildSourceDock()
+    }
+
+    /**
+     * T-28 — first-run coach marks. Five tips, once, dismissible, and never
+     * shown again. Deliberately a single scrollable dialog rather than a
+     * five-step overlay tour: a tour has to anchor to views that may not exist
+     * yet in this orientation, and a half-anchored coach mark that points at
+     * nothing is worse than no coach mark at all.
+     */
+    private fun maybeShowCoachMarks() {
+        // posted from stage.post(): the activity can already be going away by
+        // the time this runs, and showing a dialog on a dead window throws
+        // BadTokenException. Never crash on a welcome message.
+        if (isFinishing || isDestroyed) return
+        val prefs = editorPrefs()
+        if (prefs.getBoolean(PREF_COACHED, false)) return
+        prefs.edit().putBoolean(PREF_COACHED, true).apply()
+        val tips =
+            "1.  Tap a source on the canvas to select it.\n\n" +
+            "2.  The floating bar above the canvas controls whatever is " +
+            "selected — hide, mute, pause, lock, fit.\n\n" +
+            "3.  The bottom bar is the map: Layers, Add, Audio, Text, Export.\n\n" +
+            "4.  RECORD captures the whole canvas. It tells you if something " +
+            "is still missing.\n\n" +
+            "5.  Press ◉ on the floating bar for the full control ring."
+        AlertDialog.Builder(this)
+            .setTitle("Welcome to the studio")
+            .setMessage(tips)
+            .setPositiveButton("Got it", null)
+            .show()
+    }
+
+    /**
+     * T-20 — the ONE Light surface. Front LED, back LED, both, and the screen
+     * light, as capability-aware rows: a device without an LED gets a row that
+     * is visibly disabled **with the reason** (the `flashItems()` pattern),
+     * never a hidden control and never a fake torch.
+     *
+     * This replaces the flash *ring* as an independent surface. Every entry
+     * point — the ring's Light petal, the camera toolbar ⚡ — lands here, so
+     * the torch model and its labels are declared exactly once.
+     */
+    private fun openLightSheet() {
+        if (fullCanvas) setFullCanvas(false)
+        val cam = liveCam
+        val items = ArrayList<Pair<String, (() -> Unit)?>>()
+
+        val frontHas = cam?.hasFlashForFront() == true
+        val backHas = cam?.hasFlashForBack() == true
+
+        if (cam == null) {
+            items.add("Front flash — add a live camera first" to null)
+            items.add("Back flash — add a live camera first" to null)
+        } else {
+            items.add(
+                (if (frontHas) (if (isFrontTorchOn()) "Front flash: ON" else "Front flash: off")
+                 else "Front flash — no LED on this lens") to
+                    (if (frontHas) ({ toggleFrontTorch() }) else null))
+            items.add(
+                (if (backHas) (if (isBackTorchOn()) "Back flash: ON" else "Back flash: off")
+                 else "Back flash — no LED on this lens") to
+                    (if (backHas) ({ toggleBackTorch() }) else null))
+            if (frontHas && backHas) {
+                items.add((if (isBothTorchOn()) "Both flashes: ON" else "Both flashes: off") to
+                    ({ toggleBothTorch() }))
+            }
+        }
+        // the screen light always works — it is just a white canvas
+        items.add((if (screenLight) "Screen light: ON" else "Screen light: off") to
+            ({ toggleScreenLight() }))
+
+        val labels = items.map { it.first }.toTypedArray()
+        val enabled = items.map { it.second != null }
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("Light")
+            .setItems(labels) { _, which -> items[which].second?.invoke() }
+            .setNegativeButton("Close", null)
+            .create()
+        dlg.show()
+        // Grey out the rows whose capability is genuinely missing (Rule 5).
+        // getChildAt() is indexed by VISIBLE child, not by adapter position, so
+        // it is mapped back through firstVisiblePosition and bounds-checked —
+        // a short list is never scrolled, but this must not throw if it ever is.
+        dlg.listView?.let { lv ->
+            lv.post {
+                try {
+                    val first = lv.firstVisiblePosition
+                    for (pos in labels.indices) {
+                        if (enabled[pos]) continue
+                        val child = lv.getChildAt(pos - first) ?: continue
+                        child.isEnabled = false
+                        child.alpha = 0.45f
+                        child.setOnClickListener(null)
+                    }
+                } catch (_: Exception) {
+                    // cosmetic only — a disabled row that still looks enabled
+                    // is handled anyway: its action is null, so tapping is a
+                    // no-op rather than a fake torch.
+                }
+            }
+        }
+    }
+
+    /**
+     * T-22 — the one and only Add surface. Bottom-bar Add, the empty-state CTA,
+     * the Layers-sheet empty button and the ring's Add petal all land here, so
+     * a new source type is declared exactly once (in `RadialMenus.add`).
+     */
+    private fun openAddSheet() {
+        openWheelLevel(RadialMenus.add(this), -1f, -1f)
     }
 
     // ================= empty state =================
@@ -2433,10 +2658,11 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             b.setOnClickListener { fn() }
             box.addView(b)
         }
-        big("Camera — live on canvas", R.drawable.ic_camera) { addLiveCamera() }
-        big("Local video", R.drawable.ic_video) { pickMedia(video = true) }
-        big("Record screen", R.drawable.ic_screen) { startScreenCapture() }
-        big("Image", R.drawable.ic_image) { pickMedia(video = false) }
+        // T-22 — ONE Add surface. This empty state used to re-declare its own
+        // list of source types; when a type was added or renamed the two lists
+        // drifted. It is now a CTA into the same Add sheet the bottom bar and
+        // the ring open, so there is one implementation and four doors to it.
+        big("Add your first source", R.drawable.ic_add) { openAddSheet() }
         big("Open all controls", R.drawable.ic_wheel, accent = false) { openRootWheel() }
 
         // scrollable: 5 buttons + header must fit short landscape screens too
@@ -2735,18 +2961,63 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         launchProjection()
     }
 
+    /**
+     * T-29 — explain BEFORE the system dialog.
+     *
+     * `shouldShowRequestPermissionRationale` is true only on a second ask, so
+     * the rationale appears exactly when the user has already said no once and
+     * a bare re-prompt would feel like nagging. First asks go straight through.
+     */
+    private fun requestWithRationale(perm: String, code: Int, why: String) {
+        if (shouldShowRequestPermissionRationale(perm)) {
+            AlertDialog.Builder(this)
+                .setTitle("Permission needed")
+                .setMessage(why)
+                .setPositiveButton("Continue") { _, _ -> requestPermissions(arrayOf(perm), code) }
+                .setNegativeButton("Not now", null)
+                .show()
+        } else {
+            requestPermissions(arrayOf(perm), code)
+        }
+    }
+
+    /**
+     * T-29 — when a permission is permanently denied the system dialog never
+     * appears again, so a toast is a dead end. Offer the one place that can
+     * still fix it.
+     */
+    private fun offerAppSettings(msg: String) {
+        AlertDialog.Builder(this)
+            .setTitle("Permission denied")
+            .setMessage(msg)
+            .setPositiveButton("Open settings") { _, _ ->
+                try {
+                    startActivity(Intent(
+                        android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        android.net.Uri.fromParts("package", packageName, null)))
+                } catch (e: Exception) {
+                    UI.toast(this, "Could not open settings: ${e.message}")
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, res: IntArray) {
         super.onRequestPermissionsResult(code, perms, res)
         if (code == REQ_APP_PERMS) launchProjection()
         if (code == REQ_CAMERA_PERM) {
             if (checkSelfPermission(android.Manifest.permission.CAMERA) ==
                 PackageManager.PERMISSION_GRANTED) addLiveCamera()
-            else UI.toast(this, "Camera permission is needed to put the camera on the canvas")
+            else offerAppSettings("Camera access is off, so the camera cannot be " +
+                "placed on the canvas. You can turn it on in Settings.")
         }
         if (code == REQ_RECORD_PERM) {
             if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
                 PackageManager.PERMISSION_GRANTED) startCompositeRecording()
-            else UI.toast(this, "Mic permission denied — recording will mix the clip audio only")
+            else offerAppSettings("Microphone access is off. Recording will still " +
+                "work, but it will contain the clip audio only — your voice will " +
+                "not be captured.")
         }
     }
 
@@ -3156,7 +3427,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             .setMessage("Recording captures your live camera together with a playing " +
                 "video. Add $missing to the canvas, frame them, then hit record.")
             .setPositiveButton("Add now") { _, _ ->
-                openWheelLevel(RadialMenus.add(this), -1f, -1f)
+                openAddSheet()
             }
             .setNegativeButton("Not now", null)
             .show()
@@ -3193,7 +3464,9 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         // the mic is the reaction audio — ask for it up front if not yet granted
         if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), REQ_RECORD_PERM)
+            requestWithRationale(android.Manifest.permission.RECORD_AUDIO, REQ_RECORD_PERM,
+                "Your voice is the reaction. Without the microphone the recording " +
+                    "will contain the clip audio only.")
             return
         }
 
@@ -3205,6 +3478,41 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             return
         }
 
+        // T-29 — pre-warn when the take would be silent. Every audio source is
+        // muted (or every one is silenced by a solo), so the recording would
+        // capture picture and mic only. Cheap to say now, painful to discover
+        // after a 10-minute take. Asked once per recording start, dismissible.
+        run {
+            val clips = p.layers.filter { it.isClip() }
+            if (clips.isNotEmpty() && clips.all { ctrl.effectiveMuted(it) }) {
+                AlertDialog.Builder(this)
+                    .setTitle("All clip audio is muted")
+                    .setMessage("Every source in the mixer is muted or silenced by " +
+                        "a solo, so this recording will contain your microphone only.")
+                    .setPositiveButton("Record anyway") { _, _ -> startCompositeRecordingConfirmed() }
+                    .setNeutralButton("Open mixer") { _, _ -> setSheet("mixer") }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+                return
+            }
+        }
+        startCompositeRecordingConfirmed()
+    }
+
+    /**
+     * The second half of [startCompositeRecording], after the T-29 warnings.
+     *
+     * The warning dialog is asynchronous, so the world may have moved between
+     * the check and the tap: the user could have hit Record again, started an
+     * export, or deleted the camera. Re-assert the preconditions here rather
+     * than trusting the caller.
+     */
+    private fun startCompositeRecordingConfirmed() {
+        if (recording) return
+        if (exportRunning) { UI.toast(this, "Locked while exporting"); return }
+        val p = proj ?: return
+        if (!p.layers.any { it.isLive() }) { UI.toast(this, "Add the live camera first"); return }
+        if (!p.layers.any { it.isClip() }) { UI.toast(this, "Add a local video first"); return }
         // every clip's audio; mute/solo/volume/pause are followed LIVE by the
         // mixer (via layerId), so decode every clip that has a file
         val audio = ArrayList<ClipAudio>()
@@ -3637,6 +3945,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     override fun openMixerPanel() { setSheet("mixer") }
     override fun openExportPanel() { setSheet("export") }
     override fun openAdvanced(l: Layer) { openAdvancedSheet(l) }
+    override fun deleteSource(l: Layer) { deleteSourceSafely(l) }
     override fun quickExport() {
         val avail = Exporter.Codec.available().ifEmpty { listOf(Exporter.Codec.H264) }
         val codec = avail.firstOrNull { it == Exporter.Codec.H264 } ?: avail[0]
@@ -3852,9 +4161,10 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         }
     }
 
-    override fun openFlashRing(l: Layer) {
-        openWheelLevel(RadialMenus.flash(this, l.id), -1f, -1f)
-    }
+    /** T-20: kept as a Host hook, but it now opens the single Light sheet
+     *  instead of a second, parallel flash ring. */
+    override fun openFlashRing(l: Layer) { openLightSheet() }
+    override fun openLight() { openLightSheet() }
 
     override fun isStatsHudOn(): Boolean =
         editorPrefs().getBoolean(PREF_STATS_HUD, true)

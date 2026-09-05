@@ -105,6 +105,12 @@ class HomeActivity : Activity() {
         list.onItemClickListener = AdapterView.OnItemClickListener { _, _, pos, _ ->
             openProject(projects[pos].id)
         }
+        // T-30 — long-press menu. Open / Rename / Duplicate / Delete without
+        // hunting for the small chips on the card.
+        list.onItemLongClickListener = AdapterView.OnItemLongClickListener { _, _, pos, _ ->
+            projects.getOrNull(pos)?.let { showProjectMenu(it) }
+            true
+        }
         root.addView(list)
 
         // ---- new project button
@@ -116,6 +122,54 @@ class HomeActivity : Activity() {
         root.addView(newBtn)
 
         setContentView(root)
+    }
+
+    /** T-30 — the long-press action sheet for a project card. */
+    private fun showProjectMenu(p: Project) {
+        val labels = arrayOf("Open", "Rename project", "Duplicate", "Delete")
+        AlertDialog.Builder(this)
+            .setTitle(p.name)
+            .setItems(labels) { _, which ->
+                when (which) {
+                    0 -> openProject(p.id)
+                    1 -> renameProject(p)
+                    2 -> { store.duplicate(p.id); refresh() }
+                    3 -> confirmDelete(p)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun renameProject(p: Project) {
+        val input = EditText(this)
+        input.setText(p.name)
+        input.setSelection(input.text.length)
+        input.setTextColor(UI.FG)
+        AlertDialog.Builder(this)
+            .setTitle("Rename project")
+            .setView(input)
+            .setPositiveButton("Rename") { _, _ ->
+                val nm = input.text.toString().trim()
+                if (nm.isEmpty()) return@setPositiveButton
+                // load the FULL project before saving: saving a meta-only copy
+                // would drop every layer on disk.
+                val full = store.load(p.id) ?: return@setPositiveButton
+                full.name = nm
+                store.save(full)
+                refresh()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun confirmDelete(p: Project) {
+        AlertDialog.Builder(this)
+            .setTitle("Delete project")
+            .setMessage("\"${p.name}\" and its project media will be deleted from this device.")
+            .setPositiveButton("Delete") { _, _ -> store.delete(p.id); refresh() }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun openProject(id: String) {
@@ -262,7 +316,8 @@ class HomeActivity : Activity() {
 
             val meta = TextView(ctx)
             meta.text = "${p.aspect.code}  \u00b7  ${p.layers.size} layer" +
-                (if (p.layers.size == 1) "" else "s") + "  \u00b7  " + UI.fmtTime(p.durationMs())
+                (if (p.layers.size == 1) "" else "s") + "  \u00b7  " + UI.fmtTime(p.durationMs()) +
+                "  \u00b7  " + UI.relTime(p.updatedAt)
             meta.setTextColor(UI.FG2)
             meta.textSize = 11.5f
             UI.margin(meta, 0, 2, 0, 0, ctx)
@@ -274,14 +329,7 @@ class HomeActivity : Activity() {
             val del = UI.chip(ctx, "\u2715")
             del.contentDescription = "Delete project ${p.name}"
             del.setTextColor(UI.DANGER)
-            del.setOnClickListener {
-                AlertDialog.Builder(ctx)
-                    .setTitle("Delete project")
-                    .setMessage("\"${p.name}\" and its project media will be deleted from this device.")
-                    .setPositiveButton("Delete") { _, _ -> store.delete(p.id); refresh() }
-                    .setNegativeButton("Cancel", null)
-                    .show()
-            }
+            del.setOnClickListener { confirmDelete(p) }
             val actionCol = UI.col(ctx, true)
             actionCol.layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT)
