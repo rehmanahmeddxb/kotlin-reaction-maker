@@ -66,7 +66,12 @@ contains(method("select", "override fun"), "rebuildSourceDock()", "selection ref
 quick = method("refreshQuickBar")
 for needle, name in (
     ("if (fullCanvas)", "contextual controls stay hidden in Full Canvas"),
-    ("IconBtn.sized(this, 48)", "source actions meet the Step 5 minimum touch size"),
+    # Source action buttons must be the Step 5 48dp touch target. They are
+    # added to quickBar (a LinearLayout), so the bar() helper builds them with
+    # an explicit 48dp LinearLayout.LayoutParams — NOT IconBtn.sized(), which
+    # returns FrameLayout.LayoutParams and crashed on a pre-addView cast.
+    ("LinearLayout.LayoutParams(UI.dp(this, 48), UI.dp(this, 48))",
+     "source actions meet the Step 5 minimum touch size"),
     ("ctrl.toggleVisible", "hide/show action retained"),
     ("ctrl.toggleMuted", "mute action retained"),
     ("engine.toggleLayerPlay", "per-source playback retained"),
