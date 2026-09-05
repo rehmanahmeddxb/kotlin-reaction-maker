@@ -111,7 +111,11 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     private lateinit var durationLabel: TextView
     private lateinit var seek: SeekBar
     private lateinit var aspectChip: TextView
+    private lateinit var topBarView: LinearLayout
     private lateinit var quickBar: LinearLayout
+    private lateinit var quickWrap: HorizontalScrollView
+    private var chromeLayoutListener: android.view.ViewTreeObserver.OnGlobalLayoutListener? = null
+    private var panelScrollView: ScrollView? = null
     private lateinit var panelContent: LinearLayout
     private lateinit var sheet: LinearLayout
     private lateinit var dockContainer: LinearLayout
@@ -231,12 +235,12 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         updateRecordButton()
     }
 
-    private fun applyOrientationFor(a: Aspect) {
-        requestedOrientation = when (a) {
-            Aspect.R169 -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-            Aspect.R916 -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-            Aspect.R11 -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        }
+    private fun applyOrientationFor(@Suppress("UNUSED_PARAMETER") a: Aspect) {
+        // STEP 1 viewport fix: never force-rotate the phone for a canvas
+        // aspect. Every canvas (16:9, 9:16, 1:1) contain-fits every device
+        // orientation via ViewportFit, so locking fought the user, hid the
+        // composition mid-rotate, and made 16:9-in-portrait untestable.
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     }
 
     override fun onSaveInstanceState(out: Bundle) {
@@ -281,6 +285,13 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     }
 
     override fun onDestroy() {
+        if (this::rootFrame.isInitialized) {
+            chromeLayoutListener?.let {
+                try { rootFrame.viewTreeObserver.removeOnGlobalLayoutListener(it) }
+                catch (_: Exception) { }
+            }
+        }
+        chromeLayoutListener = null
         recorder?.abort()
         recorder = null
         recordHandler.removeCallbacksAndMessages(null)
@@ -305,7 +316,10 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
-        stage.post { syncPreviewTarget() }
+        // rotation re-lays-out the chrome; re-fit the canvas to the new
+        // visible region (the global-layout listener fires too — belt and
+        // braces so the canvas can never be left cropped mid-rotate)
+        stage.post { updateStageInsets(); syncPreviewTarget() }
         stage.refresh()
     }
 
@@ -416,6 +430,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             Color.argb(90, 255, 255, 255))
         quickBar.visibility = View.GONE
         qWrap.addView(quickBar)
+        quickWrap = qWrap
 
         buildSheet(root)
 
@@ -429,11 +444,93 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         buildProgOverlay(root)
 
         setContentView(root)
+        // STEP 1 viewport fix: whenever chrome shows / hides / resizes
+        // (panel open/close, quick bar, chips, rotate), re-reserve its space
+        // so the whole canvas stays visible in the remaining region.
+        chromeLayoutListener =
+            android.view.ViewTreeObserver.OnGlobalLayoutListener { updateStageInsets() }
+        rootFrame.viewTreeObserver.addOnGlobalLayoutListener(chromeLayoutListener)
+        rootFrame.post { updateStageInsets() }
         stage.post { syncPreviewTarget() }
+    }
+
+    /**
+     * STEP 1 — measure the persistent editor chrome and reserve it on the
+     * stage, so the canvas contain-fits the visible region between the top
+     * bar and the bottom controls and can never be cropped, covered, or
+     * pushed off-screen. Transient modal overlays (radial menu, snackbar,
+     * progress) intentionally float above the canvas.
+     */
+    private fun updateStageInsets() {
+        if (!this::stage.isInitialized || !this::rootFrame.isInitialized) return
+        val h = rootFrame.height
+        if (h <= 0) return
+        val hf = h.toFloat()
+        var topPx = 0f
+        var bottomPx = 0f
+        fun reserveTop(v: View) {
+            if (v.visibility == View.VISIBLE && v.height > 0) {
+                topPx = maxOf(topPx, (v.top + v.height).toFloat())
+            }
+        }
+        fun reserveBottom(v: View) {
+            if (v.visibility == View.VISIBLE && v.height > 0) {
+                bottomPx = maxOf(bottomPx, hf - v.top.toFloat())
+            }
+        }
+        if (this::topBarView.isInitialized) reserveTop(topBarView)
+        if (this::recChip.isInitialized) reserveTop(recChip)
+        if (this::statsHud.isInitialized) reserveTop(statsHud)
+        if (this::hiddenPill.isInitialized) reserveTop(hiddenPill)
+        // cap the expanding panel FIRST (takes effect next layout pass),
+        // then reserve the chrome measured this pass
+        capPanelHeight(topPx, hf)
+        if (this::sheet.isInitialized) reserveBottom(sheet)
+        // the quick bar floats above the sheet only while a source is
+        // selected; its wrapper is always laid out, so gate on the bar
+        if (this::quickBar.isInitialized && this::quickWrap.isInitialized &&
+            quickBar.visibility == View.VISIBLE) reserveBottom(quickWrap)
+        stage.setChromeInsets(topPx, bottomPx)
+        // keep the empty-state prompt centred in the VISIBLE region too
+        if (this::emptyOverlay.isInitialized) {
+            val lp = emptyOverlay.layoutParams as? FrameLayout.LayoutParams
+            if (lp != null) {
+                val nt = topPx.toInt()
+                val nb = bottomPx.toInt()
+                if (lp.topMargin != nt || lp.bottomMargin != nb) {
+                    lp.topMargin = nt
+                    lp.bottomMargin = nb
+                    emptyOverlay.layoutParams = lp
+                }
+            }
+        }
+    }
+
+    /**
+     * STEP 1 — the vertically expanding panel (Layers / Mixer / Export /
+     * Advanced) must never squeeze the canvas away. Cap it at 40% of the
+     * screen AND at whatever leaves ≥25% of the screen for the stage region;
+     * on tall portrait screens this is a no-op (40% wins), on short
+     * landscape screens the panel shrinks and scrolls instead of eating the
+     * canvas. Converges in ≤2 layout passes (guarded by the equality check).
+     */
+    private fun capPanelHeight(topPx: Float, hf: Float) {
+        val scroll = panelScrollView ?: return
+        if (!this::sheet.isInitialized || sheet.height <= 0) return
+        if (scroll.visibility != View.VISIBLE) return
+        val fixedSheet = (sheet.height - scroll.height).coerceAtLeast(0)
+        val budget = hf - topPx - fixedSheet - hf * 0.25f
+        val want = minOf(hf * 0.40f, budget).coerceAtLeast(0f).toInt()
+        val lp = scroll.layoutParams as? LinearLayout.LayoutParams ?: return
+        if (lp.height != want) {
+            lp.height = want
+            scroll.layoutParams = lp
+        }
     }
 
     private fun buildTopBar(root: FrameLayout) {
         val top = LinearLayout(this)
+        topBarView = top
         top.orientation = LinearLayout.HORIZONTAL
         top.gravity = Gravity.CENTER_VERTICAL
         top.setPadding(UI.dp(this, 10), UI.dp(this, 8), UI.dp(this, 10), UI.dp(this, 8))
@@ -523,15 +620,19 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
         root.addView(sheet, slp)
 
-        // expandable panel (Sources / Add / Canvas / Export)
+        // expandable panel (Sources / Mixer / Export / Advanced). Its height
+        // is re-capped on every layout pass (see capPanelHeight) so the
+        // expanding list can never squeeze the canvas away — the 170dp floor
+        // the old code had here alone was enough to crush a landscape phone.
         panelContent = LinearLayout(this)
         panelContent.orientation = LinearLayout.VERTICAL
         val scroll = ScrollView(this)
         scroll.tag = "panelScroll"
         scroll.isVerticalScrollBarEnabled = false
         val maxH = (resources.displayMetrics.heightPixels * 0.40f).toInt()
-            .coerceAtLeast(UI.dp(this, 170))
+            .coerceAtLeast(0)
         scroll.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, maxH)
+        panelScrollView = scroll
         scroll.visibility = View.GONE
         scroll.addView(panelContent, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
