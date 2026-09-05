@@ -20,6 +20,9 @@ jobs:
       - name: Static pipeline validation
         run: python3 tools/validate-pipeline.py
 
+      - name: Static torch validation
+        run: python3 tools/validate-torch.py
+
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
