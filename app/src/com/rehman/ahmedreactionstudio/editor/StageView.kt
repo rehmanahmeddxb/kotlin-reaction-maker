@@ -179,21 +179,28 @@ class StageView @JvmOverloads constructor(
 
     private fun drawChrome(canvas: Canvas, l: Layer) {
         val r = RectF(rectOf(l))
-        chrome.color = if (l.locked) UI.FG2 else UI.ACCENT
+        val selAccent = if (l.locked) UI.FG2 else UI.ACCENT
+        // outer glow for visibility on both dark and light canvas backgrounds
+        chrome.color = Color.argb(60, Color.red(selAccent), Color.green(selAccent), Color.blue(selAccent))
         chrome.style = Paint.Style.STROKE
-        chrome.strokeWidth = UI.dpf(context, if (l.locked) 1f else 2f)
+        chrome.strokeWidth = UI.dpf(context, if (l.locked) 6f else 7f)
         canvas.save()
         canvas.rotate(l.rotDeg, r.centerX(), r.centerY())
         canvas.drawRect(r, chrome)
+        chrome.color = selAccent
+        chrome.strokeWidth = UI.dpf(context, if (l.locked) 1f else 2f)
+        canvas.drawRect(r, chrome)
         val h = UI.dpf(context, 9f)
-        chromeFill.color = if (l.locked) UI.BG3 else UI.ACCENT
-        // 4 corners + 4 edges = 8 handles (spec 7.2)
+        // handles with white border so they pop on any background
+        val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = UI.dpf(context, 1.2f) }
+        chromeFill.color = if (l.locked) UI.BG3 else selAccent
         for (i in 0..2) {
             for (j in 0..2) {
                 if (i == 1 && j == 1) continue
                 val ex = if (j == 0) r.left else if (j == 2) r.right else r.centerX()
                 val ey = if (i == 0) r.top else if (i == 2) r.bottom else r.centerY()
                 canvas.drawRect(ex - h, ey - h, ex + h, ey + h, chromeFill)
+                canvas.drawRect(ex - h, ey - h, ex + h, ey + h, borderPaint)
             }
         }
         // rotation handle above top-center
@@ -204,8 +211,28 @@ class StageView @JvmOverloads constructor(
         canvas.drawLine(cx, r.top, cx, topY, chrome)
         chromeFill.color = UI.ACCENT2
         canvas.drawCircle(cx, topY, h * 0.9f, chromeFill)
+        borderPaint.let { canvas.drawCircle(cx, topY, h * 0.9f, it) }
         chromeFill.color = Color.WHITE
         canvas.drawCircle(cx, topY, h * 0.45f, chromeFill)
+        // selection label pill (type + name) above the chrome so you always know what is selected
+        val label = (if (l.isLive()) "LIVE  " else "") + l.name.ifBlank { l.type.label }
+        val padH = UI.dpf(context, 8f)
+        val padV = UI.dpf(context, 3f)
+        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = UI.dpf(context, 10f); typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD) }
+        val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(210, 18, 20, 26) }
+        val tw = textPaint.measureText(label)
+        val th = textPaint.textSize
+        val bw = tw + padH * 2
+        val bh = th + padV * 2 + UI.dpf(context, 2f)
+        val bx = cx - bw / 2
+        val by = topY - h * 1.8f - bh
+        val rr = UI.dpf(context, 10f)
+        canvas.drawRoundRect(bx, by, bx + bw, by + bh, rr, rr, bgPaint)
+        canvas.drawText(label, bx + padH, by + bh - padV - UI.dpf(context, 1f), textPaint)
+        if (l.locked) {
+            val lockPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = UI.ACCENT2; textSize = UI.dpf(context, 9f) }
+            canvas.drawText("🔒", bx + bw + UI.dpf(context, 4f), by + bh - padV, lockPaint)
+        }
         canvas.restore()
     }
 

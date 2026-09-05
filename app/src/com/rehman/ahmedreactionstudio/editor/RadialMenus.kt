@@ -77,6 +77,15 @@ object RadialMenus {
         /** true when the CURRENTLY selected camera actually has an LED */
         fun hasTorch(l: Layer): Boolean
         fun toggleTorch(l: Layer)
+        // per-facing torch (front / back / both) — remember user wants both flashes option
+        fun hasFrontTorch(): Boolean
+        fun hasBackTorch(): Boolean
+        fun isFrontTorchOn(): Boolean
+        fun isBackTorchOn(): Boolean
+        fun isBothTorchOn(): Boolean
+        fun toggleFrontTorch()
+        fun toggleBackTorch()
+        fun toggleBothTorch()
         /** screen flash: the canvas glows white to light a front-camera face */
         fun isScreenLightOn(): Boolean
         fun toggleScreenLight()
@@ -100,16 +109,53 @@ object RadialMenus {
         R.drawable.ic_wheel, "Studio", "tap a petal · tap the hub to close"
     ) {
         val n = h.project.layers.size
+        val live = h.project.layers.firstOrNull { it.isLive() }
+        val lightBadge = if (h.isScreenLightOn() || (live != null && (h.isTorchOn(live) || h.isFrontTorchOn() || h.isBackTorchOn())) || h.isBothTorchOn()) "ON" else null
         listOf(
             folder(R.drawable.ic_layers, "Sources", badge = if (n > 0) "$n" else null) { sources(h) },
             folder(R.drawable.ic_add, "Add") { add(h) },
             folder(R.drawable.ic_play, "Controls") { controls(h) },
             folder(R.drawable.ic_drag, "Dock") { dock(h) },
             folder(R.drawable.ic_volume, "Mixing") { mixing(h) },
+            folder(R.drawable.ic_flash, "Light", badge = lightBadge) { lightRoot(h) },
             folder(R.drawable.ic_aspect, "Canvas") { canvas(h) },
             folder(R.drawable.ic_export, "Export") { export(h) },
             folder(R.drawable.ic_settings, "Project") { project(h) }
         )
+    }
+
+    /** Top-level Light menu so flashlight is discoverable without selecting a source */
+    fun lightRoot(h: Host): RadialMenuView.Level = RadialMenuView.Level(
+        R.drawable.ic_flash, "Light", "front · back · both · screen flash"
+    ) {
+        val live = h.project.layers.firstOrNull { it.isLive() }
+        val out = ArrayList<RadialMenuView.Item>()
+        if (live != null) {
+            out.addAll(flashItems(h, live))
+        } else {
+            out.add(item(R.drawable.ic_camera, "Add live camera first") { h.addCameraLive() })
+            val screenOn = h.isScreenLightOn()
+            out.add(item(R.drawable.ic_eye, if (screenOn) "Screen light: on" else "Screen light: off", active = screenOn, keepOpen = true) { h.toggleScreenLight() })
+        }
+        out
+    }
+
+    private fun flashItems(h: Host, l: Layer): List<RadialMenuView.Item> {
+        val out = ArrayList<RadialMenuView.Item>()
+        val frontHas = h.hasFrontTorch()
+        val backHas = h.hasBackTorch()
+        val frontOn = h.isFrontTorchOn()
+        val backOn = h.isBackTorchOn()
+        val bothOn = h.isBothTorchOn()
+        val screenOn = h.isScreenLightOn()
+        if (frontHas) out.add(item(R.drawable.ic_flash, if (frontOn) "Front flash: on" else "Front flash: off", active = frontOn, badge = if (frontOn) "LED" else null, keepOpen = true) { h.toggleFrontTorch() })
+        else out.add(item(R.drawable.ic_flash, "Front: no LED (use screen)", keepOpen = false) { h.toast("Front has no LED — use screen light") })
+        if (backHas) out.add(item(R.drawable.ic_flash, if (backOn) "Back flash: on" else "Back flash: off", active = backOn, badge = if (backOn) "LED" else null, keepOpen = true) { h.toggleBackTorch() })
+        else out.add(item(R.drawable.ic_flash, "Back: no LED", keepOpen = false) { h.toast("Back has no LED") })
+        if (frontHas && backHas) out.add(item(R.drawable.ic_flash, if (bothOn) "Both flashes: on" else "Both flashes: off", active = bothOn, keepOpen = true) { h.toggleBothTorch() })
+        out.add(item(R.drawable.ic_eye, if (screenOn) "Screen light: on" else "Screen light: off", active = screenOn, badge = if (screenOn) "BRIGHT" else null, keepOpen = true) { h.toggleScreenLight() })
+        out.add(item(R.drawable.ic_switch, if (l.camFacing == 0) "Switch to back cam" else "Switch to front cam", keepOpen = true) { h.switchCameraFacing(l) })
+        return out
     }
 
     // ================= SOURCES =================
@@ -210,42 +256,15 @@ object RadialMenus {
     }
 
     /**
-     * LIGHT RING — flashlight for both cameras.
-     *
-     * Back cameras get the real LED torch. Front cameras almost never have an
-     * LED, so they get a SCREEN FLASH instead: the canvas is flooded with a
-     * bright warm-white overlay and the window brightness is pushed to maximum,
-     * which is exactly the trick stock camera apps use for selfies. Both are
-     * offered here, and both stay tappable with the wheel open so you can dial
-     * the lighting in while watching the preview.
+     * LIGHT RING — flashlight for both cameras + both-on + screen flash.
+     * Shows Front LED, Back LED, Both, and Screen Light as independent toggles
+     * so a device with LEDs on both sides can run front, back or both while recording.
      */
     fun flash(h: Host, id: String): RadialMenuView.Level = RadialMenuView.Level(
-        R.drawable.ic_flash, "Light", "torch · screen flash · front and back"
+        R.drawable.ic_flash, "Light", "front · back · both · screen flash"
     ) {
-        val l = h.project.layerById(id)
-        if (l == null) emptyList() else {
-            val out = ArrayList<RadialMenuView.Item>()
-            val torchOn = h.isTorchOn(l)
-            val canTorch = h.hasTorch(l)
-            out.add(item(R.drawable.ic_flash,
-                when {
-                    !canTorch -> "No LED on this camera"
-                    torchOn -> "Flashlight: on"
-                    else -> "Flashlight: off"
-                },
-                active = torchOn, keepOpen = true) {
-                if (canTorch) h.toggleTorch(l)
-                else h.toast("This camera has no flash — use the screen light instead")
-            })
-            val screenOn = h.isScreenLightOn()
-            out.add(item(R.drawable.ic_eye,
-                if (screenOn) "Screen light: on" else "Screen light: off",
-                active = screenOn, keepOpen = true) { h.toggleScreenLight() })
-            out.add(item(R.drawable.ic_switch,
-                if (l.camFacing == 0) "Switch to back cam" else "Switch to front cam",
-                keepOpen = true) { h.switchCameraFacing(l) })
-            out
-        }
+        val l = h.project.layerById(id) ?: return@Level emptyList()
+        flashItems(h, l)
     }
 
     fun arrange(h: Host, id: String): RadialMenuView.Level = RadialMenuView.Level(
