@@ -178,6 +178,13 @@ export), `PreviewEngine` (monitoring) and `LiveCamera`:
 | `tools/layer-model-test/` **(new)** | JVM harness for placement / hit-test / z-order (28 checks). |
 | `artifacts/AhmedReactionStudio-1.0.0.apk` | Rebuilt. |
 
+Performance: `consumeMediaFile` (every add-source path: picker, camera take,
+screen record, snapshot) now runs the `MediaMetadataRetriever` probe, the copy
+into the project folder and the image-bounds read on a worker thread; only the
+layer-list mutation and the UI refresh run on the main thread. Previously the
+add path blocked the UI for the copy + probe + a **full** image decode. Errors
+on that path are shown in the snackbar instead of being swallowed.
+
 Unchanged on purpose: `LiveCamera`, `GpuVideoDecoder`, `YuvWriter`,
 `ExportValidator`, `Compositor` FIT/FILL semantics, `SourceDock` (vertical
 layer list inside the Layers panel).

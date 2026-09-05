@@ -2526,10 +2526,11 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         showProgress("Importing media", "Copying $displayName…", determinate = false)
         Thread {
             val ok = MediaKit.copyContentToFile(this, uri, tmp)
+            // probe on the worker too (MediaMetadataRetriever can take 100s of ms)
+            val info = if (ok) MediaKit.probe(tmp.absolutePath) else null
             runOnUiThread {
                 dismissProgress()
-                if (!ok) { UI.toast(this, "Import failed or file unreadable"); return@runOnUiThread }
-                val info = MediaKit.probe(tmp.absolutePath)
+                if (!ok || info == null) { UI.toast(this, "Import failed or file unreadable"); return@runOnUiThread }
                 if (isVideo && info.width == 0 && info.durMs == 0L) {
                     UI.toast(this, "This video format can't be decoded on this device")
                     tmp.delete()
@@ -2541,28 +2542,61 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         }.start()
     }
 
+    /**
+     * Add a media file as a layer. The slow parts — MediaMetadataRetriever
+     * probe, the copy into the project folder and (for stills) the image
+     * bounds read — run on a worker thread; only the layer-list mutation and
+     * the UI refresh happen on the main thread. Adding a source used to block
+     * the UI for the whole copy + probe + a FULL image decode.
+     */
     private fun consumeMediaFile(src: File, role: String, name: String, type: LayerType) {
-        mutateThen {
-            val p = proj!!
-            val info = MediaKit.probe(src.absolutePath)
-            val inProject = src.parentFile?.absolutePath == store.mediaDir(projectId).absolutePath
-            val rel = if (inProject) "media/${src.name}" else store.copyIntoMedia(projectId, src)
-            val l: Layer
-            if (type == LayerType.IMAGE) {
-                val bmp = MediaKit.image(src.absolutePath)
-                l = Layer(type = type, name = name, relPath = rel,
-                    srcW = bmp?.width ?: info.width, srcH = bmp?.height ?: info.height)
-            } else {
-                l = Layer(type = type, name = name, relPath = rel, durMs = info.durMs,
-                    srcW = info.width, srcH = info.height, srcRotation = info.rotation)
+        val pid = projectId
+        val mediaDir = store.mediaDir(pid).absolutePath
+        val inProject = src.parentFile?.absolutePath == mediaDir
+        Thread({
+            var rel: String? = null
+            var info = com.rehman.ahmedreactionstudio.core.MediaInfo(0L, 0, 0, 0, null)
+            var err: String? = null
+            try {
+                info = MediaKit.probe(src.absolutePath)
+                if (type == LayerType.IMAGE && (info.width <= 0 || info.height <= 0)) {
+                    // bounds only — no pixel decode on the add path
+                    val o = android.graphics.BitmapFactory.Options()
+                    o.inJustDecodeBounds = true
+                    android.graphics.BitmapFactory.decodeFile(src.absolutePath, o)
+                    if (o.outWidth > 0 && o.outHeight > 0)
+                        info = com.rehman.ahmedreactionstudio.core.MediaInfo(0L, o.outWidth, o.outHeight, 0, null)
+                }
+                rel = if (inProject) "media/${src.name}" else store.copyIntoMedia(pid, src)
+            } catch (e: Exception) {
+                err = e.message ?: e.javaClass.simpleName
             }
-            p.layers.add(l)
-            if (role == "main" || p.layers.size == 1) placeMain(l, p) else placePip(l, p)
-            selectedId = l.id
-        }
-        try {
-            if (src.parentFile?.absolutePath != store.mediaDir(projectId).absolutePath) src.delete()
-        } catch (_: Exception) { }
+            val relPath = rel
+            runOnUiThread {
+                if (isFinishing || isDestroyed || projectId != pid) return@runOnUiThread
+                if (relPath == null) {
+                    showSnack("Could not add \"$name\": ${err ?: "unreadable file"}")
+                    return@runOnUiThread
+                }
+                mutateThen {
+                    val p = proj!!
+                    val l = if (type == LayerType.IMAGE)
+                        Layer(type = type, name = name, relPath = relPath,
+                            srcW = info.width, srcH = info.height)
+                    else
+                        Layer(type = type, name = name, relPath = relPath, durMs = info.durMs,
+                            srcW = info.width, srcH = info.height, srcRotation = info.rotation)
+                    p.layers.add(l)
+                    if (role == "main" || p.layers.size == 1) placeMain(l, p) else placePip(l, p)
+                    selectedId = l.id
+                }
+                try { if (!inProject) src.delete() } catch (_: Exception) { }
+                finishAddSource(src, role, name, type)
+            }
+        }, "add-source").start()
+    }
+
+    private fun finishAddSource(src: File, role: String, name: String, type: LayerType) {
         setSheet(null)
         val asMain = role == "main" || (proj?.layers?.size == 1)
         showSnack(
