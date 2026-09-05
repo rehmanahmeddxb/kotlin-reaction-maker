@@ -18,6 +18,7 @@ import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -31,6 +32,17 @@ import kotlin.math.sin
  * so the letterbox area is stage furniture rather than a mysterious strip of a
  * second colour: the surround is drawn dark with a 1px frame around the exact
  * area that will be exported.
+ *
+ * STEP 2 — selection chrome belongs to the SOURCE, not to the canvas.
+ * Exactly ONE source is selected (host.selectedId()); it gets the strong
+ * orange border + 8 handles + rotate knob + label, drawn around
+ * `Compositor.chromeRect` — the layer's EXACT visible bounds under its own
+ * position / size / fit / rotation — never around the box's dead letterbox
+ * space and never around the whole canvas. Unselected sources keep only a
+ * very subtle outline. The chrome lives in this view's onDraw (the same pass
+ * that composites the frame), so it stays glued to the picture while video
+ * plays, while the canvas resizes for 16:9 / 9:16 / 1:1, and while another
+ * source is added — with zero extra Android Views created per frame.
  *
  * All gesture math happens in canvas-local pixels and normalized units
  * (0..1 of the canvas), never in density pixels — mixing the two is what made
@@ -104,7 +116,41 @@ class StageView @JvmOverloads constructor(
     private val chrome = Paint(Paint.ANTI_ALIAS_FLAG)
     private val chromeFill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val framePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val subtle = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val handleBorder = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val labelText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+    }
+    private val labelBg = Paint(Paint.ANTI_ALIAS_FLAG)
     private val tmpRect = RectF()
+
+    /**
+     * The EXACT visible bounds of a layer, in canvas-local px — the same rect
+     * the compositor scales/clips the picture into (`Compositor.chromeRect`).
+     * Selection border, handles and hit-testing all use this one rect, so
+     * the frame belongs to the SOURCE: it follows position / size / scale /
+     * rotation, it never surrounds dead letterbox space, and it never
+     * accidentally becomes a "frame around the whole canvas" for a
+     * letterboxed main-canvas source (the classic portrait-camera-on-16:9
+     * case). For COVER/text sources chrome == box, so ordinary resizing and
+     * tapping behave exactly as they always did.
+     */
+    private fun chromeRectOf(l: Layer): RectF {
+        layoutCanvas()
+        val hp = host
+        Compositor.chromeRect(l, if (hp != null) hp.bitmapOf(l) else null, cw, ch, tmpRect)
+        return tmpRect
+    }
+
+    /**
+     * Longest side, in canvas px, of the layer's VISIBLE frame. The host uses
+     * this to size preview decoding to what is actually DRAWN — a
+     * pillarboxed main-camera strip no longer pays for full-canvas decode.
+     */
+    fun visibleFrameMaxPx(l: Layer): Int {
+        val r = chromeRectOf(l)
+        return max(r.width(), r.height()).roundToInt().coerceAtLeast(1)
+    }
 
     private enum class Mode { NONE, MOVE, CORNER, EDGE, ROTATE, PINCH }
     private var mode = Mode.NONE
@@ -113,6 +159,9 @@ class StageView @JvmOverloads constructor(
     private var startLayerId: String? = null
     private var startCx = 0f; private var startCy = 0f
     private var startWN = 0f; private var startHN = 0f; private var startRot = 0f
+    /** resize runs in the VISIBLE-frame space; these map it back to the box */
+    private var startBoxWN = 1f; private var startBoxHN = 1f
+    private var startRX = 1f; private var startRY = 1f
     private var hsx = 0f; private var hsy = 0f          // grabbed handle (-1..1 per axis)
     private var startDist = 0f
     private var startAngle = 0f
@@ -184,24 +233,43 @@ class StageView @JvmOverloads constructor(
         framePaint.strokeWidth = UI.dpf(context, 1f)
         framePaint.color = Color.argb(90, 255, 255, 255)
         canvas.drawRect(canvasRect, framePaint)
-        val selId = hp.selectedId() ?: return
-        val l = p.layerById(selId) ?: return
+        val selId = hp.selectedId()
         canvas.save()
         canvas.translate(canvasRect.left, canvasRect.top)
-        drawChrome(canvas, l)
+        // Unselected sources: at most a very subtle outline around their own
+        // visible bounds (a tap affordance) — never the strong editing frame.
+        // Full-bleed backgrounds are skipped: the exported-area line IS their
+        // outline, and drawing another one at the canvas edge only adds noise.
+        subtle.strokeWidth = UI.dpf(context, 1f)
+        for (o in p.layers) {
+            if (o.id == selId || !o.visible || o.opacity <= 0.01f) continue
+            val cr = chromeRectOf(o)
+            if (LayerFit.isFullBleed(o) && cr.width() >= cw - 1f &&
+                cr.height() >= ch - 1f) continue
+            subtle.color = if (o.locked) Color.argb(72, 160, 166, 180)
+                           else Color.argb(56, 255, 255, 255)
+            canvas.save()
+            if (abs(o.rotDeg) > 0.01f)
+                canvas.rotate(o.rotDeg, cr.centerX(), cr.centerY())
+            canvas.drawRect(cr, subtle)
+            canvas.restore()
+        }
+        // Exactly ONE source owns the strong orange editing frame
+        val l = selId?.let { p.layerById(it) }
+        if (l != null) drawChrome(canvas, l)
         canvas.restore()
     }
 
-    private fun rectOf(l: Layer): RectF {
-        val cxp = l.cx * cw
-        val cyp = l.cy * ch
-        tmpRect.set(cxp - l.wN * cw / 2f, cyp - l.hN * ch / 2f,
-            cxp + l.wN * cw / 2f, cyp + l.hN * ch / 2f)
-        return tmpRect
-    }
-
+    /**
+     * The editing frame of ONE source: drawn around `chromeRectOf` — the
+     * exact visible bounds under the layer's own position/size/fit/rotation —
+     * and everything else about it (8 transform handles, rotate knob, label)
+     * hangs off the same rect, so grabbing a drawn handle always grabs what
+     * this frame is made of. Paints are fields: onDraw runs per video frame
+     * while playing, so it must not allocate.
+     */
     private fun drawChrome(canvas: Canvas, l: Layer) {
-        val r = RectF(rectOf(l))
+        val r = RectF(chromeRectOf(l))
         val selAccent = if (l.locked) UI.FG2 else UI.ACCENT
         // outer glow for visibility on both dark and light canvas backgrounds
         chrome.color = Color.argb(60, Color.red(selAccent), Color.green(selAccent), Color.blue(selAccent))
@@ -215,7 +283,9 @@ class StageView @JvmOverloads constructor(
         canvas.drawRect(r, chrome)
         val h = UI.dpf(context, 9f)
         // handles with white border so they pop on any background
-        val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = UI.dpf(context, 1.2f) }
+        handleBorder.style = Paint.Style.STROKE
+        handleBorder.color = Color.WHITE
+        handleBorder.strokeWidth = UI.dpf(context, 1.2f)
         chromeFill.color = if (l.locked) UI.BG3 else selAccent
         for (i in 0..2) {
             for (j in 0..2) {
@@ -223,7 +293,7 @@ class StageView @JvmOverloads constructor(
                 val ex = if (j == 0) r.left else if (j == 2) r.right else r.centerX()
                 val ey = if (i == 0) r.top else if (i == 2) r.bottom else r.centerY()
                 canvas.drawRect(ex - h, ey - h, ex + h, ey + h, chromeFill)
-                canvas.drawRect(ex - h, ey - h, ex + h, ey + h, borderPaint)
+                canvas.drawRect(ex - h, ey - h, ex + h, ey + h, handleBorder)
             }
         }
         // rotation handle above top-center
@@ -234,27 +304,29 @@ class StageView @JvmOverloads constructor(
         canvas.drawLine(cx, r.top, cx, topY, chrome)
         chromeFill.color = UI.ACCENT2
         canvas.drawCircle(cx, topY, h * 0.9f, chromeFill)
-        borderPaint.let { canvas.drawCircle(cx, topY, h * 0.9f, it) }
+        canvas.drawCircle(cx, topY, h * 0.9f, handleBorder)
         chromeFill.color = Color.WHITE
         canvas.drawCircle(cx, topY, h * 0.45f, chromeFill)
         // selection label pill (type + name) above the chrome so you always know what is selected
         val label = (if (l.isLive()) "LIVE  " else "") + l.name.ifBlank { l.type.label }
         val padH = UI.dpf(context, 8f)
         val padV = UI.dpf(context, 3f)
-        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = UI.dpf(context, 10f); typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD) }
-        val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(210, 18, 20, 26) }
-        val tw = textPaint.measureText(label)
-        val th = textPaint.textSize
+        labelText.color = Color.WHITE
+        labelText.textSize = UI.dpf(context, 10f)
+        val tw = labelText.measureText(label)
+        val th = labelText.textSize
         val bw = tw + padH * 2
         val bh = th + padV * 2 + UI.dpf(context, 2f)
         val bx = cx - bw / 2
         val by = topY - h * 1.8f - bh
         val rr = UI.dpf(context, 10f)
-        canvas.drawRoundRect(bx, by, bx + bw, by + bh, rr, rr, bgPaint)
-        canvas.drawText(label, bx + padH, by + bh - padV - UI.dpf(context, 1f), textPaint)
+        labelBg.color = Color.argb(210, 18, 20, 26)
+        canvas.drawRoundRect(bx, by, bx + bw, by + bh, rr, rr, labelBg)
+        canvas.drawText(label, bx + padH, by + bh - padV - UI.dpf(context, 1f), labelText)
         if (l.locked) {
-            val lockPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = UI.ACCENT2; textSize = UI.dpf(context, 9f) }
-            canvas.drawText("🔒", bx + bw + UI.dpf(context, 4f), by + bh - padV, lockPaint)
+            labelText.color = UI.ACCENT2
+            labelText.textSize = UI.dpf(context, 9f)
+            canvas.drawText("🔒", bx + bw + UI.dpf(context, 4f), by + bh - padV, labelText)
         }
         canvas.restore()
     }
@@ -269,8 +341,12 @@ class StageView @JvmOverloads constructor(
             (dx * sin(ang) + dy * cos(ang)).toFloat())
     }
 
+    /**
+     * Handle hit-testing runs on the SAME rect the chrome is drawn on — the
+     * layer's visible frame — so a drawn handle is always a grabbable handle.
+     */
     private fun hitHandle(x: Float, y: Float, l: Layer): String? {
-        val r = rectOf(l)
+        val r = RectF(chromeRectOf(l))
         val halfW = r.width() / 2f
         val halfH = r.height() / 2f
         val (px, py) = toLayerLocal(x, y, l, r)
@@ -308,7 +384,12 @@ class StageView @JvmOverloads constructor(
         }
     }
 
-    /** returns top-most layer whose box contains the point (canvas-local) */
+    /**
+     * Returns top-most layer whose VISIBLE frame contains the point
+     * (canvas-local). Tapping selects the picture you see: the letterboxed
+     * sides of a `fit` source belong to the layer behind it, and a
+     * full-bleed source still owns the whole canvas exactly as before.
+     */
     private fun layerAt(x: Float, y: Float): Layer? {
         val hp = host ?: return null
         val p = hp.project
@@ -316,7 +397,7 @@ class StageView @JvmOverloads constructor(
         for (i in p.layers.indices.reversed()) {
             val l = p.layers[i]
             if (!l.visible || l.opacity <= 0.01f) continue
-            val r = rectOf(l)
+            val r = chromeRectOf(l)
             val (px, py) = toLayerLocal(x, y, l, r)
             if (abs(px) <= r.width() / 2f && abs(py) <= r.height() / 2f) return l
         }
@@ -481,7 +562,8 @@ class StageView @JvmOverloads constructor(
             "TL", "TR", "BL", "BR" -> Mode.CORNER
             else -> Mode.EDGE
         }
-        val r = rectOf(l)
+        // the gesture re-anchors to the handle EXACTLY where it was drawn
+        val r = RectF(chromeRectOf(l))
         hsx = when (m) {
             "TL", "BL", "ML" -> -1f
             "TR", "BR", "MR" -> 1f
@@ -503,8 +585,15 @@ class StageView @JvmOverloads constructor(
         }
         startLayerId = l.id
         startCx = l.cx; startCy = l.cy
-        startWN = l.wN; startHN = l.hN
         startRot = l.rotDeg
+        // Resize runs in the VISIBLE-frame space (where the border and its
+        // handles are) and maps back to the box by the box/frame ratio
+        // captured at gesture start. For COVER/text/aspect-matched sources
+        // frame == box, so this reproduces the classic math exactly.
+        startBoxWN = l.wN; startBoxHN = l.hN
+        startWN = r.width() / cw; startHN = r.height() / ch
+        startRX = if (startWN > 0.001f) (startBoxWN / startWN).coerceAtLeast(1f) else 1f
+        startRY = if (startHN > 0.001f) (startBoxHN / startHN).coerceAtLeast(1f) else 1f
     }
 
     /** one undo snapshot per gesture, taken on the first real movement */
@@ -515,12 +604,18 @@ class StageView @JvmOverloads constructor(
     }
 
     /**
-     * True handle dragging: the grabbed corner/edge follows the finger while the
-     * OPPOSITE side stays anchored, in the layer's own rotated frame.
+     * True handle dragging: the grabbed corner/edge of the layer's VISIBLE
+     * frame follows the finger while the OPPOSITE side stays anchored, in the
+     * layer's own rotated frame — the same rect the border is drawn on, so
+     * the border always tracks the drag.
      *
-     * CORNER handles scale the whole box proportionally, so a camera PiP can
-     * never be squashed. EDGE handles stretch ONLY that side — width or height
-     * changes independently, so dragging a side handle distorts just that axis.
+     * CORNER handles scale a media layer proportionally, so a camera PiP can
+     * never be squashed. EDGE handles stretch ONLY that side — width or
+     * height change independently and the box can be freely distorted — for
+     * layers whose picture fills their box. For a letterboxed CONTAIN source
+     * a pure side-stretch would change the box but NOT one drawn pixel, so
+     * the border would appear frozen; there edge handles scale uniformly,
+     * which is the only stretch a fit-mode frame can physically perform.
      */
     private fun resizeTo(l: Layer, x: Float, y: Float) {
         val startWpx = (startWN * cw).coerceAtLeast(1f)
@@ -530,7 +625,7 @@ class StageView @JvmOverloads constructor(
         val ang = Math.toRadians(l.rotDeg.toDouble())
         val ca = cos(ang).toFloat(); val sa = sin(ang).toFloat()
 
-        // anchor = the side opposite the grabbed handle
+        // anchor = the side opposite the grabbed handle (of the visible frame)
         val axLocal = -hsx * startWpx / 2f
         val ayLocal = -hsy * startHpx / 2f
         val ax = cx0 + axLocal * ca - ayLocal * sa
@@ -545,13 +640,19 @@ class StageView @JvmOverloads constructor(
         val minPx = UI.dpf(context, 24f)
         var newW = if (hsx != 0f) abs(px).coerceAtLeast(minPx) else startWpx
         var newH = if (hsy != 0f) abs(py).coerceAtLeast(minPx) else startHpx
-        // Corner handles (both axes) keep a media layer's aspect ratio; edge
-        // handles (one axis) stretch only that side, so width/height move
-        // independently and the box can be freely distorted along an edge.
-        if (!l.isText() && hsx != 0f && hsy != 0f) {
-            val k = (newW / startWpx + newH / startHpx) / 2f
-            newW = startWpx * k
-            newH = startHpx * k
+        val letterboxed = startRX > 1.02f || startRY > 1.02f
+        if (!l.isText()) {
+            if (hsx != 0f && hsy != 0f) {
+                // Corner (both axes): keep the media aspect ratio
+                val k = (newW / startWpx + newH / startHpx) / 2f
+                newW = startWpx * k
+                newH = startHpx * k
+            } else if (letterboxed) {
+                // Edge on a fit-mode source: uniform scale of the frame
+                val k = if (hsx != 0f) newW / startWpx else newH / startHpx
+                newW = startWpx * k
+                newH = startHpx * k
+            }
         }
         newW = newW.coerceIn(minPx, cw * MAX_BOX_N)
         newH = newH.coerceIn(minPx, ch * MAX_BOX_N)
@@ -560,8 +661,11 @@ class StageView @JvmOverloads constructor(
         val sgy = if (py >= 0f) 1f else -1f
         val mxLocal = if (hsx != 0f) sgx * newW / 2f else 0f
         val myLocal = if (hsy != 0f) sgy * newH / 2f else 0f
-        l.wN = newW / cw
-        l.hN = newH / ch
+        // visible frame -> box: ratio 1 unless the source letterboxes inside
+        // its box; the box absorbs the letterbox slack, the chrome the user
+        // grabbed maps 1:1 to the finger.
+        l.wN = (newW * startRX / cw).coerceAtMost(MAX_BOX_N)
+        l.hN = (newH * startRY / ch).coerceAtMost(MAX_BOX_N)
         l.cx = (ax + mxLocal * ca - myLocal * sa) / cw
         l.cy = (ay + mxLocal * sa + myLocal * ca) / ch
     }

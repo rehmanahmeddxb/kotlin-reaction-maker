@@ -1781,14 +1781,17 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         if (!this::stage.isInitialized || !engineReady()) return
         val long = maxOf(stage.canvasW, stage.canvasH)
         engine.targetMaxPx = long.coerceIn(480, 960)
-        // Decode each clip at the size it is actually drawn at. The closure
-        // reads the stage on every call, so it stays correct after a rotate,
-        // an aspect change or a layer resize without any extra plumbing.
+        // Decode each clip at the size it is actually DRAWN at — the visible
+        // frame, which is also what the selection border is drawn around
+        // (StageView/Compositor.chromeRect). A pillarboxed camera main on a
+        // 16:9 canvas shows a narrow strip, so it no longer pays for
+        // full-canvas decode. The closure reads the stage on every call, so
+        // it stays correct after a rotate, an aspect change or a resize.
         engine.layerTargetPx = { l ->
-            val boxLong = maxOf(l.wN * stage.canvasW, l.hN * stage.canvasH)
+            val frameLong = stage.visibleFrameMaxPx(l).toFloat()
             // headroom: a layer dragged larger keeps looking sharp for the
             // one frame it takes the decoder to notice
-            (boxLong * 1.25f).toInt().coerceIn(240, 1440)
+            (frameLong * 1.25f).toInt().coerceIn(240, 1440)
         }
     }
 
