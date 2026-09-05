@@ -1,5 +1,12 @@
 # Phase 2 — Canvas fit, selection frames, audio pipeline
 
+> **Historical phase report.** The current combined Phase 2 + Step 5 layout
+> and preservation decisions are documented in
+> [the branch consolidation report](BRANCH_CONSOLIDATION_2026-09-05.md).
+> Step 5 tabs/source controls and main's aspect-independent rotation are
+> retained in that integration; the supersession notes below describe this
+> branch before consolidation.
+
 Implementation report for the three Phase 2 areas. Everything below was
 implemented, compiled into `artifacts/AhmedReactionStudio-1.0.0.apk` with the
 offline toolchain (`TC_ROOT=/tmp/ahmed-tc ./build-apk.sh` → `BUILD OK`) and
@@ -245,6 +252,7 @@ branch merges `main` and resolves as follows:
 | STEP 3 `AudioMixer.kt` (`AudioConfig`, `ClipAudioSource`, `AudioMixer`) + recorder patch | **Superseded** by `AudioMath.kt` + the rewritten recorder: STEP 3 still paced the loop with `Thread.sleep`, derived video PTS from `SystemClock.elapsedRealtime()` and had no resampler / limiter / mic-timestamp anchor / camera-take exclusion — all explicit requirements. `AudioMixer.kt` stays in the tree (AudioDecode uses `AudioConfig.SAMPLE_RATE`) and its unit checks in `validate-pipeline.py` still run; the recorder/exporter guards were re-pointed at the shared `ClipCursor`/`Limiter`/`Resampler` and a "no `Thread.sleep` in the recorder" rule. |
 | STEP 3 `AudioDecode`: adopt decoder output format, `ByteOrder.nativeOrder()` | **Adopted**, and the same native-order fix applied to the recorder's and exporter's AAC input buffers. |
 | STEP 4 `TorchController` (hardware torch), `LiveCamera` torch API, `CameraActivity`, `validate-torch.py` | **Kept in full**; the editor's torch call sites were updated to the new API (`hasFlashUnit`, `isTorchLitFor*`, `torchLastError`, `setBothTorches` result). `validate-torch.py` passes (34 checks). |
+| STEP 5 (PR #21) editor UI redesign — bottom tab bar, per-layer source strip, floating 44 dp quick bar, `SourceDock` row sizes | **Partially adopted.** `SourceDock` row/target sizes (52 dp rows, 44 dp eye/mute/handle) and the 44 dp top-bar targets are taken. The STEP 5 bottom structure (tab bar + floating quick bar + top/bottom-only insets) is superseded by this branch's collapsible source dock + contextual bar + right rail + Full Canvas, which are what the Phase 2 brief specifies; the floating quick bar in particular overlaps the canvas by construction. `docs/STEP5_REPORT.md` is kept for history. |
 
 ## 7. Remaining limitations — stated honestly
 

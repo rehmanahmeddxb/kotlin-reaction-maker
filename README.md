@@ -10,9 +10,15 @@ framework APIs (`android.app`, `android.view`, `Camera2`, `MediaCodec`,
 > first-class citizens: select one and its controls are one tap away,
 > never buried in settings. What you see is exactly what gets exported.
 
+> **Consolidated baseline (2026-09-05):** Phase 2 canvas/selection/audio work
+> and the Step 5 editor UI are kept together. See the
+> [branch preservation report](docs/BRANCH_CONSOLIDATION_2026-09-05.md) for
+> original commit IDs, conflict decisions, regression tests and device checks.
+
 - Animated splash screen (`SplashActivity`) then project home.
-- **Full-screen studio**: the composition canvas fills the whole screen;
-  every control floats OVER it (top bar, quick control bar, bottom dock).
+- **Full-screen studio**: the composition contain-fits the space left by
+  measured controls and system insets. Step 5 tabs/source chips and a floating
+  contextual pill coexist with the landscape rail and Full Canvas mode.
 - **Sources, OBS-style**: every source gets a floating **Quick Control Bar**
   (👁 hide · 🔇 mute · ⏯ source pause · 🔒 lock · fit · ◉ radial wheel · ⋮
   advanced sheet), a **Source Dock** mini-mixer (per-row eye/mute toggles,
@@ -27,8 +33,8 @@ framework APIs (`android.app`, `android.view`, `Camera2`, `MediaCodec`,
   added afterwards is a PiP. Any source can later be promoted to canvas
   background (advanced sheet / Canvas tab).
 - 16:9 / 9:16 / 1:1 canvases (16:9 default) with normalized geometry,
-  auto screen orientation and a one-tap cycling aspect chip.
-- Canvas gestures: tap select, **double-tap = hide/show**, drag with snap,
+  independent phone orientation and an aspect picker.
+- Canvas gestures: tap select, **double-tap text to edit**, drag with snap,
   8-handle resize, rotate knob, pinch scale+rotate.
 - Import **video in any decodable container (MP4, AVI, WebM, MKV, 3GP, MOV)**
   and images; text overlays. Un-decodable files are reported, not crashed on.
