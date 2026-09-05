@@ -60,8 +60,9 @@ class RadialMenuView(context: Context) : FrameLayout(context) {
         val badge: String? = null,
         val submenu: (() -> Level)? = null,
         val keepOpen: Boolean = false,
-        val action: (() -> Unit)? = null,
-        val enabled: Boolean = true
+        val enabled: Boolean = true,
+        // NOTE: action stays LAST so trailing-lambda call sites keep working
+        val action: (() -> Unit)? = null
     )
 
     /** One ring: a hub identity plus a live list of petals. */

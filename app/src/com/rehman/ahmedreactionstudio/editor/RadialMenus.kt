@@ -102,11 +102,11 @@ object RadialMenus {
         icon: Int, label: String, active: Boolean = false, danger: Boolean = false,
         badge: String? = null, keepOpen: Boolean = false, enabled: Boolean = true,
         action: () -> Unit
-    ) = RadialMenuView.Item(icon, label, active, danger, badge, null, keepOpen, action, enabled)
+    ) = RadialMenuView.Item(icon, label, active, danger, badge, null, keepOpen, enabled, action)
 
     private fun folder(
         icon: Int, label: String, badge: String? = null, sub: () -> RadialMenuView.Level
-    ) = RadialMenuView.Item(icon, label, false, false, badge, sub, false, null)
+    ) = RadialMenuView.Item(icon, label, false, false, badge, sub, false, true, null)
 
     // ================= ROOT =================
 
