@@ -12,6 +12,7 @@ import com.rehman.ahmedreactionstudio.core.Compositor
 import com.rehman.ahmedreactionstudio.core.Layer
 import com.rehman.ahmedreactionstudio.core.LayerFit
 import com.rehman.ahmedreactionstudio.core.Project
+import com.rehman.ahmedreactionstudio.core.ViewportFit
 import com.rehman.ahmedreactionstudio.util.UI
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -76,6 +77,25 @@ class StageView @JvmOverloads constructor(
     private var cw = 1
     private var ch = 1
 
+    /**
+     * STEP 1 — chrome reserved at the top/bottom of this view (toolbar,
+     * bottom sheet, quick bar, status chips), in this view's pixels.
+     * The canvas is contain-fitted in the REMAINING region, so chrome can
+     * never cover or crop it. Set by the host on every layout pass.
+     */
+    private var chromeTopPx = 0f
+    private var chromeBottomPx = 0f
+
+    fun setChromeInsets(topPx: Float, bottomPx: Float) {
+        val ct = topPx.coerceAtLeast(0f)
+        val cb = bottomPx.coerceAtLeast(0f)
+        if (ct == chromeTopPx && cb == chromeBottomPx) return
+        chromeTopPx = ct
+        chromeBottomPx = cb
+        layoutCanvas()
+        invalidate()
+    }
+
     /** canvas size in view pixels (used to size preview decoding) */
     val canvasW: Int get() { layoutCanvas(); return cw }
     val canvasH: Int get() { layoutCanvas(); return ch }
@@ -122,21 +142,22 @@ class StageView @JvmOverloads constructor(
         layoutCanvas()
     }
 
-    /** contain-fit the project aspect inside this view, centred */
+    /**
+     * STEP 1 — contain-fit the project aspect inside the VISIBLE region of
+     * this view (viewport minus chrome insets), centred:
+     * scale = min(availW / canvasW, availH / canvasH).
+     * The whole canvas always fits; chrome can never crop or cover it.
+     */
     private fun layoutCanvas() {
         val p = host?.project ?: return
         val vw = width.toFloat()
         val vh = height.toFloat()
         if (vw <= 1f || vh <= 1f) return
-        val ar = p.aspect.canvasW.toFloat() / p.aspect.canvasH
-        var w = vw
-        var h = w / ar
-        if (h > vh) { h = vh; w = h * ar }
-        val l = (vw - w) / 2f
-        val t = (vh - h) / 2f
-        canvasRect.set(l, t, l + w, t + h)
-        cw = w.roundToInt().coerceAtLeast(1)
-        ch = h.roundToInt().coerceAtLeast(1)
+        val r = ViewportFit.fit(vw, vh, chromeTopPx, chromeBottomPx,
+            p.aspect.canvasW, p.aspect.canvasH)
+        canvasRect.set(r.l, r.t, r.r, r.b)
+        cw = r.w.roundToInt().coerceAtLeast(1)
+        ch = r.h.roundToInt().coerceAtLeast(1)
     }
 
     fun refresh() { invalidate() }
