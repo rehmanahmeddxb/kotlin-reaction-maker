@@ -114,6 +114,11 @@ class CameraActivity : Activity() {
         projectId = intent.getStringExtra(EXTRA_PROJECT_ID) ?: run { finish(); return }
         role = intent.getStringExtra(EXTRA_ROLE) ?: "main"
         store = ProjectStore(this)
+        // Reaction takes are framed landscape (16:9). A camera activity locked
+        // portrait made the preview letterboxed and the orientation hint work
+        // overtime; follow the sensor so the take fills the screen and the
+        // hint comes out right.
+        requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         buildUi()
         if (!hasPermissions()) requestPermissions(
             arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO), REQ_PERMS)
@@ -641,6 +646,11 @@ class CameraActivity : Activity() {
         val withMic = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         val r = if (android.os.Build.VERSION.SDK_INT >= 31) MediaRecorder(this) else @Suppress("DEPRECATION") MediaRecorder()
         r.setVideoSource(MediaRecorder.VideoSource.SURFACE)
+        // Sources MUST be set before setOutputFormat — the old order set the
+        // output format first and then called setAudioSource, which is an
+        // illegal MediaRecorder state and made prepare() throw, so every take
+        // recorded with the microphone permission died.
+        if (withMic) r.setAudioSource(MediaRecorder.AudioSource.MIC)
         r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
         r.setOutputFile(f.absolutePath)
         r.setVideoEncodingBitRate(8_000_000)
@@ -648,13 +658,23 @@ class CameraActivity : Activity() {
         r.setVideoSize(size.width, size.height)
         r.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
         if (withMic) {
-            r.setAudioSource(MediaRecorder.AudioSource.MIC)
             r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
             r.setAudioEncodingBitRate(128_000)
             r.setAudioSamplingRate(44_100)
         }
-        val rot = if (facing == CameraCharacteristics.LENS_FACING_FRONT) (sensorOrientation + 180) % 360
-        else sensorOrientation
+        // Standard camera2 orientation hint: sensor - device rotation for the
+        // back camera; plus 180° (mirror) for the front. The raw sensor value
+        // ignored device rotation, so landscape takes came out sideways.
+        @Suppress("DEPRECATION")
+        val deviceRot = when (windowManager.defaultDisplay.rotation) {
+            android.view.Surface.ROTATION_90 -> 90
+            android.view.Surface.ROTATION_180 -> 180
+            android.view.Surface.ROTATION_270 -> 270
+            else -> 0
+        }
+        val rot = if (facing == CameraCharacteristics.LENS_FACING_FRONT)
+            (sensorOrientation + deviceRot + 180) % 360
+        else (sensorOrientation - deviceRot + 360) % 360
         r.setOrientationHint(rot)
         try {
             r.prepare()

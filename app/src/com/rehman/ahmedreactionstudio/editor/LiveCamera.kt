@@ -119,6 +119,13 @@ class LiveCamera(
 
     private var sensorOrientation = 90
     private var feedSize = WANT
+    /**
+     * Size for the MediaRecorder surface. Camera2 only accepts sizes from
+     * `getOutputSizes(MediaRecorder.class)` — feeding it the ImageReader
+     * (YUV) size made createCaptureSession fail on devices whose two size
+     * tables differ, which surfaced as "camera busy" and a fallback loop.
+     */
+    private var recordSize: Size? = null
     private var lastFrameAt = 0L
     private var activeCameraId: String? = null
 
@@ -130,6 +137,13 @@ class LiveCamera(
      * it again. That race produced torn / black camera frames in the export
      * even though the live preview looked fine. Three slots: never write the
      * bitmap currently published to PreviewEngine.
+     *
+     * Size change is the edge case: when the display rotates (feed goes from
+     * portrait to landscape — picking 16:9 auto-rotates the studio) the output
+     * dimensions swap. Reusing a buffer of the OLD size and calling setPixels
+     * with a different count throws IllegalStateException ("w x h does not
+     * match pixels") straight off the camera callback — an uncaught crash the
+     * moment rotation changed the feed. Old-size buffers are dropped.
      */
     private var bufA: Bitmap? = null
     private var bufB: Bitmap? = null
@@ -137,6 +151,8 @@ class LiveCamera(
     private var writeSlot = 0
     @Volatile private var published: Bitmap? = null
     private var argb: IntArray = IntArray(0)
+    private var lastOutW = 0
+    private var lastOutH = 0
     private var rowY: ByteArray = ByteArray(0)
     private var rowU: ByteArray = ByteArray(0)
     private var rowV: ByteArray = ByteArray(0)
@@ -411,6 +427,13 @@ class LiveCamera(
                 ?.minByOrNull {
                     Math.abs(it.width * it.height - WANT.width * WANT.height)
                 } ?: WANT
+            // Recorder sizes are a SEPARATE camera2 table: pick the closest
+            // ≤1080p MP4 size the device actually supports for MediaRecorder.
+            recordSize = map?.getOutputSizes(MediaRecorder::class.java)
+                ?.filter { it.width <= 1920 && it.height <= 1920 }
+                ?.minByOrNull {
+                    Math.abs(it.width * it.height - 1280 * 720)
+                }
 
             val r = ImageReader.newInstance(feedSize.width, feedSize.height,
                 ImageFormat.YUV_420_888, 3)
@@ -533,6 +556,7 @@ class LiveCamera(
         val f = File(dir, "cam_${System.currentTimeMillis()}.mp4")
         val withMic = ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
+        val rs = recordSize ?: feedSize
         val r = if (android.os.Build.VERSION.SDK_INT >= 31) MediaRecorder(ctx)
         else @Suppress("DEPRECATION") MediaRecorder()
         try {
@@ -542,14 +566,29 @@ class LiveCamera(
             r.setOutputFile(f.absolutePath)
             r.setVideoEncodingBitRate(6_000_000)
             r.setVideoFrameRate(30)
-            r.setVideoSize(feedSize.width, feedSize.height)
+            r.setVideoSize(rs.width, rs.height)
             r.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
             if (withMic) {
                 r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                 r.setAudioEncodingBitRate(128_000)
                 r.setAudioSamplingRate(44_100)
             }
-            val rot = if (isFront()) (sensorOrientation + 180) % 360 else sensorOrientation
+            // Standard camera2 orientation hint: (sensorOrientation -
+            // deviceRotation + 360) % 360 for the back camera, plus 180° for
+            // the front (mirrored). Using the raw sensor value ignored the
+            // device rotation, so takes shot with the studio in landscape
+            // (16:9 canvas auto-rotates) came out sideways.
+            val deviceRot = try {
+                val wm = ctx.getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager
+                when (wm.defaultDisplay.rotation) {
+                    Surface.ROTATION_90 -> 90
+                    Surface.ROTATION_180 -> 180
+                    Surface.ROTATION_270 -> 270
+                    else -> 0
+                }
+            } catch (_: Exception) { 0 }
+            val rot = if (isFront()) (sensorOrientation + deviceRot + 180) % 360
+            else (sensorOrientation - deviceRot + 360) % 360
             r.setOrientationHint(rot)
             r.prepare()
         } catch (e: Exception) {

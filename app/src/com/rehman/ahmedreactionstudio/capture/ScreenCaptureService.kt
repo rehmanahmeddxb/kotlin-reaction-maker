@@ -161,6 +161,9 @@ class ScreenCaptureService : Service() {
                 android.content.pm.PackageManager.PERMISSION_GRANTED
             val r = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(this) else @Suppress("DEPRECATION") MediaRecorder()
             r.setVideoSource(MediaRecorder.VideoSource.SURFACE)
+            // Audio source must be configured before setOutputFormat, or the
+            // MediaRecorder state machine throws during prepare().
+            if (withMic) r.setAudioSource(MediaRecorder.AudioSource.MIC)
             r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
             r.setOutputFile(f.absolutePath)
             r.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
@@ -168,7 +171,6 @@ class ScreenCaptureService : Service() {
             r.setVideoFrameRate(30)
             r.setVideoEncodingBitRate(10_000_000)
             if (withMic) {
-                r.setAudioSource(MediaRecorder.AudioSource.MIC)
                 r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                 r.setAudioEncodingBitRate(128_000)
                 r.setAudioSamplingRate(44_100)

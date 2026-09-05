@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Color
 import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.opengl.GLES20
@@ -148,8 +149,43 @@ class DiagnosticsActivity : Activity() {
         UI.margin(hudHint, 0, 2, 0, 0, this)
         col.addView(hudHint)
 
+        // ---- crash logs captured by the global handler (App.kt) ----
+        val crashes = com.rehman.ahmedreactionstudio.App.crashLogs(this)
+        sb.append("crashLogs: ").append(crashes.size).append("\n")
+        val crashHead = UI.title(this, if (crashes.isEmpty())
+            "No crashes recorded \u2713" else "⚠ ${crashes.size} crash log(s)")
+        UI.margin(crashHead, 0, 16, 0, 4, this)
+        col.addView(crashHead)
+        if (crashes.isNotEmpty()) {
+            val latest = crashes.first()
+            val text = try { latest.readText() } catch (_: Exception) { "(unreadable)" }
+            sb.append("---- latest crash ----\n").append(text).append("\n")
+            val tv = TextView(this)
+            tv.text = text.take(4000)
+            tv.setTextColor(Color.argb(235, 255, 200, 200))
+            tv.textSize = 10.5f
+            tv.typeface = android.graphics.Typeface.MONOSPACE
+            tv.setPadding(UI.dp(this, 10), UI.dp(this, 8), UI.dp(this, 10), UI.dp(this, 8))
+            tv.background = android.graphics.drawable.GradientDrawable().apply {
+                cornerRadius = UI.dpf(this@DiagnosticsActivity, 10f)
+                setColor(Color.argb(60, 120, 30, 30))
+            }
+            val tlp = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            tlp.setMargins(0, UI.dp(this, 4), 0, UI.dp(this, 8))
+            tv.layoutParams = tlp
+            col.addView(tv)
+            val clearCrash = UI.btn(this, "Clear crash logs", accent = false, small = true)
+            clearCrash.setOnClickListener {
+                crashes.forEach { runCatching { it.delete() } }
+                UI.toast(this, "Crash logs cleared")
+                recreate()
+            }
+            col.addView(clearCrash)
+        }
+
         UI.margin(col, 0, 0, 0, 12, this)
-        val copy = UI.btn(this, "Copy diagnostics", accent = false)
+        val copy = UI.btn(this, "Copy diagnostics (includes crash log)", accent = false)
         copy.setOnClickListener {
             (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
                 .setPrimaryClip(ClipData.newPlainText("diagnostics", sb.toString()))
