@@ -99,6 +99,15 @@ class PreviewEngine(
      */
     private val externalIds = HashSet<String>()
 
+    /**
+     * Still-image layers. They are not clips (no clock, no decoder), so before
+     * this the preview never had a bitmap for them: an added image was an
+     * invisible box you could select but not see until export. Decoded once,
+     * off the main thread, keyed by id; the request set stops duplicates.
+     */
+    private val imageLoading = ConcurrentHashMap.newKeySet<String>()
+    private val imageIds = HashSet<String>()
+
     private val exec = Executors.newFixedThreadPool(2)
     private val handler = Handler(Looper.getMainLooper())
     private var masterMs = 0L
@@ -188,6 +197,31 @@ class PreviewEngine(
         val p = project()
         val anySolo = p.layers.any { it.solo }
         return anySolo && !l.solo
+    }
+
+    /**
+     * Preview-monitor mute. While the composite RECORD runs, the recorder
+     * mixes the clips' decoded PCM itself; playing the same clips through the
+     * speaker at the same time (a) competes for the audio output and (b) is
+     * picked up by the microphone as a delayed, muffled copy of the clip
+     * ("echo"/"double audio"). Muting the monitor keeps the master clock,
+     * the decoders and the play state exactly as they are — only the
+     * MediaPlayer output goes silent.
+     */
+    @Volatile var monitorMuted = false
+        set(value) {
+            if (field == value) return
+            field = value
+            handler.post { applyMonitorVolume() }
+        }
+
+    private fun applyMonitorVolume() {
+        val p = project()
+        for ((id, mp) in players) {
+            val l = p.layerById(id) ?: continue
+            val v = if (monitorMuted) 0f else l.volume
+            try { mp.setVolume(v, v) } catch (_: Exception) { }
+        }
     }
 
     fun attach(projectId: String) {
@@ -383,7 +417,8 @@ class PreviewEngine(
                 mp = MediaPlayer()
                 mp.setDataSource(path)
                 mp.isLooping = loop
-                mp.setVolume(vol, vol)
+                val mv = if (monitorMuted) 0f else vol
+                mp.setVolume(mv, mv)
                 mp.prepare()
             } catch (_: Exception) {
                 try { mp?.release() } catch (_: Exception) { }
@@ -466,7 +501,8 @@ class PreviewEngine(
 
     fun setVolume(l: Layer, v: Float) {
         l.volume = v
-        try { players[l.id]?.setVolume(v, v) } catch (_: Exception) { }
+        val mv = if (monitorMuted) 0f else v
+        try { players[l.id]?.setVolume(mv, mv) } catch (_: Exception) { }
     }
 
     // ---------- frame snapshots ----------
@@ -661,6 +697,8 @@ class PreviewEngine(
     fun evict(id: String) {
         releaseSource(id)
         val external = externalIds.remove(id)
+        imageIds.remove(id)
+        imageLoading.remove(id)
         handler.post {
             val prev = frames.remove(id)
             // only recycle software / external-owned frames, never GPU-owned
@@ -671,7 +709,36 @@ class PreviewEngine(
         }
     }
 
-    fun frameOf(l: Layer): Bitmap? = frames[l.id]
+    fun frameOf(l: Layer): Bitmap? {
+        val b = frames[l.id]
+        if (b == null && l.type == com.rehman.ahmedreactionstudio.core.LayerType.IMAGE) requestImage(l)
+        return b
+    }
+
+    /** Decode a still image for the preview on the pool; publish on main. */
+    private fun requestImage(l: Layer) {
+        val id = l.id
+        val path = pathOf(l) ?: return
+        if (!imageLoading.add(id)) return
+        val px = (layerTargetPx?.invoke(l) ?: targetMaxPx).coerceIn(256, 2048)
+        try {
+            exec.execute {
+                val bmp = try { MediaKit.image(path, px) } catch (_: Throwable) { null }
+                handler.post {
+                    imageLoading.remove(id)
+                    if (bmp == null) return@post
+                    val still = project().layerById(id)
+                    if (still == null) { try { bmp.recycle() } catch (_: Exception) { }; return@post }
+                    imageIds.add(id)
+                    frames.put(id, bmp)?.let { old -> if (old !== bmp) try { old.recycle() } catch (_: Exception) { } }
+                    newFrames.set(true)
+                    onFrameReady(masterMs)
+                }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            imageLoading.remove(id)
+        }
+    }
 
     /**
      * Push a frame produced outside the engine (the live camera). The bitmap
@@ -709,6 +776,7 @@ class PreviewEngine(
         }
         frames.clear()
         frames.putAll(keep)
+        imageIds.clear()   // stills are re-decoded lazily on the next frameOf()
     }
 
     fun release() {
