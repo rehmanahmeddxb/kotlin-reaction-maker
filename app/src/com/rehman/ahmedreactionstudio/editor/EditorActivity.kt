@@ -970,11 +970,10 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             bar(if (rec) R.drawable.ic_stop else R.drawable.ic_camera,
                 if (rec) UI.DANGER else UI.OK) { toggleLiveCameraRecord(l) }
             bar(R.drawable.ic_switch, UI.FG) { switchCameraFacing(l) }
-            // one-tap light: LED when the lens has one, screen flash otherwise
-            val lit = liveCam?.torch == true || screenLight
-            bar(R.drawable.ic_flash, if (lit) UI.ACCENT2 else UI.FG) {
-                if (liveCam?.hasFlashUnit == true) toggleTorch(l) else toggleScreenLight()
-            }
+            // one-tap light: opens the full Light ring (Front / Back / Both / Screen) so
+            // devices with LEDs on both sides expose all three options while recording
+            val lit = liveCam?.torch == true || liveCam?.bothTorchesOn() == true || screenLight
+            bar(R.drawable.ic_flash, if (lit) UI.ACCENT2 else UI.FG) { openFlashRing(l) }
         }
         bar(if (l.locked) R.drawable.ic_lock else R.drawable.ic_lock_open,
             if (l.locked) UI.ACCENT2 else UI.FG) { ctrl.toggleLocked(l.id) }
@@ -2242,12 +2241,21 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     }
 
     // ---------------- flashlight (LED torch + screen light) ----------------
+    // Dual-torch: both front and back LEDs can be controlled independently.
+    // The state is remembered per-facing so switching camera preserves the user's choice.
+    // "Both on" uses CameraManager.setTorchMode for the idle camera.
 
     override fun isTorchOn(l: Layer): Boolean =
         l.id == liveCamLayerId && liveCam?.torch == true
 
     override fun hasTorch(l: Layer): Boolean =
         l.id == liveCamLayerId && liveCam?.hasFlashUnit == true
+
+    override fun hasFrontTorch(): Boolean = liveCam?.frontHasFlash == true
+    override fun hasBackTorch(): Boolean = liveCam?.backHasFlash == true
+    override fun isFrontTorchOn(): Boolean = liveCam?.isTorchOnForFront() == true
+    override fun isBackTorchOn(): Boolean = liveCam?.isTorchOnForBack() == true
+    override fun isBothTorchOn(): Boolean = liveCam?.bothTorchesFullyOn() == true
 
     override fun toggleTorch(l: Layer) {
         val cam = liveCam
@@ -2262,6 +2270,34 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         UI.toast(this, if (cam.torch) "Flashlight on" else "Flashlight off")
         refreshAll()
     }
+    override fun toggleFrontTorch() {
+        val cam = liveCam
+        if (cam == null) { UI.toast(this, "Live camera not running"); return }
+        if (!cam.toggleFrontTorch() && !cam.isTorchOnForFront()) {
+            UI.toast(this, "Front camera has no flash")
+            return
+        }
+        UI.toast(this, if (cam.isTorchOnForFront()) "Front flash on" else "Front flash off")
+        refreshAll()
+    }
+    override fun toggleBackTorch() {
+        val cam = liveCam
+        if (cam == null) { UI.toast(this, "Live camera not running"); return }
+        if (!cam.toggleBackTorch() && !cam.isTorchOnForBack()) {
+            UI.toast(this, "Back camera has no flash")
+            return
+        }
+        UI.toast(this, if (cam.isTorchOnForBack()) "Back flash on" else "Back flash off")
+        refreshAll()
+    }
+    override fun toggleBothTorch() {
+        val cam = liveCam
+        if (cam == null) { UI.toast(this, "Live camera not running"); return }
+        val turnOn = !cam.bothTorchesFullyOn()
+        cam.setBothTorches(turnOn)
+        UI.toast(this, if (turnOn) "Both flashes on" else "Both flashes off")
+        refreshAll()
+    }
 
     override fun isScreenLightOn(): Boolean = screenLight
 
@@ -2269,10 +2305,9 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
      * SCREEN FLASH for the front camera.
      *
      * Front lenses almost never have an LED, so the phone itself becomes the
-     * lamp: a bright warm-white panel is laid over the stage surround and the
-     * window brightness is forced to maximum. It lights the face without
-     * touching the composition — the overlay sits OUTSIDE the exported canvas
-     * area, so nothing it does can end up in the recording or the export.
+     * lamp. We push window brightness to 1.0 and draw a bright warm-white
+     * panel BEHIND the stage so the canvas stays fully visible — the light
+     * comes from the letterbox surround, not by covering the composition.
      */
     override fun toggleScreenLight() {
         screenLight = !screenLight
@@ -2282,31 +2317,29 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     }
 
     private fun applyScreenLight() {
-        // brightness
         try {
             val lp = window.attributes
             lp.screenBrightness = if (screenLight) 1f else -1f
             window.attributes = lp
         } catch (_: Exception) { }
-        // the glow panel itself
         if (screenLight) {
             if (screenLightView == null) {
                 val v = View(this)
-                v.setBackgroundColor(Color.argb(235, 255, 246, 232))
+                v.setBackgroundColor(Color.argb(242, 255, 246, 232))
                 v.isClickable = false
                 v.isFocusable = false
-                rootFrame.addView(v, FrameLayout.LayoutParams(
+                // behind stage, in front of root background so canvas remains visible
+                rootFrame.addView(v, 0, FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT))
                 screenLightView = v
             }
-            // keep it under the wheel / sheets but over the stage surround
-            screenLightView?.let { v ->
-                v.visibility = View.VISIBLE
-                v.bringToFront()
-                wheel.bringToFront()
-                if (this::sheet.isInitialized) sheet.bringToFront()
-            }
+            screenLightView?.visibility = View.VISIBLE
+            // keep stage and overlays above the light
+            if (this::stage.isInitialized) stage.bringToFront()
+            emptyOverlay.bringToFront()
+            if (this::wheel.isInitialized) wheel.bringToFront()
+            if (this::sheet.isInitialized) sheet.bringToFront()
         } else {
             screenLightView?.visibility = View.GONE
         }

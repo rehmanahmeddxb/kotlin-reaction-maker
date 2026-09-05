@@ -246,6 +246,10 @@ class CompositionRecorder(
                     }
                     outIdx == MediaCodec.INFO_TRY_AGAIN_LATER -> return false
                     outIdx >= 0 -> {
+                        if (vInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
+                            try { vc.releaseOutputBuffer(outIdx, false) } catch (_: Exception) { }
+                            continue
+                        }
                         if (videoTrack >= 0 && muxerStarted) {
                             try { vc.getOutputBuffer(outIdx)?.let { m.writeSampleData(videoTrack, it, vInfo) } }
                             catch (_: Exception) { }
@@ -270,6 +274,10 @@ class CompositionRecorder(
                     }
                     outIdx == MediaCodec.INFO_TRY_AGAIN_LATER -> return false
                     outIdx >= 0 -> {
+                        if (aInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
+                            try { ac.releaseOutputBuffer(outIdx, false) } catch (_: Exception) { }
+                            continue
+                        }
                         if (audioTrack >= 0 && muxerStarted) {
                             try { ac.getOutputBuffer(outIdx)?.let { m.writeSampleData(audioTrack, it, aInfo) } }
                             catch (_: Exception) { }
@@ -294,6 +302,7 @@ class CompositionRecorder(
                     if (inIdx >= 0) {
                         val buf = vc.getInputBuffer(inIdx)
                         if (buf != null && !bmp.isRecycled) {
+                            buf.clear()
                             val bytes = Exporter.writeYuv(buf, bmp, w, h, nv12)
                             val pts = (SystemClock.elapsedRealtime() - startWall) * 1000L
                             vc.queueInputBuffer(inIdx, 0, bytes, pts, 0)
