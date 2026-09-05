@@ -85,6 +85,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         const val REQ_APP_PERMS = 45
         const val REQ_CAMERA_PERM = 46
         const val REQ_RECORD_PERM = 47
+        /** the old floating quick bar; the contextual bar replaced it (Phase 2) */
+        const val USE_QUICK_BAR = false
 
         /** editor prefs file + key for the preview health overlay */
         const val PREFS_EDITOR = "editor"
@@ -125,6 +127,35 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     private lateinit var studioBtn: LinearLayout
     private var wheelBtn: IconBtn? = null
     private var sheetTab: String? = null
+
+    // ===== viewport chrome: the canvas is fitted into what these leave free =====
+    private lateinit var topBar: LinearLayout
+    private lateinit var quickWrap: HorizontalScrollView
+    /** collapsible horizontal source dock: [Camera][Video][+ Add] ⇄ + Image / Text / Screen */
+    private lateinit var srcDock: LinearLayout
+    private var srcDockExpanded = false
+    /** contextual bottom controls (nothing selected → global; source selected → source verbs) */
+    private lateinit var ctxBar: LinearLayout
+    /** Full Canvas mode: every overlay hidden except one exit button */
+    private var fullCanvas = false
+    private lateinit var fullExitBtn: TextView
+    /** system bar + cutout insets (px), applied by the WindowInsets listener */
+    private var sysL = 0; private var sysT = 0; private var sysR = 0; private var sysB = 0
+    private val insetsSync = Runnable { applyViewportInsets() }
+    /**
+     * Orientation-aware chrome. Portrait: everything in the bottom sheet.
+     * Landscape: dock + contextual bar + open panel live in a RIGHT RAIL and
+     * the bottom sheet is one row (transport | launcher) — a 4-row sheet under
+     * a 56dp top bar left a 16:9 canvas ~47dp tall on a phone.
+     */
+    private lateinit var dockScroll: HorizontalScrollView
+    private lateinit var ctxScroll: HorizontalScrollView
+    private lateinit var panelScroll: ScrollView
+    private lateinit var transportRow: LinearLayout
+    private lateinit var launchRow: LinearLayout
+    private lateinit var sideRail: LinearLayout
+    private lateinit var landBottom: LinearLayout
+    private var chromeLandscape: Boolean? = null
 
     /** undo snackbar: custom bar with an action (replaces bare toasts for undoable ops) */
     private var snackBar: LinearLayout? = null
@@ -297,6 +328,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     override fun onBackPressed() {
         if (wheel.isOpen()) { wheel.pop(); return }
+        if (fullCanvas) { setFullCanvas(false); return }
         if (sheetTab != null) { setSheet(null); return }
         flushSave()
         store.clearOpen(projectId)
@@ -305,7 +337,10 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
-        stage.post { syncPreviewTarget() }
+        // rotation: the chrome re-lays out, then the canvas is re-fitted; the
+        // camera / decoders / master clock are NOT restarted (configChanges)
+        relayoutChrome(newConfig.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE)
+        stage.post { applyViewportInsets(); syncPreviewTarget() }
         stage.refresh()
     }
 
@@ -408,6 +443,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
         qlp.bottomMargin = UI.dp(this, 118)
         root.addView(qWrap, qlp)
+        quickWrap = qWrap
         quickBar = LinearLayout(this)
         quickBar.orientation = LinearLayout.HORIZONTAL
         quickBar.gravity = Gravity.CENTER_VERTICAL
@@ -418,6 +454,23 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         qWrap.addView(quickBar)
 
         buildSheet(root)
+        buildSideRail(root)
+        relayoutChrome(isLandscape())
+        buildFullCanvasExit(root)
+
+        // ===== the canvas is fitted into whatever the chrome leaves free =====
+        // System bars + display cutout come from WindowInsets; the top bar,
+        // the sheet (dock / contextual controls / open panel) and the quick
+        // bar are measured after every layout pass. StageView then re-runs
+        // its contain-fit, so opening a panel shrinks the canvas instead of
+        // covering it.
+        root.setOnApplyWindowInsetsListener { v, insets ->
+            readSystemInsets(insets)
+            v.post(insetsSync)
+            insets
+        }
+        root.viewTreeObserver.addOnGlobalLayoutListener { applyViewportInsets() }
+        stage.onCanvasLayout = { _, _ -> stage.post { syncPreviewTarget() } }
 
         // ===== nested radial menu overlay (top of everything) =====
         wheel = RadialMenuView(this)
@@ -434,6 +487,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     private fun buildTopBar(root: FrameLayout) {
         val top = LinearLayout(this)
+        topBar = top
         top.orientation = LinearLayout.HORIZONTAL
         top.gravity = Gravity.CENTER_VERTICAL
         top.setPadding(UI.dp(this, 10), UI.dp(this, 8), UI.dp(this, 10), UI.dp(this, 8))
@@ -505,6 +559,12 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         redoB.setOnClickListener { doRedo() }
         top.addView(redoB)
 
+        val full = IconBtn(this)
+        full.layoutParams = IconBtn.sized(this, 40)
+        full.setIcon(R.drawable.ic_fullscreen, UI.FG, "Full canvas: hide all controls")
+        full.setOnClickListener { setFullCanvas(true) }
+        top.addView(full)
+
         val diag = IconBtn(this)
         diag.layoutParams = IconBtn.sized(this, 40)
         diag.setIcon(R.drawable.ic_settings, UI.FG, "Diagnostics")
@@ -536,41 +596,42 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         scroll.addView(panelContent, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         sheet.addView(scroll)
+        panelScroll = scroll
 
-        // one-tap nav (always visible): the 4 frequent jobs with zero ring
-        // dives — Layers, Add, Audio, Export. The radial menu stays as the
-        // power-user shortcut, not the only path.
-        val nav = LinearLayout(this)
-        nav.orientation = LinearLayout.HORIZONTAL
-        nav.setPadding(UI.dp(this, 10), UI.dp(this, 6), UI.dp(this, 10), 0)
-        sheet.addView(nav)
-        fun navBtn(label: String, icon: Int, desc: String, fn: () -> Unit) {
-            val b = UI.btn(this, label, accent = false, small = true)
-            b.setCompoundDrawablesRelativeWithIntrinsicBounds(
-                Ic.get(this, icon, UI.FG), null, null, null)
-            b.compoundDrawablePadding = UI.dp(this, 6)
-            b.contentDescription = desc
-            val lp = LinearLayout.LayoutParams(0, UI.dp(this, 36), 1f)
-            lp.setMargins(UI.dp(this, 3), 0, UI.dp(this, 3), 0)
-            b.layoutParams = lp
-            b.setOnClickListener { fn() }
-            nav.addView(b)
-        }
-        navBtn("Layers", R.drawable.ic_layers, "Open layers list") {
-            if (sheetTab == "sources") setSheet(null) else setSheet("sources")
-        }
-        navBtn("+ Add", R.drawable.ic_add, "Add a source") {
-            openWheelLevel(RadialMenus.add(this), -1f, -1f)
-        }
-        navBtn("Audio", R.drawable.ic_volume, "Open audio mixer") {
-            if (sheetTab == "mixer") setSheet(null) else setSheet("mixer")
-        }
-        navBtn("Export", R.drawable.ic_export, "Open export") {
-            if (sheetTab == "export") setSheet(null) else setSheet("export")
-        }
+        // ===== collapsible source dock (horizontal, non-destructive) =====
+        // Collapsed: [Camera][Video][+ Add]. Expanded: + Image / Text / Screen
+        // and the Layers / Audio / Export shortcuts. It never pushes the
+        // canvas: the stage is re-fitted around whatever height it takes.
+        dockScroll = HorizontalScrollView(this)
+        dockScroll.isHorizontalScrollBarEnabled = false
+        dockScroll.tag = "srcDockScroll"
+        srcDock = LinearLayout(this)
+        srcDock.orientation = LinearLayout.HORIZONTAL
+        srcDock.gravity = Gravity.CENTER_VERTICAL
+        srcDock.setPadding(UI.dp(this, 8), UI.dp(this, 6), UI.dp(this, 8), 0)
+        dockScroll.addView(srcDock, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        sheet.addView(dockScroll, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        rebuildSourceDock()
+
+        // ===== contextual controls: what you can do RIGHT NOW =====
+        ctxScroll = HorizontalScrollView(this)
+        ctxScroll.isHorizontalScrollBarEnabled = false
+        ctxScroll.tag = "ctxScroll"
+        ctxBar = LinearLayout(this)
+        ctxBar.orientation = LinearLayout.HORIZONTAL
+        ctxBar.gravity = Gravity.CENTER_VERTICAL
+        ctxBar.setPadding(UI.dp(this, 8), UI.dp(this, 4), UI.dp(this, 8), 0)
+        ctxScroll.addView(ctxBar, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        sheet.addView(ctxScroll, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        refreshContextBar()
 
         // transport row (always visible)
         val transport = LinearLayout(this)
+        transportRow = transport
         transport.orientation = LinearLayout.HORIZONTAL
         transport.gravity = Gravity.CENTER_VERTICAL
         transport.setPadding(UI.dp(this, 10), UI.dp(this, 8), UI.dp(this, 10), UI.dp(this, 4))
@@ -640,7 +701,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         // ===== the radial launcher replaces the whole tab bar =====
         // One control opens the entire interface as nested rings, so there is
         // no row of Sources / Add / Canvas / Export buttons any more.
-        val launchRow = LinearLayout(this)
+        launchRow = LinearLayout(this)
         launchRow.orientation = LinearLayout.HORIZONTAL
         launchRow.gravity = Gravity.CENTER
         launchRow.setPadding(UI.dp(this, 6), UI.dp(this, 2), UI.dp(this, 6), UI.dp(this, 10))
@@ -706,6 +767,434 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             }.start()
         }
         launchRow.addView(studioBtn)
+    }
+
+    // ================= orientation-aware chrome =================
+
+    private fun isLandscape(): Boolean =
+        resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+
+    private fun railWidthPx(): Int =
+        (resources.displayMetrics.widthPixels * 0.40f).toInt()
+            .coerceIn(UI.dp(this, 220), UI.dp(this, 340))
+
+    private fun panelMaxH(): Int =
+        (resources.displayMetrics.heightPixels * 0.40f).toInt().coerceAtLeast(UI.dp(this, 170))
+
+    private fun buildSideRail(root: FrameLayout) {
+        sideRail = LinearLayout(this)
+        sideRail.orientation = LinearLayout.VERTICAL
+        val g = GradientDrawable()
+        g.orientation = GradientDrawable.Orientation.LEFT_RIGHT
+        g.colors = intArrayOf(Color.argb(225, 10, 12, 17), Color.argb(250, 8, 9, 13))
+        sideRail.background = g
+        sideRail.visibility = View.GONE
+        sideRail.isClickable = true   // swallow taps so they never reach the stage below
+        root.addView(sideRail, FrameLayout.LayoutParams(railWidthPx(),
+            ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END or Gravity.TOP))
+        landBottom = LinearLayout(this)
+        landBottom.orientation = LinearLayout.HORIZONTAL
+        landBottom.gravity = Gravity.CENTER_VERTICAL
+    }
+
+    /**
+     * Re-parent the already-built rows for the orientation. Pure view
+     * re-parenting: no panel is rebuilt, the camera / decoders / clock are
+     * untouched (the activity handles configChanges itself).
+     */
+    private fun relayoutChrome(landscape: Boolean) {
+        if (chromeLandscape == landscape) return
+        if (!this::sideRail.isInitialized || !this::launchRow.isInitialized) return
+        chromeLandscape = landscape
+        val match = ViewGroup.LayoutParams.MATCH_PARENT
+        val wrap = ViewGroup.LayoutParams.WRAP_CONTENT
+        for (v in listOf<View>(panelScroll, dockScroll, ctxScroll, transportRow, launchRow, landBottom)) {
+            (v.parent as? ViewGroup)?.removeView(v)
+        }
+        sheet.removeAllViews(); sideRail.removeAllViews(); landBottom.removeAllViews()
+        if (!landscape) {
+            panelScroll.layoutParams = LinearLayout.LayoutParams(match, panelMaxH())
+            sheet.addView(panelScroll)
+            sheet.addView(dockScroll, LinearLayout.LayoutParams(match, wrap))
+            sheet.addView(ctxScroll, LinearLayout.LayoutParams(match, wrap))
+            sheet.addView(transportRow, LinearLayout.LayoutParams(match, wrap))
+            sheet.addView(launchRow, LinearLayout.LayoutParams(match, wrap))
+            sideRail.visibility = View.GONE
+        } else {
+            sideRail.addView(dockScroll, LinearLayout.LayoutParams(match, wrap))
+            sideRail.addView(ctxScroll, LinearLayout.LayoutParams(match, wrap))
+            panelScroll.layoutParams = LinearLayout.LayoutParams(match, 0, 1f)
+            sideRail.addView(panelScroll)
+            (sideRail.layoutParams as? FrameLayout.LayoutParams)?.let {
+                it.width = railWidthPx(); sideRail.layoutParams = it
+            }
+            sideRail.visibility = if (fullCanvas) View.GONE else View.VISIBLE
+            landBottom.addView(transportRow, LinearLayout.LayoutParams(0, wrap, 1f))
+            landBottom.addView(launchRow, LinearLayout.LayoutParams(wrap, wrap))
+            sheet.addView(landBottom, LinearLayout.LayoutParams(match, wrap))
+        }
+        sheet.post(insetsSync)
+    }
+
+    // ================= source dock + contextual controls + Full Canvas =================
+
+    private fun dockBtn(parent: LinearLayout, icon: Int, label: String, desc: String,
+                        active: Boolean = false, fn: () -> Unit): LinearLayout {
+        val b = LinearLayout(this)
+        b.orientation = LinearLayout.VERTICAL
+        b.gravity = Gravity.CENTER
+        b.isClickable = true
+        b.isFocusable = true
+        b.contentDescription = desc
+        b.setPadding(UI.dp(this, 6), UI.dp(this, 4), UI.dp(this, 6), UI.dp(this, 3))
+        b.background = Ic.pill(this,
+            if (active) Color.argb(70, 255, 90, 44) else Color.argb(40, 255, 255, 255), 14f,
+            if (active) Color.argb(200, 255, 90, 44) else Color.argb(50, 255, 255, 255))
+        val iv = android.widget.ImageView(this)
+        iv.setImageDrawable(Ic.get(this, icon, if (active) UI.ACCENT2 else UI.FG))
+        iv.layoutParams = LinearLayout.LayoutParams(UI.dp(this, 22), UI.dp(this, 22))
+        b.addView(iv)
+        val tv = TextView(this)
+        tv.text = label
+        tv.textSize = 9.5f
+        tv.maxLines = 1
+        tv.setTextColor(if (active) UI.ACCENT2 else UI.FG2)
+        tv.typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        b.addView(tv)
+        // 48dp minimum touch target (accessibility) with 4dp gaps
+        val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(this, 48))
+        lp.setMargins(UI.dp(this, 2), 0, UI.dp(this, 2), 0)
+        b.minimumWidth = UI.dp(this, 56)
+        b.layoutParams = lp
+        b.setOnClickListener { b.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY); fn() }
+        parent.addView(b)
+        return b
+    }
+
+    /** [Camera][Video][+ Add] collapsed; expanded adds Image / Text / Screen + panels. */
+    private fun rebuildSourceDock() {
+        if (!this::srcDock.isInitialized) return
+        srcDock.removeAllViews()
+        val p = proj
+        val hasLive = p?.layers?.any { it.isLive() } == true
+        dockBtn(srcDock, R.drawable.ic_camera, "Camera",
+            if (hasLive) "Select the live camera" else "Add the live camera", active = hasLive) {
+            if (hasLive) select(p!!.layers.first { it.isLive() }.id) else addLiveCamera()
+        }
+        dockBtn(srcDock, R.drawable.ic_video, "Video", "Add a local video") { pickMedia(video = true) }
+        dockBtn(srcDock, if (srcDockExpanded) R.drawable.ic_close else R.drawable.ic_add,
+            if (srcDockExpanded) "Less" else "+ Add",
+            if (srcDockExpanded) "Collapse the source dock" else "More source types",
+            active = srcDockExpanded) {
+            srcDockExpanded = !srcDockExpanded
+            rebuildSourceDock()
+        }
+        if (srcDockExpanded) {
+            dockBtn(srcDock, R.drawable.ic_image, "Image", "Add an image") { pickMedia(video = false) }
+            dockBtn(srcDock, R.drawable.ic_text, "Text", "Add a text overlay") { addText() }
+            dockBtn(srcDock, R.drawable.ic_screen, "Screen", "Record the screen as a source") { startScreenCapture() }
+            val sep = View(this)
+            sep.setBackgroundColor(Color.argb(60, 255, 255, 255))
+            val slp = LinearLayout.LayoutParams(UI.dp(this, 1), UI.dp(this, 30))
+            slp.setMargins(UI.dp(this, 6), 0, UI.dp(this, 6), 0)
+            sep.layoutParams = slp
+            srcDock.addView(sep)
+            val n = p?.layers?.size ?: 0
+            dockBtn(srcDock, R.drawable.ic_layers, if (n > 0) "Layers · $n" else "Layers", "Open the layers list",
+                active = sheetTab == "sources") {
+                if (sheetTab == "sources") setSheet(null) else setSheet("sources")
+            }
+            dockBtn(srcDock, R.drawable.ic_volume, "Audio", "Open the audio mixer", active = sheetTab == "mixer") {
+                if (sheetTab == "mixer") setSheet(null) else setSheet("mixer")
+            }
+            dockBtn(srcDock, R.drawable.ic_export, "Export", "Open export", active = sheetTab == "export") {
+                if (sheetTab == "export") setSheet(null) else setSheet("export")
+            }
+        }
+    }
+
+    /**
+     * Contextual bottom controls.
+     *  - nothing selected: Add source · Camera · Record · Mic · Torch · Full canvas
+     *  - source selected: Move/Resize/Rotate hint · Fit/Fill · Mute · Pause ·
+     *    Hide · Lock · Forward/Backward · More (advanced sheet)
+     */
+    private fun refreshContextBar() {
+        if (!this::ctxBar.isInitialized) return
+        ctxBar.removeAllViews()
+        val p = proj ?: return
+        val l = selectedId?.let { p.layerById(it) }
+        if (l == null) {
+            dockBtn(ctxBar, R.drawable.ic_add, "Add source", "Add a source") {
+                openWheelLevel(RadialMenus.add(this), -1f, -1f)
+            }
+            val live = p.layers.firstOrNull { it.isLive() }
+            dockBtn(ctxBar, R.drawable.ic_camera, "Camera",
+                if (live != null) "Select the live camera" else "Add the live camera", active = live != null) {
+                if (live != null) select(live.id) else addLiveCamera()
+            }
+            dockBtn(ctxBar, if (recording) R.drawable.ic_stop else R.drawable.ic_video,
+                if (recording) "Stop" else "Record",
+                if (recording) "Stop and save the recording" else "Record the composition",
+                active = recording) { recordButtonTap() }
+            val micOk = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED
+            dockBtn(ctxBar, if (micOk) R.drawable.ic_volume else R.drawable.ic_volume_off, "Mic",
+                if (micOk) "Microphone ready for recording" else "Grant microphone permission",
+                active = micOk && recording) {
+                if (!micOk) requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), REQ_RECORD_PERM)
+                else UI.toast(this, "Microphone is mixed into every recording")
+            }
+            val lit = liveCam?.torch == true || liveCam?.bothTorchesOn() == true || screenLight
+            dockBtn(ctxBar, R.drawable.ic_flash, "Torch", "Camera light", active = lit) {
+                if (live != null) openFlashRing(live) else toggleScreenLight()
+            }
+            dockBtn(ctxBar, R.drawable.ic_fullscreen, "Full canvas", "Show only the canvas") { setFullCanvas(true) }
+            return
+        }
+        // ---- a source is selected ----
+        // name pill: selection is never colour-only — the bar says WHAT is selected
+        val pill = LinearLayout(this)
+        pill.orientation = LinearLayout.HORIZONTAL
+        pill.gravity = Gravity.CENTER_VERTICAL
+        pill.setPadding(UI.dp(this, 10), 0, UI.dp(this, 10), 0)
+        pill.background = Ic.pill(this, Color.argb(60, 255, 90, 44), 14f, Color.argb(200, 255, 90, 44))
+        pill.contentDescription = "Selected: ${l.name}. Tap for all settings"
+        pill.isClickable = true
+        pill.setOnClickListener { openAdvancedSheet(l) }
+        val ic = android.widget.ImageView(this)
+        ic.setImageDrawable(Ic.get(this, Ic.typeIcon(l.type), UI.ACCENT2))
+        val iclp = LinearLayout.LayoutParams(UI.dp(this, 16), UI.dp(this, 16))
+        iclp.setMargins(0, 0, UI.dp(this, 6), 0)
+        ic.layoutParams = iclp
+        pill.addView(ic)
+        val nm = TextView(this)
+        nm.text = l.name.ifBlank { l.type.label }
+        nm.setTextColor(Color.WHITE)
+        nm.textSize = 11.5f
+        nm.maxLines = 1
+        nm.maxWidth = UI.dp(this, 96)
+        nm.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        pill.addView(nm)
+        val plp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(this, 40))
+        plp.setMargins(UI.dp(this, 2), 0, UI.dp(this, 6), 0)
+        pill.layoutParams = plp
+        ctxBar.addView(pill)
+
+        if (l.isLive()) {
+            val rec = liveCam?.recording == true
+            dockBtn(ctxBar, if (rec) R.drawable.ic_stop else R.drawable.ic_camera,
+                if (rec) "Stop take" else "Take",
+                if (rec) "Stop the camera take" else "Record a camera take", active = rec) { toggleLiveCameraRecord(l) }
+            dockBtn(ctxBar, R.drawable.ic_switch, "Switch", "Switch between front and back camera") { switchCameraFacing(l) }
+            dockBtn(ctxBar, R.drawable.ic_loop, "Mirror", if (l.mirror) "Mirror off" else "Mirror on", active = l.mirror) { toggleCameraMirror(l) }
+            val lit = liveCam?.torch == true || liveCam?.bothTorchesOn() == true || screenLight
+            dockBtn(ctxBar, R.drawable.ic_flash, "Light", "Camera light", active = lit) { openFlashRing(l) }
+        }
+        dockBtn(ctxBar, R.drawable.ic_drag, "Move", "Centre ${l.name} on the canvas (drag it on the canvas to move freely)") {
+            if (l.locked) { onLockedTap(l); return@dockBtn }
+            ctrl.center(l.id); showUndoSnack("${l.name} centred — drag on the canvas to move")
+        }
+        dockBtn(ctxBar, R.drawable.ic_corner_br, "Resize", "Reset ${l.name} to the default size (drag a corner handle to resize freely)") {
+            if (l.locked) { onLockedTap(l); return@dockBtn }
+            pushUndo()
+            val cx = l.cx; val cy = l.cy
+            if (l.isText()) { l.wN = 0.86f; l.hN = 0.28f }
+            else LayerFit.pip(l, proj!!.aspect.canvasW, proj!!.aspect.canvasH, anchor = "br")
+            l.cx = cx; l.cy = cy; LayerFit.clampInside(l)
+            markDirty(); stage.refresh()
+            showUndoSnack("${l.name} size reset — corner handles resize")
+        }
+        dockBtn(ctxBar, R.drawable.ic_reset, "Rotate", "Reset rotation of ${l.name} (drag the round knob above the frame to rotate)",
+            active = kotlin.math.abs(l.rotDeg) > 0.5f) {
+            if (l.locked) { onLockedTap(l); return@dockBtn }
+            pushUndo(); l.rotDeg = 0f; markDirty(); stage.refresh()
+            showUndoSnack("${l.name} rotation reset — the knob above the frame rotates")
+        }
+        if (!l.isText()) {
+            dockBtn(ctxBar, R.drawable.ic_fit, "Fit", "Fit: show the whole frame", active = l.fit == Layer.FIT_FIT) {
+                if (l.fit != Layer.FIT_FIT) ctrl.setFit(l.id, Layer.FIT_FIT)
+            }
+            dockBtn(ctxBar, R.drawable.ic_fill, "Fill", "Fill: crop to the box", active = l.fit == Layer.FIT_FILL) {
+                if (l.fit != Layer.FIT_FILL) ctrl.setFit(l.id, Layer.FIT_FILL)
+            }
+        }
+        if (l.isClip()) {
+            val m = ctrl.effectiveMuted(l)
+            dockBtn(ctxBar, if (m) R.drawable.ic_volume_off else R.drawable.ic_volume,
+                if (m) "Unmute" else "Mute", if (m) "Unmute ${l.name}" else "Mute ${l.name}", active = m) {
+                ctrl.toggleMuted(l.id)
+            }
+            dockBtn(ctxBar, if (l.playing) R.drawable.ic_pause else R.drawable.ic_play,
+                if (l.playing) "Pause" else "Play", if (l.playing) "Pause ${l.name}" else "Play ${l.name}",
+                active = !l.playing) {
+                engine.toggleLayerPlay(l); markDirty(); refreshAll()
+            }
+        }
+        dockBtn(ctxBar, if (l.visible) R.drawable.ic_eye_off else R.drawable.ic_eye,
+            if (l.visible) "Hide" else "Show", if (l.visible) "Hide ${l.name}" else "Show ${l.name}",
+            active = !l.visible) {
+            ctrl.toggleVisible(l.id); showHideFeedback(l)
+        }
+        dockBtn(ctxBar, if (l.locked) R.drawable.ic_lock else R.drawable.ic_lock_open,
+            if (l.locked) "Unlock" else "Lock", if (l.locked) "Unlock ${l.name}" else "Lock ${l.name}",
+            active = l.locked) {
+            ctrl.toggleLocked(l.id)
+        }
+        dockBtn(ctxBar, R.drawable.ic_up, "Forward", "Bring ${l.name} forward") { ctrl.moveZ(l.id, "up") }
+        dockBtn(ctxBar, R.drawable.ic_down, "Backward", "Send ${l.name} backward") { ctrl.moveZ(l.id, "down") }
+        var wb: LinearLayout? = null
+        wb = dockBtn(ctxBar, R.drawable.ic_wheel, "Wheel", "Radial menu for ${l.name}") {
+            val cur = selectedId?.let { proj!!.layerById(it) } ?: return@dockBtn
+            openWheel(wb ?: ctxBar, cur)
+        }
+        dockBtn(ctxBar, R.drawable.ic_more, "More", "All settings for ${l.name}") { openAdvancedSheet(l) }
+    }
+
+    private fun buildFullCanvasExit(root: FrameLayout) {
+        fullExitBtn = TextView(this)
+        fullExitBtn.text = "✕  EXIT FULL CANVAS"
+        fullExitBtn.contentDescription = "Exit full canvas mode"
+        fullExitBtn.gravity = Gravity.CENTER
+        fullExitBtn.setTextColor(Color.WHITE)
+        fullExitBtn.textSize = 12f
+        fullExitBtn.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        fullExitBtn.setPadding(UI.dp(this, 16), UI.dp(this, 12), UI.dp(this, 16), UI.dp(this, 12))
+        fullExitBtn.minHeight = UI.dp(this, 48)
+        fullExitBtn.background = Ic.pill(this, Color.argb(215, 18, 20, 27), 24f,
+            Color.argb(160, 255, 255, 255))
+        fullExitBtn.visibility = View.GONE
+        fullExitBtn.setOnClickListener { setFullCanvas(false) }
+        val lp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END)
+        lp.topMargin = UI.dp(this, 12)
+        lp.rightMargin = UI.dp(this, 12)
+        lp.marginEnd = UI.dp(this, 12)
+        root.addView(fullExitBtn, lp)
+    }
+
+    /**
+     * Full Canvas mode: every overlay hidden, the composition fitted into the
+     * whole safe area, one clearly labelled exit button. Selection gestures
+     * keep working; the preview / camera / decoders are untouched (pure view
+     * visibility — nothing is restarted).
+     */
+    private fun setFullCanvas(on: Boolean) {
+        if (fullCanvas == on) return
+        fullCanvas = on
+        if (on) setSheet(null)
+        val vis = if (on) View.GONE else View.VISIBLE
+        topBar.visibility = vis
+        sheet.visibility = vis
+        if (this::sideRail.isInitialized) sideRail.visibility = if (on || chromeLandscape != true) View.GONE else View.VISIBLE
+        quickWrap.visibility = if (on) View.GONE else quickWrap.visibility
+        if (!on) refreshQuickBar()
+        fullExitBtn.visibility = if (on) View.VISIBLE else View.GONE
+        fullExitBtn.bringToFront()
+        // immersive system bars: API 30+ controller, legacy flags below (minSdk 26)
+        if (Build.VERSION.SDK_INT >= 30) {
+            val ctl = window.insetsController
+            if (ctl != null) {
+                if (on) {
+                    ctl.systemBarsBehavior = android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    ctl.hide(android.view.WindowInsets.Type.systemBars())
+                } else ctl.show(android.view.WindowInsets.Type.systemBars())
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = if (on)
+                (View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN)
+            else View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+        }
+        // top margin of the exit button must clear the cutout
+        (fullExitBtn.layoutParams as? FrameLayout.LayoutParams)?.let {
+            it.topMargin = UI.dp(this, 12) + (if (on) sysT else 0)
+            fullExitBtn.layoutParams = it
+        }
+        applyViewportInsets()
+        UI.toast(this, if (on) "Full canvas — tap ✕ to return" else "Controls restored")
+    }
+
+    private fun readSystemInsets(insets: android.view.WindowInsets) {
+        if (Build.VERSION.SDK_INT >= 30) {
+            val sys = insets.getInsets(android.view.WindowInsets.Type.systemBars() or
+                android.view.WindowInsets.Type.displayCutout())
+            sysL = sys.left; sysT = sys.top; sysR = sys.right; sysB = sys.bottom
+        } else {
+            @Suppress("DEPRECATION")
+            run {
+                sysL = insets.systemWindowInsetLeft; sysT = insets.systemWindowInsetTop
+                sysR = insets.systemWindowInsetRight; sysB = insets.systemWindowInsetBottom
+            }
+            // API 28/29: the cutout is not part of the system-window insets when
+            // the window draws into it — add it explicitly
+            if (Build.VERSION.SDK_INT >= 28) {
+                val c = insets.displayCutout
+                if (c != null) {
+                    sysL = maxOf(sysL, c.safeInsetLeft); sysT = maxOf(sysT, c.safeInsetTop)
+                    sysR = maxOf(sysR, c.safeInsetRight); sysB = maxOf(sysB, c.safeInsetBottom)
+                }
+            }
+        }
+    }
+
+    /**
+     * Compute the avoid-rect for the stage from the chrome that is actually
+     * visible right now and hand it to StageView, which re-fits the canvas.
+     * Called after every layout pass (cheap: StageView ignores unchanged
+     * values), so opening a panel, expanding the dock, selecting a source or
+     * rotating the phone all keep the whole composition on screen.
+     */
+    private fun applyViewportInsets() {
+        if (!this::stage.isInitialized || !this::sheet.isInitialized) return
+        val padTop: Int
+        val padBottom: Int
+        var padRight = sysR
+        val land = chromeLandscape == true
+        if (fullCanvas) {
+            padTop = sysT
+            padBottom = sysB
+        } else {
+            val top = if (this::topBar.isInitialized && topBar.visibility == View.VISIBLE) topBar.height else 0
+            padTop = sysT + top
+            var bottom = if (sheet.visibility == View.VISIBLE) sheet.height else 0
+            // the floating quick bar sits above the sheet — reserve for it while it is shown
+            if (this::quickWrap.isInitialized && quickWrap.visibility == View.VISIBLE && quickBar.visibility == View.VISIBLE) {
+                val qb = (quickWrap.layoutParams as? FrameLayout.LayoutParams)?.bottomMargin ?: 0
+                bottom = maxOf(bottom, qb + quickWrap.height)
+            }
+            padBottom = maxOf(bottom, sysB)
+            if (land && this::sideRail.isInitialized && sideRail.visibility == View.VISIBLE) {
+                padRight = sysR + railWidthPx()
+                // the rail spans between the top bar and the bottom row
+                (sideRail.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
+                    val wantTop = padTop; val wantBottom = padBottom; val wantRight = sysR
+                    if (lp.topMargin != wantTop || lp.bottomMargin != wantBottom || lp.rightMargin != wantRight ||
+                        lp.width != railWidthPx()) {
+                        lp.topMargin = wantTop; lp.bottomMargin = wantBottom
+                        lp.rightMargin = wantRight; lp.marginEnd = wantRight
+                        lp.width = railWidthPx()
+                        sideRail.layoutParams = lp
+                    }
+                }
+            }
+        }
+        stage.setViewportInsets(sysL, padTop, padRight, padBottom)
+        // keep the top overlays (rec chip, HUD, hidden pill) clear of the cutout
+        for (v in listOfNotNull(
+            if (this::recChip.isInitialized) recChip else null,
+            if (this::statsHud.isInitialized) statsHud else null,
+            if (this::hiddenPill.isInitialized) hiddenPill else null)) {
+            val lp = v.layoutParams as? FrameLayout.LayoutParams ?: continue
+            val want = UI.dp(this, 58) + sysT
+            if (lp.topMargin != want) { lp.topMargin = want; v.layoutParams = lp }
+        }
+        if (this::topBar.isInitialized && topBar.paddingTop != UI.dp(this, 8) + sysT) {
+            topBar.setPadding(UI.dp(this, 10) + sysL, UI.dp(this, 8) + sysT, UI.dp(this, 10) + sysR, UI.dp(this, 8))
+        }
+        if (sheet.paddingBottom != sysB) sheet.setPadding(sysL, 0, sysR, sysB)
     }
 
     // ================= snackbar (message + action, replaces bare toasts) =================
@@ -860,15 +1349,38 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     // ================= sheet (only where a ring is the wrong tool) =================
 
     private fun setSheet(tab: String?) {
+        val was = sheetTab
         sheetTab = tab
-        val sv = sheet.findViewWithTag<ScrollView>("panelScroll")
+        val sv = panelScroll   // lives in the sheet (portrait) or the side rail (landscape)
+        if (was != tab && srcDockExpanded) rebuildSourceDock()
         if (tab == null) {
             sv.visibility = View.GONE
+            sheet.post(insetsSync)
             return
         }
+        if (fullCanvas) setFullCanvas(false)
+        sheet.post(insetsSync)
         // keep the scroll position across toggle rebuilds (mute/solo/fit…)
         val keepY = sv.scrollY
         panelContent.removeAllViews()
+        // every panel is a dismissible overlay: title + ✕ (back also closes it)
+        val head = LinearLayout(this)
+        head.orientation = LinearLayout.HORIZONTAL
+        head.gravity = Gravity.CENTER_VERTICAL
+        head.setPadding(UI.dp(this, 14), UI.dp(this, 6), UI.dp(this, 6), 0)
+        val ht = TextView(this)
+        ht.text = when (tab) { "sources" -> "Layers"; "mixer" -> "Audio mixer"; "export" -> "Export"; else -> tab }
+        ht.setTextColor(UI.FG)
+        ht.textSize = 13f
+        ht.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        ht.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        head.addView(ht)
+        val hx = IconBtn(this)
+        hx.layoutParams = IconBtn.sized(this, 40)
+        hx.setIcon(R.drawable.ic_close, UI.FG, "Close panel")
+        hx.setOnClickListener { setSheet(null) }
+        head.addView(hx)
+        panelContent.addView(head)
         when (tab) {
             "sources" -> buildSourcesPanel()
             "mixer" -> buildMixerPanel()
@@ -1251,6 +1763,13 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     private fun refreshQuickBar() {
         if (!this::quickBar.isInitialized) return
+        if (!USE_QUICK_BAR) {
+            // Superseded by the contextual bar (measured chrome → deterministic
+            // canvas fit). The floating pill overlapped the canvas by design and
+            // duplicated every verb; kept behind a flag for one release.
+            quickBar.visibility = View.GONE
+            return
+        }
         quickBar.removeAllViews()
         val l = selectedId?.let { proj!!.layerById(it) }
         if (l == null) {
@@ -1416,7 +1935,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     private fun openAdvancedSheet(l: Layer) {
         setSheet(null)
         selectedId = l.id
-        refreshQuickBar(); rebuildDock(); stage.refresh()
+        refreshQuickBar(); rebuildDock(); refreshContextBar(); stage.refresh()
         panelContent.removeAllViews()
 
         // header
@@ -1516,10 +2035,13 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
                 })
         }
 
-        section("ARRANGE")
+        section("ARRANGE — z-order (top of the list = front)")
         panelButtonRow(panelContent,
-            "To front" to { ctrl.moveZ(l.id, "front") },
-            "To back" to { ctrl.moveZ(l.id, "back") })
+            "Bring forward" to { ctrl.moveZ(l.id, "up"); openAdvancedSheet(l) },
+            "Send backward" to { ctrl.moveZ(l.id, "down"); openAdvancedSheet(l) })
+        panelButtonRow(panelContent,
+            "To front" to { ctrl.moveZ(l.id, "front"); openAdvancedSheet(l) },
+            "To back" to { ctrl.moveZ(l.id, "back"); openAdvancedSheet(l) })
         panelButtonRow(panelContent,
             "Top-left" to { ctrl.anchor(l.id, "tl") },
             "Top" to { ctrl.anchor(l.id, "tc") },
@@ -1557,8 +2079,9 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         }
         panelContent.addView(del)
 
-        val sv = sheet.findViewWithTag<ScrollView>("panelScroll")
+        val sv = panelScroll   // lives in the sheet (portrait) or the side rail (landscape)
         sv.visibility = View.VISIBLE
+        sheet.post(insetsSync)   // the canvas shrinks around the sheet, it is never covered
         panelContent.alpha = 0f
         panelContent.translationY = UI.dpf(this, 26f)
         panelContent.animate().alpha(1f).translationY(0f)
@@ -1648,7 +2171,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             val show = editorPrefs().getBoolean(PREF_STATS_HUD, true) &&
                 (engine.anyPlaying() || recording)
             if (show) {
-                statsHud.text = engine.stats()
+                val r = recorder
+                statsHud.text = if (recording && r != null) engine.stats() + "\n" + r.stats() else engine.stats()
                 statsHud.visibility = View.VISIBLE
             } else if (statsHud.visibility != View.GONE) {
                 statsHud.visibility = View.GONE
@@ -1704,7 +2228,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     override fun selectedId(): String? = selectedId
     override fun select(id: String?) {
         selectedId = id
-        refreshQuickBar(); rebuildDock(); stage.refresh()
+        refreshQuickBar(); rebuildDock(); refreshContextBar(); stage.refresh()
     }
     override fun bitmapOf(l: Layer): Bitmap? = engine.frameOf(l)
     override fun textOf(l: Layer): String = l.text
@@ -1782,6 +2306,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     private fun refreshAll() {
         refreshQuickBar()
         rebuildDock()
+        rebuildSourceDock()
+        refreshContextBar()
         updateEmptyState()
         updateName()
         updateRecordButton()
@@ -2062,14 +2588,20 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         p.layers.add(0, l)
     }
 
+    /**
+     * PiP placement that never stacks a new source exactly on top of the
+     * previous one: try the corners bottom-right → bottom-left → top-right →
+     * top-left and take the first one whose box does not overlap an existing
+     * PiP; if all four are taken, cascade from the last-added PiP by 6 %.
+     */
     private fun placePip(l: Layer, p: Project) {
         if (l.type == LayerType.TEXT) {
             l.wN = 0.86f; l.hN = 0.28f
             l.cx = 0.5f; l.cy = 0.5f
-        } else {
-            LayerFit.pip(l, p.aspect.canvasW, p.aspect.canvasH, anchor = "br")
-            l.fit = Layer.FIT_FIT
+            return
         }
+        l.fit = Layer.FIT_FIT
+        LayerFit.placeNewPip(l, p.layers, p.aspect.canvasW, p.aspect.canvasH)
     }
 
     private fun addText() {
@@ -2244,6 +2776,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
      */
     private fun updateRecordButton() {
         if (!this::recordBtn.isInitialized) return
+        // the contextual bar mirrors the record state (Record / Stop verb)
+        if (selectedId == null) refreshContextBar()
         val p = proj ?: return
         val hasLive = p.layers.any { it.isLive() }
         val hasClip = p.layers.any { it.isClip() }
@@ -2325,28 +2859,44 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             return
         }
 
-        // every clip's audio, honouring mute + solo exactly like the mixer
+        // the camera-take recorder (MediaRecorder) owns the mic while it runs —
+        // two AudioRecord clients on one mic is how the audio "stops after a
+        // few seconds" on many devices. One recorder at a time.
+        if (liveCam?.recording == true) {
+            UI.toast(this, "Stop the camera take first — it is using the microphone")
+            return
+        }
+
+        // every clip's audio; mute/solo/volume/pause are followed LIVE by the
+        // mixer (via layerId), so decode every clip that has a file
         val audio = ArrayList<ClipAudio>()
         for (l in p.layers) {
             if (!l.isClip() || l.relPath.isNullOrBlank()) continue
-            if (ctrl.effectiveMuted(l)) continue
             val f = File(store.projectDir(projectId), l.relPath!!)
-            if (f.exists()) audio.add(ClipAudio(f.absolutePath, l.volume, l.loop, l.durMs))
+            if (f.exists()) audio.add(ClipAudio(f.absolutePath, l.volume, l.loop, l.durMs,
+                layerId = l.id, speed = l.speed))
         }
         val micEnabled = true
 
         // decode clip audio off the UI thread BEFORE playback starts, so the
         // recorded audio and video stay aligned from the very first frame
-        showProgress("Preparing audio", "Mixing the clip sound and microphone…",
-            determinate = false)
+        showProgress("Preparing audio", "Decoding the clip sound…", determinate = false)
         Thread {
             val decoded = ArrayList<DecodedClip>()
+            val failed = ArrayList<String>()
             for (a in audio) {
-                try { AudioDecode.toPcmMono(a.path)?.let { decoded.add(DecodedClip(a, it.data)) } }
-                catch (_: Exception) { }
+                try {
+                    val pcm = AudioDecode.toPcmMono(a.path)
+                    if (pcm != null && pcm.data.isNotEmpty()) decoded.add(DecodedClip(a, pcm.data))
+                    else failed.add(File(a.path).name)
+                } catch (e: Throwable) {
+                    failed.add(File(a.path).name)
+                }
             }
             runOnUiThread {
                 dismissProgress()
+                if (failed.isNotEmpty())
+                    showSnack("No audio track decoded for ${failed.joinToString()} — recording without it")
                 beginCompositeRecording(decoded, micEnabled)
             }
         }.start()
@@ -2355,20 +2905,29 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     private fun beginCompositeRecording(decoded: List<DecodedClip>, micEnabled: Boolean) {
         if (recording) return
         val p = proj!!
-        // start every source from the top, in sync
+        val (w, h) = Exporter.chooseSize(p.aspect.canvasW, p.aspect.canvasH, 720)
+        val tmp = File(cacheDir, "rec_${System.currentTimeMillis()}.mp4")
+        val rec = CompositionRecorder({ this.proj!! }, { l -> recordFrameOf(l) }, { engine.master() },
+            { l -> engine.mediaTimeOf(l) })
+        // Preview monitor off BEFORE the mic opens: the recorder mixes the clip
+        // PCM itself; the speaker copy would be re-captured by the microphone.
+        engine.monitorMuted = true
+        val ok = rec.start(tmp, w, h, 30, Exporter.Codec.H264, decoded, micEnabled) { err ->
+            runOnUiThread { showSnack("Recording audio: $err") }
+        }
+        if (!ok) {
+            engine.monitorMuted = false
+            UI.toast(this, "Could not start recording")
+            return
+        }
+        recorder = rec
+        recording = true
+        // start every source from the top, in sync — and tell the recorder the
+        // exact instant the composition clock started so clip audio joins at 0:00
         engine.seekTo(0L)
         engine.playAll()
         engine.startSnapshots()
-
-        val (w, h) = Exporter.chooseSize(p.aspect.canvasW, p.aspect.canvasH, 720)
-        val tmp = File(cacheDir, "rec_${System.currentTimeMillis()}.mp4")
-        val rec = CompositionRecorder({ this.proj!! }, { l -> recordFrameOf(l) }, { engine.master() })
-        val ok = rec.start(tmp, w, h, 30, Exporter.Codec.H264, decoded, micEnabled) { err ->
-            runOnUiThread { UI.toast(this, "Record error: $err") }
-        }
-        if (!ok) { UI.toast(this, "Could not start recording"); return }
-        recorder = rec
-        recording = true
+        rec.markCompositionStart()
         updateRecordButton()
         setSheet(null)
         recordHandler.removeCallbacks(recordTick)
@@ -2386,17 +2945,31 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         val rec = recorder
         recorder = null
         updateRecordButton()
-        rec?.finish { f ->
+        if (showUi) showProgress("Finishing recording", "Draining audio and video…", determinate = false)
+        rec?.finish { res ->
             runOnUiThread {
+                dismissProgress()
+                engine.monitorMuted = false
                 recordImageCache.clear()
+                val f = res.file
                 if (f != null && f.exists() && f.length() > 0) {
+                    lastRecordingNote = res.message
+                    android.util.Log.i("AhmedRecorder", "take ok: ${res.stats}")
                     saveRecordingToPublic(f, showUi)
                 } else if (showUi) {
-                    UI.toast(this, "Recording failed or was too short")
+                    AlertDialog.Builder(this)
+                        .setTitle("Recording failed")
+                        .setMessage((res.message ?: "The take was too short or could not be written.") +
+                            "\n\n" + res.stats)
+                        .setPositiveButton("OK", null)
+                        .show()
                 }
             }
         }
     }
+
+    /** audio warnings from the last take (shown in the saved dialog) */
+    private var lastRecordingNote: String? = null
 
     /** Copy the finished take somewhere the phone can really see, then report it. */
     private fun saveRecordingToPublic(src: File, showUi: Boolean) {
@@ -2440,9 +3013,10 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
                     "Public folders were unavailable, so it was saved inside the app folder:\n${saved.location}"
                 // playability note for the less-compatible codecs (the classic
                 // "it exported fine but won't play in my other app" report)
-                val compatNote = if (codec != null && codec != Exporter.Codec.H264)
+                val compatNote = (if (codec != null && codec != Exporter.Codec.H264)
                     "\n\nNote: ${codec.label} won't play in some apps — re-export as H.264 if needed."
-                else ""
+                else "") + (lastRecordingNote?.let { "\n\nAudio: $it" } ?: "")
+                lastRecordingNote = null
                 AlertDialog.Builder(this)
                     .setTitle(title)
                     .setMessage("$where\n\n${UI.niceBytes(saved.bytes)} · ${codec?.label ?: "H.264 / AVC"}$compatNote")
@@ -2529,8 +3103,13 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
                 if (cw > 0 && chh > 0 && (l.srcW != cw || l.srcH != chh)) {
                     l.srcW = cw; l.srcH = chh
                     if (!LayerFit.isFullBleed(l)) {
+                        // re-derive the box aspect from the real feed but keep
+                        // the user's position / rotation (no jump to a corner)
+                        val cx = l.cx; val cy = l.cy; val rot = l.rotDeg
                         LayerFit.pip(l, proj!!.aspect.canvasW, proj!!.aspect.canvasH,
                             anchor = "br")
+                        l.cx = cx; l.cy = cy; l.rotDeg = rot
+                        LayerFit.clampInside(l)
                     }
                 }
                 engine.setFrame(l, bmp)
@@ -2583,6 +3162,12 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     private fun toggleLiveCameraRecord(l: Layer) {
         val cam = liveCam
         if (cam == null) { UI.toast(this, "The live camera is not running"); return }
+        if (recording && !cam.recording) {
+            // the composite recorder owns the microphone; a second MediaRecorder
+            // on the same mic would silence one of them mid-take
+            UI.toast(this, "Stop the composite recording first — it is using the microphone")
+            return
+        }
         if (cam.recording) {
             cam.stopRecording { f ->
                 runOnUiThread {
@@ -2687,6 +3272,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     override fun undo() { doUndo() }
     override fun redo() { doRedo() }
 
+    override fun enterFullCanvas() { setFullCanvas(true) }
     override fun openDockPanel() { setSheet("sources") }
     override fun openMixerPanel() { setSheet("mixer") }
     override fun openExportPanel() { setSheet("export") }

@@ -309,6 +309,52 @@ object LayerFit {
         anchorTo(l, anchor, margin)
     }
 
+    /**
+     * Placement for a NEW PiP that never lands exactly on top of an existing
+     * one: bottom-right → bottom-left → top-right → top-left, first corner whose
+     * box does not overlap another (non-background, visible) layer wins; when
+     * all four are taken it cascades 6 % up-left from the most recent layer.
+     * Deterministic — same layer list, same result.
+     */
+    fun placeNewPip(l: Layer, existing: List<Layer>, canvasW: Int, canvasH: Int) {
+        val others = existing.filter { it.id != l.id && it.visible && !isFullBleed(it) }
+        fun overlaps(a: Layer, b: Layer): Boolean =
+            kotlin.math.abs(a.cx - b.cx) < (a.wN + b.wN) / 2f * 0.9f &&
+            kotlin.math.abs(a.cy - b.cy) < (a.hN + b.hN) / 2f * 0.9f
+        for (corner in arrayOf("br", "bl", "tr", "tl")) {
+            pip(l, canvasW, canvasH, anchor = corner)
+            if (others.none { overlaps(it, l) }) return
+        }
+        pip(l, canvasW, canvasH, anchor = "br")
+        val last = others.lastOrNull() ?: return
+        l.cx = last.cx - 0.06f
+        l.cy = last.cy - 0.06f
+        clampInside(l)
+    }
+
+    /**
+     * Topmost visible layer under a canvas point (canvas px), rotation-aware.
+     * Deterministic: the LAST entry of the list is the topmost (z-order is the
+     * list order, exactly what the compositor draws), hidden / fully
+     * transparent layers are skipped, and the point is tested in each layer's
+     * own rotated frame so a rotated source is hit where it is drawn.
+     */
+    fun hitTest(layers: List<Layer>, x: Float, y: Float, canvasW: Int, canvasH: Int): Layer? {
+        if (x < 0f || y < 0f || x > canvasW || y > canvasH) return null
+        for (i in layers.indices.reversed()) {
+            val l = layers[i]
+            if (!l.visible || l.opacity <= 0.01f) continue
+            val cx = l.cx * canvasW; val cy = l.cy * canvasH
+            val hw = l.wN * canvasW / 2f; val hh = l.hN * canvasH / 2f
+            val ang = Math.toRadians((-l.rotDeg).toDouble())
+            val dx = x - cx; val dy = y - cy
+            val px = (dx * Math.cos(ang) - dy * Math.sin(ang)).toFloat()
+            val py = (dx * Math.sin(ang) + dy * Math.cos(ang)).toFloat()
+            if (kotlin.math.abs(px) <= hw && kotlin.math.abs(py) <= hh) return l
+        }
+        return null
+    }
+
     /** Corner / edge anchors with a normalized margin, clamped inside. */
     fun anchorTo(l: Layer, anchor: String, margin: Float = 0.035f) {
         val mx = margin; val my = margin

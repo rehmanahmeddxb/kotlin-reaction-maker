@@ -12,6 +12,7 @@ import com.rehman.ahmedreactionstudio.core.Compositor
 import com.rehman.ahmedreactionstudio.core.Layer
 import com.rehman.ahmedreactionstudio.core.LayerFit
 import com.rehman.ahmedreactionstudio.core.Project
+import com.rehman.ahmedreactionstudio.core.ViewportFit
 import com.rehman.ahmedreactionstudio.util.UI
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -26,10 +27,15 @@ import kotlin.math.sin
  * Compositor used by the exporter and handles the PiP gestures
  * (select / move / 8-handle resize / rotate / pinch / snap).
  *
- * The view fills the whole screen and the CANVAS is contain-fitted inside it,
- * so the letterbox area is stage furniture rather than a mysterious strip of a
- * second colour: the surround is drawn dark with a 1px frame around the exact
- * area that will be exported.
+ * The view fills the whole screen and the CANVAS is contain-fitted inside the
+ * part of it that no chrome covers (see [setViewportInsets]): the top bar,
+ * the bottom dock / sheet / contextual controls and the system bars + display
+ * cutout are subtracted first, then `scale = min(availW / canvasW,
+ * availH / canvasH)` and the canvas is centred in what is left. Opening a
+ * panel therefore shrinks the canvas a little instead of hiding a strip of
+ * it — the whole composition is always visible, in portrait and landscape,
+ * for 16:9, 9:16 and 1:1 alike. The letterbox surround is stage furniture:
+ * drawn dark with a 1px frame around the exact area that will be exported.
  *
  * All gesture math happens in canvas-local pixels and normalized units
  * (0..1 of the canvas), never in density pixels — mixing the two is what made
@@ -80,6 +86,36 @@ class StageView @JvmOverloads constructor(
     val canvasW: Int get() { layoutCanvas(); return cw }
     val canvasH: Int get() { layoutCanvas(); return ch }
 
+    /** the canvas rectangle in this view's pixels (read-only copy) */
+    fun canvasBounds(): RectF = RectF(canvasRect)
+
+    /**
+     * Space at each edge of this view that chrome covers (system bars, cutout,
+     * top bar, bottom controls) — the canvas is fitted inside the remainder.
+     * A small breathing margin is added on top so the selection handles and
+     * the label pill of an edge-hugging layer stay visible.
+     */
+    private var insetL = 0
+    private var insetT = 0
+    private var insetR = 0
+    private var insetB = 0
+    private var lastFitW = 0f
+    private var lastFitH = 0f
+    /** the host is told whenever the fitted canvas size changes (decode target, HUD) */
+    var onCanvasLayout: ((Int, Int) -> Unit)? = null
+
+    fun setViewportInsets(left: Int, top: Int, right: Int, bottom: Int) {
+        val l = left.coerceAtLeast(0); val t = top.coerceAtLeast(0)
+        val r = right.coerceAtLeast(0); val b = bottom.coerceAtLeast(0)
+        if (l == insetL && t == insetT && r == insetR && b == insetB) return
+        insetL = l; insetT = t; insetR = r; insetB = b
+        layoutCanvas()
+        invalidate()
+    }
+
+    /** current avoid-insets (l, t, r, b) in view pixels */
+    fun viewportInsets(): IntArray = intArrayOf(insetL, insetT, insetR, insetB)
+
     private val ctxC = Compositor.Ctx()
     private val chrome = Paint(Paint.ANTI_ALIAS_FLAG)
     private val chromeFill = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -122,21 +158,36 @@ class StageView @JvmOverloads constructor(
         layoutCanvas()
     }
 
-    /** contain-fit the project aspect inside this view, centred */
+    /**
+     * Contain-fit the project aspect inside the unobstructed part of this
+     * view, centred there. Pure function of (view size, insets, aspect):
+     *
+     *   avail = view − insets − breathing margin
+     *   scale = min(avail.w / canvasW, avail.h / canvasH)
+     *   canvas = (canvasW·scale, canvasH·scale) centred in avail
+     *
+     * If the insets ever leave less than a postage stamp (a tiny landscape
+     * phone with every panel open) the fit falls back to the whole view rather
+     * than collapsing to zero — the chrome then overlaps, but the picture
+     * never disappears.
+     */
     private fun layoutCanvas() {
         val p = host?.project ?: return
         val vw = width.toFloat()
         val vh = height.toFloat()
         if (vw <= 1f || vh <= 1f) return
-        val ar = p.aspect.canvasW.toFloat() / p.aspect.canvasH
-        var w = vw
-        var h = w / ar
-        if (h > vh) { h = vh; w = h * ar }
-        val l = (vw - w) / 2f
-        val t = (vh - h) / 2f
-        canvasRect.set(l, t, l + w, t + h)
-        cw = w.roundToInt().coerceAtLeast(1)
-        ch = h.roundToInt().coerceAtLeast(1)
+        val box = ViewportFit.contain(
+            vw, vh, insetL, insetT, insetR, insetB,
+            pad = UI.dpf(context, 6f),
+            srcW = p.aspect.canvasW, srcH = p.aspect.canvasH,
+            minPx = UI.dpf(context, 96f))
+        canvasRect.set(box.left, box.top, box.right, box.bottom)
+        cw = box.width.roundToInt().coerceAtLeast(1)
+        ch = box.height.roundToInt().coerceAtLeast(1)
+        if (box.width != lastFitW || box.height != lastFitH) {
+            lastFitW = box.width; lastFitH = box.height
+            onCanvasLayout?.invoke(cw, ch)
+        }
     }
 
     fun refresh() { invalidate() }
@@ -165,6 +216,8 @@ class StageView @JvmOverloads constructor(
         canvas.drawRect(canvasRect, framePaint)
         val selId = hp.selectedId() ?: return
         val l = p.layerById(selId) ?: return
+        // a hidden source is not on the canvas, so it has no frame either
+        if (!l.visible) return
         canvas.save()
         canvas.translate(canvasRect.left, canvasRect.top)
         drawChrome(canvas, l)
@@ -179,62 +232,113 @@ class StageView @JvmOverloads constructor(
         return tmpRect
     }
 
+    /**
+     * Selection frame. One accent colour for every source type (UI.ACCENT),
+     * drawn in the layer's own rotated frame so it follows position, size,
+     * scale and rotation exactly:
+     *
+     *  - a 1dp dark contrast line under a crisp 2.5dp accent stroke (visible
+     *    on a white canvas AND on a dark one — selection is never colour-only:
+     *    it is also the handles and the label pill);
+     *  - four corner handles + four edge handles (filled accent, white rim)
+     *    and the rotation knob above the top edge;
+     *  - LOCKED: neutral grey, dashed, no handles (nothing can be dragged),
+     *    padlock in the label;
+     *  - hidden layers are never selected-drawn (see onDraw).
+     */
     private fun drawChrome(canvas: Canvas, l: Layer) {
         val r = RectF(rectOf(l))
-        val selAccent = if (l.locked) UI.FG2 else UI.ACCENT
-        // outer glow for visibility on both dark and light canvas backgrounds
-        chrome.color = Color.argb(60, Color.red(selAccent), Color.green(selAccent), Color.blue(selAccent))
-        chrome.style = Paint.Style.STROKE
-        chrome.strokeWidth = UI.dpf(context, if (l.locked) 6f else 7f)
+        val locked = l.locked
+        val accent = if (locked) UI.FG2 else UI.ACCENT
         canvas.save()
         canvas.rotate(l.rotDeg, r.centerX(), r.centerY())
+
+        // 1. contrast underlay so the frame reads on light backgrounds
+        chrome.style = Paint.Style.STROKE
+        chrome.pathEffect = null
+        chrome.color = Color.argb(150, 0, 0, 0)
+        chrome.strokeWidth = UI.dpf(context, if (locked) 3f else 4.5f)
         canvas.drawRect(r, chrome)
-        chrome.color = selAccent
-        chrome.strokeWidth = UI.dpf(context, if (l.locked) 1f else 2f)
+        // 2. the accent frame itself
+        chrome.color = accent
+        chrome.strokeWidth = UI.dpf(context, if (locked) 1.5f else 2.5f)
+        if (locked) chrome.pathEffect = android.graphics.DashPathEffect(
+            floatArrayOf(UI.dpf(context, 6f), UI.dpf(context, 4f)), 0f)
         canvas.drawRect(r, chrome)
-        val h = UI.dpf(context, 9f)
-        // handles with white border so they pop on any background
-        val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = UI.dpf(context, 1.2f) }
-        chromeFill.color = if (l.locked) UI.BG3 else selAccent
-        for (i in 0..2) {
-            for (j in 0..2) {
-                if (i == 1 && j == 1) continue
-                val ex = if (j == 0) r.left else if (j == 2) r.right else r.centerX()
-                val ey = if (i == 0) r.top else if (i == 2) r.bottom else r.centerY()
-                canvas.drawRect(ex - h, ey - h, ex + h, ey + h, chromeFill)
-                canvas.drawRect(ex - h, ey - h, ex + h, ey + h, borderPaint)
-            }
+        chrome.pathEffect = null
+
+        val h = UI.dpf(context, 5.5f)
+        val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = UI.dpf(context, 1.2f)
         }
-        // rotation handle above top-center
-        val topY = r.top - UI.dpf(context, 18f)
-        val cx = r.centerX()
-        chrome.strokeWidth = UI.dpf(context, 1.5f)
-        chrome.color = UI.ACCENT2
-        canvas.drawLine(cx, r.top, cx, topY, chrome)
-        chromeFill.color = UI.ACCENT2
-        canvas.drawCircle(cx, topY, h * 0.9f, chromeFill)
-        borderPaint.let { canvas.drawCircle(cx, topY, h * 0.9f, it) }
-        chromeFill.color = Color.WHITE
-        canvas.drawCircle(cx, topY, h * 0.45f, chromeFill)
-        // selection label pill (type + name) above the chrome so you always know what is selected
-        val label = (if (l.isLive()) "LIVE  " else "") + l.name.ifBlank { l.type.label }
+        val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(120, 0, 0, 0) }
+        if (!locked) {
+            // 3. handles: corners are squares, edges are small pills
+            chromeFill.color = accent
+            val rr = UI.dpf(context, 1.5f)
+            for (i in 0..2) {
+                for (j in 0..2) {
+                    if (i == 1 && j == 1) continue
+                    val ex = if (j == 0) r.left else if (j == 2) r.right else r.centerX()
+                    val ey = if (i == 0) r.top else if (i == 2) r.bottom else r.centerY()
+                    val corner = (i != 1) && (j != 1)
+                    val hw = if (corner || i == 1) h else h * 1.6f
+                    val hh = if (corner || j == 1) h else h * 1.6f
+                    val ew = if (corner) hw else if (i == 1) h * 0.6f else hw
+                    val eh = if (corner) hh else if (j == 1) h * 0.6f else hh
+                    tmpRect.set(ex - ew, ey - eh, ex + ew, ey + eh)
+                    tmpRect.offset(0f, UI.dpf(context, 1f))
+                    canvas.drawRoundRect(tmpRect, rr, rr, shadowPaint)
+                    tmpRect.offset(0f, -UI.dpf(context, 1f))
+                    canvas.drawRoundRect(tmpRect, rr, rr, chromeFill)
+                    canvas.drawRoundRect(tmpRect, rr, rr, borderPaint)
+                }
+            }
+            // 4. rotation handle above top-centre
+            val topY = r.top - UI.dpf(context, 18f)
+            val cx = r.centerX()
+            chrome.strokeWidth = UI.dpf(context, 1.5f)
+            chrome.color = accent
+            canvas.drawLine(cx, r.top, cx, topY, chrome)
+            chromeFill.color = accent
+            canvas.drawCircle(cx, topY + UI.dpf(context, 1f), h * 1.35f, shadowPaint)
+            canvas.drawCircle(cx, topY, h * 1.35f, chromeFill)
+            canvas.drawCircle(cx, topY, h * 1.35f, borderPaint)
+            chromeFill.color = Color.WHITE
+            canvas.drawCircle(cx, topY, h * 0.55f, chromeFill)
+        }
+
+        // 5. label pill (type + name + state) above the frame: selection is
+        //    identified by text as well, never by the colour alone
+        val state = when {
+            locked -> "  🔒 LOCKED"
+            else -> ""
+        }
+        val label = (if (l.isLive()) "LIVE  " else "") + l.name.ifBlank { l.type.label } + state
         val padH = UI.dpf(context, 8f)
         val padV = UI.dpf(context, 3f)
-        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = UI.dpf(context, 10f); typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD) }
-        val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(210, 18, 20, 26) }
+        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE; textSize = UI.dpf(context, 10f)
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+        }
+        val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(215, 18, 20, 26) }
+        val edgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = accent; style = Paint.Style.STROKE; strokeWidth = UI.dpf(context, 1f)
+        }
         val tw = textPaint.measureText(label)
         val th = textPaint.textSize
         val bw = tw + padH * 2
         val bh = th + padV * 2 + UI.dpf(context, 2f)
+        val cx = r.centerX()
         val bx = cx - bw / 2
-        val by = topY - h * 1.8f - bh
-        val rr = UI.dpf(context, 10f)
-        canvas.drawRoundRect(bx, by, bx + bw, by + bh, rr, rr, bgPaint)
+        val knobTop = if (locked) r.top - UI.dpf(context, 6f) else r.top - UI.dpf(context, 18f) - h * 1.8f
+        var by = knobTop - bh
+        // keep the pill inside the canvas when the layer touches the top edge
+        if (by < UI.dpf(context, 2f)) by = r.top + UI.dpf(context, 6f)
+        val rr2 = UI.dpf(context, 10f)
+        canvas.drawRoundRect(bx, by, bx + bw, by + bh, rr2, rr2, bgPaint)
+        canvas.drawRoundRect(bx, by, bx + bw, by + bh, rr2, rr2, edgePaint)
         canvas.drawText(label, bx + padH, by + bh - padV - UI.dpf(context, 1f), textPaint)
-        if (l.locked) {
-            val lockPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = UI.ACCENT2; textSize = UI.dpf(context, 9f) }
-            canvas.drawText("🔒", bx + bw + UI.dpf(context, 4f), by + bh - padV, lockPaint)
-        }
         canvas.restore()
     }
 
@@ -288,18 +392,10 @@ class StageView @JvmOverloads constructor(
     }
 
     /** returns top-most layer whose box contains the point (canvas-local) */
+    /** topmost-first, rotation-aware, hidden skipped — see LayerFit.hitTest */
     private fun layerAt(x: Float, y: Float): Layer? {
         val hp = host ?: return null
-        val p = hp.project
-        if (x < 0f || y < 0f || x > cw || y > ch) return null
-        for (i in p.layers.indices.reversed()) {
-            val l = p.layers[i]
-            if (!l.visible || l.opacity <= 0.01f) continue
-            val r = rectOf(l)
-            val (px, py) = toLayerLocal(x, y, l, r)
-            if (abs(px) <= r.width() / 2f && abs(py) <= r.height() / 2f) return l
-        }
-        return null
+        return LayerFit.hitTest(hp.project.layers, x, y, cw, ch)
     }
 
     // ---------- gestures ----------
