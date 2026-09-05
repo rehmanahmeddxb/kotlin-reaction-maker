@@ -56,6 +56,7 @@ for rel in (
     "export/Exporter.kt",
     "export/AudioDecode.kt",
     "export/AudioMixer.kt",
+    "export/AudioMath.kt",
     "editor/PreviewEngine.kt",
     "editor/LiveCamera.kt",
     "core/gpu/GlUtil.kt",
@@ -146,8 +147,16 @@ must_contain("export/Exporter.kt", "ByteOrder.nativeOrder()", "exporter PCM byte
 # Recorder: dedicated audio thread + serialized muxer (MediaMuxer is not thread-safe).
 must_contain("export/CompositionRecorder.kt", "compo-rec-audio", "dedicated audio thread")
 must_contain("export/CompositionRecorder.kt", "muxerLock", "muxer synchronization")
-must_contain("export/CompositionRecorder.kt", "ClipAudioSource", "mixer clip sources")
-must_contain("export/Exporter.kt", "ClipAudioSource", "exporter mixer clip sources")
+# Phase 2: recorder + exporter share ONE clip cursor (AudioMath.ClipCursor —
+# composition-time -> media-time with loop / pause / speed, never past durMs)
+# and ONE limiter, instead of each carrying its own mixing arithmetic.
+must_contain("export/CompositionRecorder.kt", "ClipCursor", "shared clip cursor (recorder)")
+must_contain("export/Exporter.kt", "ClipCursor", "shared clip cursor (exporter)")
+must_contain("export/AudioMath.kt", "class ClipCursor", "clip cursor definition")
+must_contain("export/AudioMath.kt", "class Limiter", "clip-safe limiter")
+must_contain("export/AudioMath.kt", "class Resampler", "48k->44.1k mic resampler")
+must_contain("export/CompositionRecorder.kt", "samplesEncoded * 1_000_000L / AUDIO_RATE", "audio PTS from samples encoded")
+must_not_match("export/CompositionRecorder.kt", r"Thread\.sleep", "no sleep-based audio sync in the recorder")
 # Clip duration truth is decoded frames, not retriever-ms estimates.
 must_not_match("export/Exporter.kt", r"durMs\s*\*\s*44100", "no ms-derived clip duration in exporter")
 must_not_match("export/CompositionRecorder.kt", r"durMs\s*\*\s*AUDIO_RATE", "no ms-derived clip duration in recorder")

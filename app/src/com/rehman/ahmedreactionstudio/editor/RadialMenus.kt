@@ -63,6 +63,8 @@ object RadialMenus {
         fun renameProject()
         fun saveNow()
         fun openDiagnostics()
+        /** Full Canvas mode: hide every overlay, fit the canvas into the safe area */
+        fun enterFullCanvas()
         fun closeProject()
         fun editText(l: Layer)
         fun cycleTextColor(l: Layer)
@@ -286,6 +288,8 @@ object RadialMenus {
     ) {
         val l = h.project.layerById(id)
         if (l == null) emptyList() else listOf(
+            item(R.drawable.ic_up, "Bring forward", keepOpen = true) { h.ctrl.moveZ(l.id, "up") },
+            item(R.drawable.ic_down, "Send backward", keepOpen = true) { h.ctrl.moveZ(l.id, "down") },
             item(R.drawable.ic_up, "To front", keepOpen = true) { h.ctrl.moveZ(l.id, "front") },
             item(R.drawable.ic_down, "To back", keepOpen = true) { h.ctrl.moveZ(l.id, "back") },
             item(R.drawable.ic_reset, "Centre + unrotate", keepOpen = true) { h.ctrl.resetGeometry(l.id) },
@@ -334,6 +338,7 @@ object RadialMenus {
                 h.setAspect(Aspect.R11)
             },
             folder(R.drawable.ic_palette, "Background") { background(h) },
+            item(R.drawable.ic_fullscreen, "Full canvas") { h.enterFullCanvas() },
             item(R.drawable.ic_fit, "Fit all sources", keepOpen = true) { h.fitAllSources() },
             item(R.drawable.ic_fill, "Selection as background", keepOpen = true) {
                 val s = h.selected()

@@ -264,10 +264,7 @@ object Exporter {
                 }
 
                 // ---- audio preparation (offline mix of clip audio, respecting mute/solo/loop) ----
-                // STEP 3: clips mix through the shared AudioMixer (one timeline,
-                // per-source ENDED/MUTED states). A clip past its end contributes
-                // silence; it never ends the export's audio.
-                val audioClips = ArrayList<ClipAudioSource>()
+                val audioClips = ArrayList<ClipState>()
                 var audioEnabled = false
                 // effective muted respects solo
                 val anySolo = p.layers.any { it.solo }
@@ -281,24 +278,24 @@ object Exporter {
                     try {
                         val pcm = AudioDecode.toPcmMono(f.absolutePath) ?: continue
                         if (pcm.data.isEmpty()) continue
-                        audioClips.add(ClipAudioSource(pcm.data, l.volume, l.loop))
+                        // audio follows the SAME playback state the video path uses below:
+                        // a paused source is silent, speed scales the read position
+                        audioClips.add(ClipState(pcm.data, l.volume, l.loop, l.durMs,
+                            l.playing, l.speed))
                     } catch (_: Exception) { }
                 }
-                val audioMixer = AudioMixer(audioClips)
                 audioEnabled = audioClips.isNotEmpty() && !opts.codec.webm // WebM muxer audio support varies; keep video-only for WebM for now
                 var audioSamplesDone = 0L
-                val audioRate = AudioConfig.SAMPLE_RATE
-                val audioChunk = AudioConfig.CHUNK_FRAMES
+                val audioRate = 44100
+                val audioChunk = 1024
+                val mixer = Mixer(audioChunk)
                 val totalAudioSamples = if (audioEnabled) durationMs * audioRate / 1000L else 0L
                 if (audioEnabled) {
                     try {
-                        val af = MediaFormat.createAudioFormat(
-                            MediaFormat.MIMETYPE_AUDIO_AAC, audioRate, AudioConfig.CHANNEL_COUNT
-                        )
+                        val af = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, audioRate, 1)
                         af.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
                         af.setInteger(MediaFormat.KEY_BIT_RATE, 128_000)
                         af.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16_384)
-                        af.setInteger(MediaFormat.KEY_CHANNEL_COUNT, AudioConfig.CHANNEL_COUNT)
                         aCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
                         aCodec.configure(af, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                         aCodec.start()
@@ -316,10 +313,6 @@ object Exporter {
                 var aEosQueued = false
                 var aEosDone = !audioEnabled
                 var lastProgress = -1
-                // STEP 3: OUTPUT-ONLY guards. Encoder inputs pass their
-                // timelines directly (video: frame count, audio: sample count)
-                // because both are already monotonic; sharing one clock for
-                // inputs and outputs compressed encoder-delayed timestamps.
                 val vPts = MonotonicPts()
                 val aClock = MonotonicPts()
                 var muxerFailed = false
@@ -439,8 +432,7 @@ object Exporter {
                         val inIdx = vCodec!!.dequeueInputBuffer(20_000)
                         if (inIdx >= 0) {
                             val bytes = YuvWriter.fillInput(vCodec!!, inIdx, frameBitmap!!, w, h, nv12)
-                            // INPUT PTS passes the frame timeline directly.
-                            val pts = ptsUs
+                            val pts = vPts.next(ptsUs)
                             vCodec!!.queueInputBuffer(inIdx, 0, bytes.coerceAtLeast(0), pts, 0)
                         }
                         ptsUs += frameUs
@@ -456,12 +448,9 @@ object Exporter {
                             val chunksPerFrame = max(1, (audioRate / fps / audioChunk.toFloat()).toInt() + 1)
                             repeat(chunksPerFrame) {
                                 if (audioSamplesDone < totalAudioSamples && !aEosQueued) {
-                                    // STEP 3: advance ONLY on success. The old code
-                                    // advanced even when the encoder had no input
-                                    // buffer, punching PTS holes (stutter/gaps).
-                                    if (encodeAudioChunk(aCodec!!, audioMixer, audioSamplesDone, audioChunk)) {
+                                    if (encodeAudioChunk(aCodec!!, audioClips, audioSamplesDone, audioChunk, mixer))
                                         audioSamplesDone += audioChunk
-                                    }
+                                    else drainAudio()   // encoder full: free output, retry next frame
                                 }
                             }
                             if (drainAudio()) aEosDone = true
@@ -470,7 +459,7 @@ object Exporter {
                     } else if (!vEosQueued) {
                         val inIdx = vCodec!!.dequeueInputBuffer(20_000)
                         if (inIdx >= 0) {
-                            val eosPts = ptsUs
+                            val eosPts = vPts.next(ptsUs)
                             vCodec!!.queueInputBuffer(inIdx, 0, 0, eosPts,
                                 MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             vEosQueued = true
@@ -478,23 +467,18 @@ object Exporter {
                         // also queue audio EOS if needed
                         if (audioEnabled && !aEosQueued) {
                             // finish remaining audio
-                            var audioStall = 0
-                            while (audioSamplesDone < totalAudioSamples && audioStall < 500) {
-                                if (encodeAudioChunk(aCodec!!, audioMixer, audioSamplesDone, audioChunk)) {
-                                    audioSamplesDone += audioChunk
-                                    audioStall = 0
-                                } else {
-                                    audioStall++
-                                }
+                            var tailStall = 0
+                            while (audioSamplesDone < totalAudioSamples && tailStall < 500) {
+                                if (encodeAudioChunk(aCodec!!, audioClips, audioSamplesDone, audioChunk, mixer)) {
+                                    audioSamplesDone += audioChunk; tailStall = 0
+                                } else tailStall++
                                 if (drainAudio()) { aEosDone = true; break }
                             }
                             val aIdx = aCodec!!.dequeueInputBuffer(20_000)
                             if (aIdx >= 0) {
                                 // EOS carries the running PTS, not 0: a backwards
                                 // timestamp here breaks strict muxers/players.
-                                // Direct sample timeline (output guard only
-                                // sees encoder outputs).
-                                aCodec!!.queueInputBuffer(aIdx, 0, 0, audioPts(audioSamplesDone),
+                                aCodec!!.queueInputBuffer(aIdx, 0, 0, aClock.next(audioPts(audioSamplesDone)),
                                     MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                                 aEosQueued = true
                             }
@@ -511,14 +495,13 @@ object Exporter {
                             // also keep feeding audio if video already EOS but audio not
                             if (audioEnabled && !aEosDone && !aEosQueued) {
                                 if (audioSamplesDone < totalAudioSamples) {
-                                    if (encodeAudioChunk(aCodec!!, audioMixer, audioSamplesDone, audioChunk)) {
+                                    if (encodeAudioChunk(aCodec!!, audioClips, audioSamplesDone, audioChunk, mixer))
                                         audioSamplesDone += audioChunk
-                                    }
                                 } else {
                                     val aIdx = aCodec!!.dequeueInputBuffer(20_000)
                                     if (aIdx >= 0) {
                                         aCodec!!.queueInputBuffer(aIdx, 0, 0,
-                                            audioPts(audioSamplesDone),
+                                            aClock.next(audioPts(audioSamplesDone)),
                                             MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                                         aEosQueued = true
                                     }
@@ -589,34 +572,52 @@ object Exporter {
         }, "ahmed-export").start()
     }
 
+    /** one clip in the offline mix: a composition-timeline cursor + its static level / play state */
+    private class ClipState(
+        pcm: ShortArray, val volume: Float, loop: Boolean, durMs: Long,
+        val playing: Boolean = true, speed: Float = 1f
+    ) {
+        val cursor = ClipCursor(pcm, durMs, loop, speed)
+    }
+
     /** mono 44.1 kHz sample position -> presentation microseconds */
-    private fun audioPts(samples: Long): Long = AudioConfig.ptsUs(samples)
+    private fun audioPts(samples: Long): Long = AudioMath.samplesToUs(samples)
+
+    /** per-export mixer scratch: limiter state (instant attack, slow release) + float mix bus */
+    private class Mixer(chunk: Int) {
+        val limiter = Limiter()
+        val mix = FloatArray(chunk)
+    }
 
     /**
-     * STEP 3: mix one chunk through the shared [AudioMixer] and queue it.
-     * @return true only when the chunk actually reached the encoder (the
-     * caller advances the sample timeline on true, retries on false).
+     * Mix one chunk at composition sample position [baseSamples] and queue it.
+     * The caller advances the sample clock ONLY when this returns true, so a
+     * chunk the encoder could not accept is retried, never skipped — the
+     * audio PTS can never run ahead of the audio actually encoded.
      */
     private fun encodeAudioChunk(
-        codec: MediaCodec, mixer: AudioMixer, baseSamples: Long, chunk: Int
+        codec: MediaCodec, clips: List<ClipState>, baseSamples: Long, chunk: Int, mixer: Mixer
     ): Boolean {
-        val n = chunk
-        val mixed = ShortArray(n)
-        mixer.mixClips(baseSamples, mixed)
-        val inIdx = try { codec.dequeueInputBuffer(20_000) } catch (_: Exception) { -1 }
+        val inIdx = codec.dequeueInputBuffer(20_000)
         if (inIdx < 0) return false
-        val buf = try { codec.getInputBuffer(inIdx) } catch (_: Exception) { null } ?: return false
-        if (buf.capacity() < mixed.size * 2) return false
-        return try {
-            buf.clear()
-            // Encoder PCM is NATIVE (little-endian) order.
-            buf.order(ByteOrder.nativeOrder())
-            buf.asShortBuffer().put(mixed)
-            codec.queueInputBuffer(inIdx, 0, mixed.size * 2, audioPts(baseSamples), 0)
-            true
-        } catch (_: Exception) {
-            false
+        val buf = codec.getInputBuffer(inIdx) ?: return false
+        val n = chunk
+        val mix = mixer.mix
+        java.util.Arrays.fill(mix, 0, n, 0f)
+        for (c in clips) {
+            // audio follows the SAME playback state the video path uses: a paused
+            // source is silent, speed scales the read position, loops wrap at durMs
+            if (!c.playing || c.volume <= 0.0005f) continue
+            c.cursor.seekComposition(baseSamples)
+            c.cursor.mixInto(mix, 0, n, c.volume)
         }
+        val mixed = ShortArray(n)
+        mixer.limiter.apply(mix, n, mixed)
+        buf.clear()
+        buf.order(ByteOrder.nativeOrder())   // MediaCodec PCM is native-endian
+        buf.asShortBuffer().put(mixed)
+        codec.queueInputBuffer(inIdx, 0, mixed.size * 2, audioPts(baseSamples), 0)
+        return true
     }
 
     /**
