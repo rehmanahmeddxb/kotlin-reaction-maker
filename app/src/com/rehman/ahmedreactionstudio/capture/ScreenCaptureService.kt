@@ -35,6 +35,12 @@ class ScreenCaptureService : Service() {
     companion object {
         const val ACTION_START = "ars.screen.start"
         const val ACTION_STOP = "ars.screen.stop"
+        /**
+         * T-31 — the single stop wording. The notification and the editor's
+         * on-canvas chip must say the same thing, or the user cannot tell
+         * whether they are two recordings or one.
+         */
+        const val STOP_LABEL = "Stop screen recording"
         const val EXTRA_RESULT_CODE = "rc"
         const val EXTRA_RESULT_DATA = "data"
         const val EXTRA_PROJECT_DIR = "pdir"
@@ -97,14 +103,14 @@ class ScreenCaptureService : Service() {
         val n: Notification = if (Build.VERSION.SDK_INT >= 26)
             Notification.Builder(this, CHANNEL_ID)
                 .setContentTitle("Recording screen")
-                .setContentText("Tap to stop & add to studio")
+                .setContentText("$STOP_LABEL — it is added to your project")
                 .setSmallIcon(android.R.drawable.presence_video_online)
                 .setOngoing(true)
                 .setContentIntent(pi)
                 .build()
         else @Suppress("DEPRECATION") Notification.Builder(this)
             .setContentTitle("Recording screen")
-            .setContentText("Tap to stop & add to studio")
+            .setContentText("$STOP_LABEL — it is added to your project")
             .setSmallIcon(android.R.drawable.presence_video_online)
             .setOngoing(true)
             .setContentIntent(pi)

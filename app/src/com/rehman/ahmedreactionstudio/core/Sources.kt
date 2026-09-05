@@ -105,10 +105,24 @@ class SourceController(
     }
 
     /**
-     * Duplicate a source. Returns the new id so the UI can select it.
+     * Duplicate a source. Returns the new id so the UI can select it, or null
+     * when the source cannot be cloned.
+     *
+     * The live camera is refused HERE, not in the UI: there is exactly one
+     * camera capture session, so a second "live" layer would render an empty
+     * box in the preview and in the export. Both the ring and the sheets used
+     * to carry their own copy of this rule and disagreed about it (UI Plan2
+     * V14 / T-06); the rule now lives on the single verb so every present and
+     * future surface inherits it. Record a take first, then duplicate the take.
      */
+    fun canDuplicate(id: String?): Boolean {
+        val l = p.layerById(id ?: return false) ?: return false
+        return !l.isLive()
+    }
+
     fun duplicate(id: String?): String? {
         val l = p.layerById(id ?: return null) ?: return null
+        if (l.isLive()) return null
         willMutate()
         val copy = l.clone()
         copy.id = java.util.UUID.randomUUID().toString()

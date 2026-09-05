@@ -42,6 +42,30 @@ object UI {
         return String.format(Locale.US, "%d:%02d", s / 60L, s % 60L)
     }
 
+    /**
+     * T-30 — relative timestamps ("2 hours ago"). An absolute date makes the
+     * user do arithmetic to answer the only question they actually have:
+     * "is this the project I was just working on?"
+     */
+    fun relTime(ms: Long): String {
+        if (ms <= 0L) return "just now"
+        val d = System.currentTimeMillis() - ms
+        if (d < 0L) return "just now"
+        val min = d / 60_000L
+        if (min < 1L) return "just now"
+        if (min < 60L) return "$min minute" + (if (min == 1L) "" else "s") + " ago"
+        val hr = min / 60L
+        if (hr < 24L) return "$hr hour" + (if (hr == 1L) "" else "s") + " ago"
+        val day = hr / 24L
+        if (day < 7L) return "$day day" + (if (day == 1L) "" else "s") + " ago"
+        val wk = day / 7L
+        if (wk < 5L) return "$wk week" + (if (wk == 1L) "" else "s") + " ago"
+        val mo = day / 30L
+        if (mo < 12L) return "$mo month" + (if (mo == 1L) "" else "s") + " ago"
+        val yr = day / 365L
+        return "$yr year" + (if (yr == 1L) "" else "s") + " ago"
+    }
+
     fun niceBytes(n: Long): String {
         if (n < 1024) return "$n B"
         val kb = n / 1024.0
