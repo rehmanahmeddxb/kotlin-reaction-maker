@@ -256,6 +256,26 @@ object LayerFit {
         if ((rotation == 90 || rotation == 270) && srcW > 0 && srcH > 0) Pair(srcH, srcW)
         else Pair(srcW, srcH)
 
+    /**
+     * The frame the compositor actually DRAWS for an effW×effH source inside a
+     * boxW×boxH box, honouring the fit mode (pure pixel math, no Android
+     * types so the JVM geometry check in tools/ can exercise it):
+     *  - fill  (COVER):  scaled UP to cover; the overflow is clipped to the box
+     *  - fit   (CONTAIN): scaled DOWN to show everything, letterboxed inside
+     * Both modes return exactly the box when box aspect == source aspect.
+     * Returns (0, 0) when either side is degenerate (nothing is drawn).
+     *
+     * This is THE formula: the renderer uses it for the drawBitmap destination
+     * and the editor uses it for the selection border, so the border can only
+     * ever sit around the picture that is really on screen.
+     */
+    fun drawnFrame(boxW: Float, boxH: Float, effW: Int, effH: Int, fit: String): Pair<Float, Float> {
+        if (effW <= 0 || effH <= 0 || boxW <= 0f || boxH <= 0f) return Pair(0f, 0f)
+        val s = if (fit == Layer.FIT_FIT) minOf(boxW / effW, boxH / effH)
+                else maxOf(boxW / effW, boxH / effH)
+        return Pair(effW * s, effH * s)
+    }
+
     /** Pixel aspect of the layer's source, falling back to the canvas aspect. */
     fun sourceAspect(l: Layer, canvasW: Int, canvasH: Int): Float {
         val (w, h) = effective(l.srcW, l.srcH, l.srcRotation)

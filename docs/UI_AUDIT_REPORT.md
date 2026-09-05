@@ -83,7 +83,7 @@ Fullscreen canvas; everything floats over it:
 | Zone | Contents |
 |---|---|
 | Top bar (gradient) | Back · project name + `aspect · N sources` meta · **aspect chip (tap = cycle 16:9→9:16→1:1)** · undo · redo · gear→Diagnostics |
-| Canvas (`StageView`) | Contain-fitted composition, letterboxed; selection chrome (8 handles + rotate knob + label pill) |
+| Canvas (`StageView`) | Contain-fitted composition, letterboxed; per-source selection chrome (border + 8 handles + rotate knob + label pill) drawn around the layer's **visible frame** (`Compositor.chromeRect`), subtle outlines on unselected sources |
 | Empty overlay | “Set your main canvas” card with 5 stacked buttons: Camera live · Local video · Record screen · Image · ◉ Open radial menu |
 | Quick Control Bar (floating pill, **horizontally scrollable**) | Name pill · eye · mute* · play/pause* · lock · fit/fill · ◉ (source ring) · ⋮ (advanced sheet). For live camera instead: record · switch-cam · flash. (* clip sources only) |
 | Transport row | Play/pause (accent circle) · current time · seekbar · duration |
