@@ -77,6 +77,14 @@ class StageView @JvmOverloads constructor(
 
     var host: Host? = null
 
+    /**
+     * Colour of the letterbox surround. The default is near-black; the
+     * editor's "screen light" swaps in a warm white so the area AROUND the
+     * exported frame lights the subject's face without covering the picture.
+     */
+    var surroundColor: Int = SURROUND
+        set(v) { if (field != v) { field = v; invalidate() } }
+
     /** the exported area, in this view's pixels */
     private val canvasRect = RectF(0f, 0f, 1f, 1f)
     private var cw = 1
@@ -202,7 +210,7 @@ class StageView @JvmOverloads constructor(
         val hp = host ?: return
         layoutCanvas()
         val p = hp.project
-        canvas.drawColor(SURROUND)
+        canvas.drawColor(surroundColor)
         canvas.save()
         canvas.translate(canvasRect.left, canvasRect.top)
         canvas.clipRect(0f, 0f, cw.toFloat(), ch.toFloat())

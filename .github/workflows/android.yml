@@ -50,13 +50,14 @@ jobs:
           path: /tmp/tc-install.log
           if-no-files-found: ignore
 
-      - name: JVM regression tests (audio, viewport, layers, selection geometry)
+      - name: JVM regression tests (audio, viewport, chrome budget, layers, selection geometry)
         shell: bash
         env:
           TC_ROOT: /tmp/ahmed-tc
         run: |
           bash tools/audio-math-test/run.sh
           bash tools/viewport-fit-test/run.sh
+          bash tools/chrome-budget-test/run.sh
           bash tools/layer-model-test/run.sh
           bash tools/step2-geom-check.sh
 
@@ -157,6 +158,10 @@ jobs:
               'buildTransport': 'transport bar builder',
               'SourcesPanel': 'source list panel',
               'MixerPanel': 'audio mixer panel',
+              'PropertiesPanel': 'per-source properties tab (the advanced sheet)',
+              'EffectsPanel': 'effects tab',
+              'ChromeBudget': 'dp budget: canvas first, then rail / panel / optional rows',
+              'TimelineView': 'model-driven clip timeline',
               'setFullCanvas': 'full canvas mode',
               'relayoutChrome': 'orientation re-layout delegation',
               'refreshContextBar': 'unified source actions',

@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Static merge guards for the redesigned Studio workspace.
+"""Static merge guards for the Studio workspace.
 
-Since PR #31 ("Redesign Studio Workspace") the editor chrome lives in
-StudioLayoutInjector (top bar / left tool rail / right panel with
-Sources-Mixer-Props-Effects tabs / timeline / transport, in both
-orientations), while EditorActivity keeps the engine, camera, recording and
-sheet behaviour. These guards check that both halves of the new architecture
-ship together, that rotation re-layout stays lifecycle-safe, and that the
-pre-existing integrations (stage, preview engine, model, recorder, dock)
-remain wired.
+The editor chrome is ONE authoritative layout built by StudioLayoutInjector:
+a dp-sized top bar, a flexible body (landscape: tool rail | canvas cell |
+context panel; portrait: canvas cell / context panel / tool row) and a
+dp-sized transport bar. The context panel hosts exactly one of
+Sources / Mixer / Props / Effects. EditorActivity keeps the engine, camera,
+recording and export behaviour and rebuilds the chrome through
+relayoutChrome() on a configuration change.
+
+These guards check that both orientations go through the same builders, that
+rotation re-layout stays lifecycle-safe, that every chrome control reaches a
+real editor verb, and that the pre-existing integrations (stage, preview
+engine, model, recorder, dock) remain wired.
 
 These check integration wiring, not Android runtime behaviour. Real inset,
 rotation, gesture and recording smoke tests still require an Android device.
@@ -52,23 +56,53 @@ check("one toolbar, not the disabled Phase 2 legacy pill", "USE_QUICK_BAR" not i
 check("four-side viewport API only", "setChromeInsets" not in editor)
 
 # ------------------------------------------- StudioLayoutInjector: chrome ---
-# The redesigned workspace must build BOTH orientations; each one creates its
-# own StageView (bound to the activity host) and its own panel set.
+# One set of builders serves BOTH orientations: inject() branches on the
+# orientation and each branch must go through the shared canvas / panel /
+# bind / transport builders (no second chrome, no per-orientation copies).
 check("injector builds landscape and portrait layouts",
       "if (isLandscape)" in injector and "} else {" in injector)
-check("StageView created in both orientations",
-      count(injector, "activity.stage = StageView(activity)") == 2)
-check("StageView host bound in both orientations",
-      count(injector, "activity.stage.host = activity") == 2)
-for panel in ("SourcesPanel(activity)", "MixerPanel(activity)", "EffectsPanel(activity)"):
-    check(f"{panel.split('(')[0]} created in both orientations",
-          count(injector, panel) == 2)
-check("panel tab bar offers Sources/Mixer/Props/Effects + close in both orientations",
-      all(count(injector, f'createTab("{t}"') == 2
+inject_body = injector[injector.find("fun inject("):injector.find("fun buildTopBar(")]
+land = inject_body[inject_body.find("if (isLandscape)"):inject_body.find("} else {")]
+port = inject_body[inject_body.find("} else {"):]
+check("landscape branch builds its body", "buildLandscapeBody(activity," in land)
+check("portrait branch builds its body", "buildPortraitBody(activity," in port)
+check("both orientations bind their panels", count(inject_body, "bindPanels(activity,") == 2)
+check("both orientations build the transport bar", count(inject_body, "buildTransport(activity,") == 2)
+for body in ("buildLandscapeBody", "buildPortraitBody"):
+    fn = injector[injector.find(f"private fun {body}("):]
+    fn = fn[:fn.find("\n    }\n")]
+    check(f"{body} places the canvas cell", "buildCanvasCell(activity)" in fn)
+    check(f"{body} places the context panel", "buildContextPanel(activity)" in fn)
+cell = injector[injector.find("private fun buildCanvasCell("):injector.find("private fun buildRail(")]
+check("StageView created by the shared canvas cell builder",
+      count(cell, "activity.stage = StageView(activity)") == 1)
+check("StageView host bound by the shared canvas cell builder",
+      count(cell, "activity.stage.host = activity") == 1)
+check("StageView is told the cell already excludes every bar",
+      "stage.setViewportInsets(0, 0, 0, 0)" in cell)
+panel = injector[injector.find("private fun buildContextPanel("):injector.find("private fun bindPanels(")]
+for p_ in ("SourcesPanel(activity)", "MixerPanel(activity)", "PropertiesPanel(activity)", "EffectsPanel(activity)"):
+    check(f"{p_.split('(')[0]} created by the shared context panel builder", count(panel, p_) == 1)
+check("panel tab bar offers Sources/Mixer/Props/Effects + close",
+      all(count(panel, f'createTab("{t}"') == 1
           for t in ("Sources", "Mixer", "Props", "Effects", "X")))
-check("both orientations bind their panels", count(injector, "bindPanels(activity,") == 2)
-check("both orientations build the transport bar", count(injector, "buildTransport(activity,") == 2)
-check("both orientations build the timeline seek", count(injector, "activity.seek = seek") == 2)
+check("the source dock lives inside the Sources tab",
+      "activity.dockContainer = sourcesPanel.dockContainer" in panel)
+transport = injector[injector.find("private fun buildTransport("):injector.find("private fun buildOverlays(")]
+check("transport builds the timeline seek", count(transport, "activity.seek = seek") == 1)
+check("no percent weights between chrome and canvas",
+      "weight = 0." not in injector and "LayoutParams(0, 0, 0." not in injector)
+check("no structural hacks (translation / negative margins) in the injector",
+      "translationX" not in injector and "translationY" not in injector and "-UI.dp(" not in injector)
+check("chrome sizes come from ChromeBudget (one source of truth)",
+      "ChromeBudget.landscape(" in injector and "ChromeBudget.portrait(" in injector
+      and "landscapeBudget(activity)" in injector and "portraitBudget(activity)" in injector)
+check("optional rows (timeline, camera row) sit between the body and the transport in both branches",
+      count(inject_body, "buildCameraRow(activity, column)") == 2
+      and count(inject_body, "buildTimeline(activity, column)") == 2)
+check("no raw android.widget.Button in the studio chrome",
+      "Button(" not in injector.replace("IconBtn(", "").replace("pillBtn(", "")
+      and "UI.btn(" not in editor)
 
 # Top bar actions must reach the real verbs, not dead buttons.
 for needle, name in (
@@ -126,7 +160,7 @@ for needle, name in (
     ("activity.controlsStopTap()", "transport stop wired"),
     ("activity.timeLabel.text", "transport time label wired"),
     ("activity.durationLabel", "transport duration label wired"),
-    ("activity.recordBtn = this", "transport record button exposed to the activity"),
+    ("activity.recordBtn = recBtn", "transport record button exposed to the activity"),
 ):
     contains(injector, needle, name)
 
@@ -139,8 +173,8 @@ contains(relayout, "StudioLayoutInjector.inject(this, rootFrame)",
 for dangerous in ("startLiveCamera(", "engine.attach(", "engine.release(", "engine.pauseAll("):
     check(f"rotation does not call {dangerous}", dangerous not in relayout)
 reconf = method("onConfigurationChanged", "override fun")
-contains(reconf, "StudioLayoutInjector.inject(this, rootFrame)",
-         "configuration change re-injects the workspace")
+contains(reconf, "relayoutChrome()",
+         "configuration change re-injects the workspace through relayoutChrome")
 contains(reconf, "syncPreviewTarget()", "configuration change re-targets the preview")
 contains(reconf, "stage.refresh()", "configuration change refreshes the stage")
 
@@ -162,7 +196,12 @@ adv = method("openAdvancedSheet", "fun")
 contains(adv, "rebuildSourceDock()", "advanced sheet refreshes the source dock")
 check("advanced sheet exists and is reachable from the injector",
       "fun openAdvancedSheet(l: Layer)" in editor and "openAdvancedSheet(layer)" in injector)
-contains(method("setSheet", "fun"), "setFullCanvas(false)", "opening a sheet exits Full Canvas")
+check("the Props tab body is filled by the advanced sheet sections",
+      "propertiesPanel.onFill = { l -> activity.fillAdvanced(l) }" in injector
+      and "fun fillAdvanced(l: Layer)" in editor)
+contains(method("showTab", "fun"), "setFullCanvas(false)", "opening a panel tab exits Full Canvas")
+contains(method("setPanelOpen", "fun"), "panelOpen = open", "panel open state survives a rotation rebuild")
+contains(method("onSaveInstanceState", "override fun"), '"tab"', "active tab survives process death")
 contains(method("setFullCanvas"), "fullCanvas = on", "Full Canvas state toggles")
 
 # recChip (recording indicator) must respect Full Canvas.
@@ -172,8 +211,22 @@ check("recording chip respects Full Canvas",
 # Retained main-activity behaviours from the pre-redesign code.
 contains(method("applyOrientationFor"), "SCREEN_ORIENTATION_UNSPECIFIED",
          "main's aspect-independent phone orientation retained")
-contains(method("onDestroy", "override fun"), "removeOnGlobalLayoutListener",
-         "main's layout listener cleanup retained")
+destroy = method("onDestroy", "override fun")
+contains(destroy, "removeCallbacksAndMessages(null)", "handler cleanup retained")
+contains(destroy, "engine.release()", "engine released with the activity")
+# system insets are applied as padding on the chrome column, never as a
+# second layout or a hard-coded status-bar guess
+contains(method("buildUi"), "setOnApplyWindowInsetsListener", "edge-to-edge insets listener installed")
+contains(method("applySystemInsets"), "chromeColumn.setPadding", "insets become column padding")
+
+# The re-layout path must be state-preserving: what the user opened/closed
+# and which tab was active are plain fields read back by the injector.
+for field in ("activity.panelOpen", "activity.railOpen", "activity.timelineOpen", "activity.activeTab"):
+    contains(injector, field, f"injector rebuilds from persisted chrome state {field}")
+check("dp budget re-applied in place (no rebuild) when a piece opens/closes",
+      "private fun applyChromeBudget()" in editor
+      and "applyChromeBudget()" in method("setPanelOpen", "fun")
+      and "applyChromeBudget()" in method("setRailOpen", "fun"))
 
 # ------------------------------------------------- cross-file dependencies ---
 for rel, needle in (
