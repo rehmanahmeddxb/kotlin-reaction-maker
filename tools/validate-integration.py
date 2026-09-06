@@ -223,6 +223,11 @@ contains(method("applySystemInsets"), "chromeColumn.setPadding", "insets become 
 # and which tab was active are plain fields read back by the injector.
 for field in ("activity.panelOpen", "activity.railOpen", "activity.timelineOpen", "activity.activeTab"):
     contains(injector, field, f"injector rebuilds from persisted chrome state {field}")
+check("tablet landscape pins Sources above the tabs from the same builder (no second panel system)",
+      "ChromeBudget.sourcesPinned(" in injector
+      and "if (!pinned) body.addView(sourcesPanel, full)" in injector
+      and 'if (!pinned) createTab("Sources", "sources")' in injector
+      and "sourcesPinned" in method("showTab", "fun"))
 check("dp budget re-applied in place (no rebuild) when a piece opens/closes",
       "private fun applyChromeBudget()" in editor
       and "applyChromeBudget()" in method("setPanelOpen", "fun")

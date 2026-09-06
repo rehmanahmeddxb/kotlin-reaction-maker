@@ -558,6 +558,16 @@ object StudioLayoutInjector {
     // context panel: tabs + exactly one visible body
     // =====================================================================
 
+    /**
+     * The context panel: [pinned Sources pane — tablet landscape only] /
+     * tab strip / exactly one visible body.
+     *
+     * Tablets in landscape with ≥ 400dp of body (ChromeBudget.sourcesPinned)
+     * get the OBS-style workspace the brief asks for — the source list is
+     * always on screen and the tabs below it switch Mixer / Props / Effects.
+     * Everywhere else Sources is the first tab. Same four panel objects, same
+     * bindings, one builder: only where SourcesPanel is *added* differs.
+     */
     private fun buildContextPanel(activity: EditorActivity): LinearLayout {
         val panel = LinearLayout(activity)
         panel.orientation = LinearLayout.VERTICAL
@@ -567,6 +577,27 @@ object StudioLayoutInjector {
         val edge = View(activity)
         edge.setBackgroundColor(HAIRLINE)
         panel.addView(edge, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1))
+
+        val sourcesPanel = SourcesPanel(activity)
+        val mixerPanel = MixerPanel(activity)
+        val propertiesPanel = PropertiesPanel(activity)
+        val effectsPanel = EffectsPanel(activity)
+        activity.sourcesPanel = sourcesPanel
+        activity.mixerPanel = mixerPanel
+        activity.propertiesPanel = propertiesPanel
+        activity.effectsPanel = effectsPanel
+
+        val pinned = ChromeBudget.sourcesPinned(activity.usableHeightDp(),
+            isTablet(activity.chromeTier), isLandscape(activity.chromeTier))
+        activity.sourcesPinned = pinned
+        if (pinned) {
+            val bodyH = activity.usableHeightDp() - ChromeBudget.TOP_DP - ChromeBudget.TRANSPORT_DP - activity.extraRowsDp()
+            panel.addView(sourcesPanel, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, UI.dp(activity, ChromeBudget.sourcesPaneDp(bodyH))))
+            val split = View(activity)
+            split.setBackgroundColor(HAIRLINE)
+            panel.addView(split, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1))
+        }
 
         val tabs = LinearLayout(activity)
         tabs.orientation = LinearLayout.HORIZONTAL
@@ -580,21 +611,13 @@ object StudioLayoutInjector {
         panel.addView(body, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         activity.panelBody = body
 
-        val sourcesPanel = SourcesPanel(activity)
-        val mixerPanel = MixerPanel(activity)
-        val propertiesPanel = PropertiesPanel(activity)
-        val effectsPanel = EffectsPanel(activity)
-        activity.sourcesPanel = sourcesPanel
-        activity.mixerPanel = mixerPanel
-        activity.propertiesPanel = propertiesPanel
-        activity.effectsPanel = effectsPanel
         val full = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-        body.addView(sourcesPanel, full)
+        if (!pinned) body.addView(sourcesPanel, full)
         body.addView(mixerPanel, FrameLayout.LayoutParams(full))
         body.addView(propertiesPanel, FrameLayout.LayoutParams(full))
         body.addView(effectsPanel, FrameLayout.LayoutParams(full))
 
-        // the SourceDock (OBS mini-mixer rows: eye · mute · name/status · badges ·
+        // the SourceDock (OBS mini-mixer rows: eye · type · name/status · mute ·
         // drag handle) IS the sources list — SourcesPanel hosts its container
         activity.dockContainer = sourcesPanel.dockContainer
 
@@ -638,7 +661,7 @@ object StudioLayoutInjector {
             tabs.addView(t)
             activity.tabViews[id] = t
         }
-        createTab("Sources", "sources")
+        if (!pinned) createTab("Sources", "sources")
         createTab("Mixer", "mixer")
         createTab("Props", "props")
         createTab("Effects", "effects")

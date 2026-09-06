@@ -62,6 +62,22 @@ object ChromeBudgetTest {
                 portrait(d, code, aw, ah)
             }
         }
+        // tablet landscape: Sources pinned above the context tabs whenever the
+        // budget promises 400dp of body even with every optional row shown
+        for (d in devices) {
+            val usableH = d.wDp - 24            // landscape: the short side minus the status bar
+            val pinned = ChromeBudget.sourcesPinned(usableH, d.tablet, true)
+            check("${d.name} · landscape: Sources pinned only on tablets", !pinned || d.tablet)
+            check("${d.name} · portrait: Sources never pinned", !ChromeBudget.sourcesPinned(d.hDp, d.tablet, false))
+            if (!pinned) continue
+            for (extras in listOf(0, 26, 42, 90, 90 + ChromeBudget.CAMERA_ROW_DP)) {
+                val bodyH = usableH - ChromeBudget.TOP_DP - ChromeBudget.TRANSPORT_DP - extras
+                val pane = ChromeBudget.sourcesPaneDp(bodyH)
+                val context = bodyH - pane - ChromeBudget.TABS_DP
+                check("${d.name} · pinned · extras=$extras: Sources pane is 200–340dp", pane in 200..340, "pane=$pane")
+                check("${d.name} · pinned · extras=$extras: context body under it keeps >= 160dp", context >= 160, "context=$context")
+            }
+        }
         // extra rows (open timeline up to 90dp, live-camera row 44dp) are taken
         // from the flexible body, never from the canvas floor
         for (d in devices) for ((code, aw, ah) in aspects) for (tl in listOf(26, 42, 90, 90 + ChromeBudget.CAMERA_ROW_DP)) {

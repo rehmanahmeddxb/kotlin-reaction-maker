@@ -129,6 +129,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     var timelineBtn: IconBtn? = null
     var panelCloseBtn: IconBtn? = null
     var sourcesPanel: SourcesPanel? = null
+    /** tablet landscape: Sources is its own pane above the tabs (ChromeBudget.sourcesPinned) */
+    var sourcesPinned = false
     var mixerPanel: MixerPanel? = null
     var propertiesPanel: PropertiesPanel? = null
     var effectsPanel: EffectsPanel? = null
@@ -571,6 +573,16 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         if (!chromeReady() || fullCanvas) return
         applyExtraRowsFit()
         if (StudioLayoutInjector.isLandscape(chromeTier)) {
+            if (sourcesPinned) {
+                // the pinned Sources pane shares the panel height with the tabbed
+                // body: re-split when an optional row appears or disappears
+                val bodyH = usableHeightDp() - ChromeBudget.TOP_DP - ChromeBudget.TRANSPORT_DP - extraRowsDp()
+                val want = UI.dp(this, ChromeBudget.sourcesPaneDp(bodyH))
+                sourcesPanel?.let { sp ->
+                    val lp = sp.layoutParams as? LinearLayout.LayoutParams
+                    if (lp != null && lp.height != want) { lp.height = want; sp.layoutParams = lp }
+                }
+            }
             val b = StudioLayoutInjector.landscapeBudget(this)
             toolRail.visibility = if (b.railShown) View.VISIBLE else View.GONE
             railEdgeHandle?.visibility = if (b.railShown) View.GONE else View.VISIBLE
@@ -602,17 +614,27 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     }
 
     fun showTab(id: String, user: Boolean = true) {
-        activeTab = id
+        // With Sources pinned (tablet landscape) there is no Sources tab: the
+        // list is always on screen, so a user's "show sources" only makes sure
+        // the panel is open and leaves the tabbed body alone. activeTab keeps
+        // what the user last chose, so rotating back to portrait restores it.
+        val pinnedSources = sourcesPinned && id == "sources"
+        if (!(pinnedSources && user)) activeTab = id
         if (!chromeReady()) return
         if (user && fullCanvas) setFullCanvas(false)
-        val views = listOf(
+        val eff = if (sourcesPinned && activeTab == "sources") "mixer" else activeTab
+        val tabbed = listOf(
             "sources" to sourcesPanel, "mixer" to mixerPanel,
             "props" to propertiesPanel, "effects" to effectsPanel)
-        for ((k, v) in views) v?.visibility = if (k == id) View.VISIBLE else View.GONE
-        for ((k, v) in tabViews) StudioLayoutInjector.styleTab(this, v, k == id)
+        for ((k, v) in tabbed) {
+            if (k == "sources" && sourcesPinned) { v?.visibility = View.VISIBLE; continue }
+            v?.visibility = if (k == eff) View.VISIBLE else View.GONE
+        }
+        for ((k, v) in tabViews) StudioLayoutInjector.styleTab(this, v, k == eff)
         if (user) {
             if (!isPanelShown()) setPanelOpen(true)
-            val shown = views.firstOrNull { it.first == id }?.second ?: return
+            if (pinnedSources) return
+            val shown = tabbed.firstOrNull { it.first == eff }?.second ?: return
             shown.alpha = 0f
             shown.animate().alpha(1f).setDuration(140).start()
         }

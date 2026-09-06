@@ -155,6 +155,37 @@ object ChromeBudget {
         return Portrait(body, bodyH - body, panelDefault, openBody)
     }
 
+    // ------------------------------------------------------------------
+    // tablet landscape: Sources pinned above the context tabs
+    // ------------------------------------------------------------------
+
+    /**
+     * Usable height from which a tablet in landscape shows the Sources list
+     * AND the active context tab at the same time (OBS-style docks stacked
+     * in the right panel): 400dp of body after the bars, even with every
+     * optional row (timeline 90 + camera row 44) present, so the decision
+     * never flips when a row appears. Below it the panel is tabbed.
+     */
+    const val PIN_SOURCES_MIN_USABLE_H_DP = 400 + TOP_DP + TRANSPORT_DP + 90 + CAMERA_ROW_DP
+    const val SOURCES_PANE_MIN_DP = 200
+    const val SOURCES_PANE_MAX_DP = 340
+    /** the context body under the pinned Sources keeps at least this much */
+    const val CONTEXT_UNDER_SOURCES_MIN_DP = 160
+
+    fun sourcesPinned(usableH: Int, tablet: Boolean, landscape: Boolean): Boolean =
+        tablet && landscape && usableH >= PIN_SOURCES_MIN_USABLE_H_DP
+
+    /**
+     * Height of the pinned Sources pane for a body of [bodyH] dp (the body
+     * after the bars and the optional rows actually shown): 42 % of it,
+     * clamped, and never so much that the context body below the 40dp tab
+     * strip falls under [CONTEXT_UNDER_SOURCES_MIN_DP].
+     */
+    fun sourcesPaneDp(bodyH: Int): Int {
+        val want = (bodyH * 0.42f).toInt().coerceIn(SOURCES_PANE_MIN_DP, SOURCES_PANE_MAX_DP)
+        return want.coerceAtMost((bodyH - TABS_DP - CONTEXT_UNDER_SOURCES_MIN_DP).coerceAtLeast(SOURCES_PANE_MIN_DP))
+    }
+
     /** Below this body height the optional rows (timeline, camera row) give way. */
     const val MIN_BODY_WITH_EXTRAS_DP = 260
     /** landscape: the body is height-bound already and the bars are compact */

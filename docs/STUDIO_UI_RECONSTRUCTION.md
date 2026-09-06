@@ -127,6 +127,20 @@ Tablets get rail + canvas + panel simultaneously in both orientations
 asked for: compact bars, collapsible rail, collapsible panel, timeline
 collapsed by default.
 
+**Tablet landscape: Sources + canvas + context at the same time.** When the
+usable height is ≥ 634dp (`ChromeBudget.sourcesPinned` — i.e. 400dp of body
+would remain even with the timeline and camera row both shown, so the
+decision never flips when a row appears) the right panel is
+`[Sources pane] / [Mixer · Props · Effects tabs] / [active body]`. The
+Sources pane is 42 % of the body clamped to 200–340dp
+(`sourcesPaneDp`), and the tabbed body under it keeps ≥ 160dp; both are
+asserted for every optional-row combination. It is the same
+`SourcesPanel` object with the same bindings — only where the builder
+*adds* it differs, and the Sources tab is simply not created. A 10"
+tablet (800×1280) gets a 280dp pane; the 673×841 foldable a 230dp one;
+a 600dp-short tablet (576dp usable) stays tabbed. Rotating to portrait
+restores the Sources tab and the user's last `activeTab`.
+
 ## 4. Panels (one active body, `showTab`)
 
 * **Sources** – fixed header (title · "N hidden" badge · "+ Add") over a
@@ -192,9 +206,9 @@ and became a Sources-header badge; the stats HUD is opt-in.
 
 | check | command | result |
 |---|---|---|
-| APK build (kotlinc + d8, offline toolchain) | `./build-apk.sh` | green (build #19) |
-| static integration guard, 96 needles | `python3 tools/validate-integration.py` | 96 / 0 |
-| chrome budget, 7 devices × 3 aspects × panel/rail overrides × extras | `bash tools/chrome-budget-test/run.sh` | 1840 / 0 |
+| APK build (kotlinc + d8, offline toolchain) | `./build-apk.sh` | green (build #21) |
+| static integration guard, 100 needles | `python3 tools/validate-integration.py` | 100 / 0 |
+| chrome budget, 7 devices × 3 aspects × panel/rail overrides × extras + pinned-Sources split | `bash tools/chrome-budget-test/run.sh` | 1884 / 0 |
 | fixed-bar fit: what each bar *contains* vs. the narrowest width of each tier (top bar idle + capturing, transport seek ≥ 96dp, rail/row without scrolling, tab strip at panel minimum, source row name ≥ 60dp, camera row) | `python3 tools/chrome-fit-check.py` | all green |
 | viewport fit | `bash tools/viewport-fit-test/run.sh` | 420 / 0 |
 | stage geometry | `bash tools/step2-geom-check.sh` | all green |
@@ -262,10 +276,10 @@ build + tests + reading, not on hardware (see §7).
 | 11 | Transport independent, consistent height: Play / Record / Stop / time / duration? | **YES** | fixed 52dp (44dp compact) row; never part of the panel |
 | 12 | Top bar: Back / Aspect / Settings-diagnostics / Save / Export with a stable, touch-friendly height? | **YES** | 48dp (44dp compact); 44dp targets; tablets have a Settings button (tap diagnostics, long-press export settings); phones (no width for a sixth item at 360dp) reach diagnostics via ⋯ long-press and the wheel's Project ring; Export long-press = export settings |
 | 13 | Portrait: top / dominant canvas / tabs / active panel / timeline + transport? | **YES** | `buildPortraitBody`; canvas ≥ 45 % of body, panel body 200–360dp (tablet 260–420) |
-| 14 | Phone landscape differs from tablet landscape (compact bar, collapsible rail & panel, timeline collapsed by default)? | **YES** | `Tier.PHONE_LANDSCAPE`: 44dp bars, "Hide tools", timeline default closed; tablets always rail + canvas + panel |
+| 14 | Phone landscape differs from tablet landscape (compact bar, collapsible rail & panel, timeline collapsed by default)? | **YES** | `Tier.PHONE_LANDSCAPE`: 44dp bars, "Hide tools", timeline default closed; tablets always rail + canvas + panel, and with ≥ 634dp usable height the Sources list is pinned above the Mixer / Props / Effects tabs — §20's Sources + canvas + context together (`sourcesPinned`; pane 200–340dp, ≥ 160dp of tabbed body under it, asserted for every optional-row combination) |
 | 15 | Status / nav bars, gesture area, cutout, edge-to-edge handled? | **YES (static)** | inset listener → column padding; Full Canvas immersive; exit button offset by cutout |
 | 16 | Structural hacks removed (percent weights, negative margins, translations, overlapping frames, invisible touch-intercepting views, duplicated UI)? | **YES** | grep clean; `ControlsPanel` deleted; one injector |
-| 17 | `onConfigurationChanged` rebuild path preserved with no state loss? | **YES** | `relayoutChrome()`; tri-state chrome flags + tab + selection + progress card + screen-light survive; engine untouched |
+| 17 | `onConfigurationChanged` rebuild path preserved with no state loss? | **YES** | `relayoutChrome()`; tri-state chrome flags + tab + selection + progress card + screen-light survive; engine untouched; a pinned-Sources tablet rotating to portrait gets its Sources tab back and keeps the user's last tab |
 | 18 | Touch targets ~44–48dp without overlaps? | **YES** | `TAP_DP = 44` everywhere in chrome; tabs full 40dp strip height; mixer toggles 40dp; dock 44dp; Props button rows 40dp at a 44dp pitch; header "+ Add" hit area 40dp; the REC glyph pill has `minWidth = 44dp` |
 
 **Verdict:** no answer is NO. Eight of the eighteen are "YES (static)" or
