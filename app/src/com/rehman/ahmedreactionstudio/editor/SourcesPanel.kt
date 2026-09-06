@@ -14,7 +14,6 @@ import android.widget.ScrollView
 import android.widget.TextView
 import com.rehman.ahmedreactionstudio.R
 import com.rehman.ahmedreactionstudio.core.Layer
-import com.rehman.ahmedreactionstudio.core.LayerType
 import com.rehman.ahmedreactionstudio.util.UI
 
 /**
@@ -164,15 +163,8 @@ class SourcesPanel(context: Context) : LinearLayout(context) {
             }
             setOnClickListener { listener?.onSelect(l.id) }
         }
-        val icon = when (l.type) {
-            LayerType.CAMERA -> R.drawable.ic_camera
-            LayerType.VIDEO -> R.drawable.ic_video
-            LayerType.IMAGE -> R.drawable.ic_image
-            LayerType.TEXT -> R.drawable.ic_text
-            LayerType.SCREEN -> R.drawable.ic_screen
-        }
         val iconView = ImageView(context).apply {
-            setImageDrawable(Ic.get(context, icon,
+            setImageDrawable(Ic.get(context, Ic.typeIcon(l.type),
                 if (selected) Color.WHITE else Color.rgb(200, 210, 230)))
         }
         row.addView(iconView, LinearLayout.LayoutParams(UI.dp(context, 22), UI.dp(context, 22)))
