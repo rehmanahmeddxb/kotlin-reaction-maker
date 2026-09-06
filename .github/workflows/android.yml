@@ -117,8 +117,10 @@ jobs:
           #
           # NOTE: these are dex symbol names — renaming a class here without
           # updating this list is what makes this step fail. Keep them in sync
-          # with the real types (RadialWheelView/makePetal were the pre-nesting
-          # names; the wheel is now RadialMenuView with addPetal).
+          # with the real types. (RadialWheelView/makePetal were the pre-nesting
+          # names; the wheel is now RadialMenuView with addPetal. buildTabBar/
+          # updateSourceStrip were the pre-redesign chrome; the workspace chrome
+          # is now StudioLayoutInjector with the Sources/Mixer panel pair.)
           features = {
               # the radial menu must ship, and it must be the NESTED one:
               # Level/submenu are what make petals open sub-petals rather than
@@ -139,7 +141,7 @@ jobs:
               'MonotonicPts': 'monotonic presentation timestamps',
               'CompositionRecorder': 'live composition recorder',
               'liveFrames': 'frozen live-camera frames in offline export',
-              # Both sides of the Phase 2 / Step 5 consolidation must ship.
+              # Phase 2 canvas geometry + audio pipeline
               'ViewportFit': 'safe four-side canvas geometry',
               'panelHeight': 'measured panel budget around floating controls',
               'ClipCursor': 'master-clock clip audio cursor',
@@ -147,10 +149,16 @@ jobs:
               'Resampler': 'sample-rate conversion',
               'MicThread': 'independent microphone capture',
               'AudioThread': 'sample-count audio encoding',
+              # Redesigned Studio workspace (PR #31): the injected chrome plus
+              # the panels it hosts must ship, not the stubbed pre-redesign
+              # editor methods.
+              'StudioLayoutInjector': 'Studio workspace chrome injector',
+              'bindPanels': 'panel listener binding',
+              'buildTransport': 'transport bar builder',
+              'SourcesPanel': 'source list panel',
+              'MixerPanel': 'audio mixer panel',
               'setFullCanvas': 'full canvas mode',
-              'relayoutChrome': 'orientation-aware editor rail',
-              'buildTabBar': 'Step 5 editor tabs',
-              'updateSourceStrip': 'Step 5 layer selection strip',
+              'relayoutChrome': 'orientation re-layout delegation',
               'refreshContextBar': 'unified source actions',
               'placeNewPip': 'deterministic PiP placement',
               'hitTest': 'topmost-first source selection',

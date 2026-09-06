@@ -194,6 +194,10 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     lateinit var recordBtn: TextView
     private var recorder: CompositionRecorder? = null
     private var recording = false
+
+    // Throttle clocks for onTick: transport UI at ~20 Hz, stats HUD at ~2 Hz.
+    private var lastUiTickMs = 0L
+    private var lastHudMs = 0L
     private var camWaitTries = 0
     private val recordHandler = Handler(Looper.getMainLooper())
     private val recordTick = object : Runnable {
