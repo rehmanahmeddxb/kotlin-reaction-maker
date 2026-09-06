@@ -20,8 +20,10 @@ import com.rehman.ahmedreactionstudio.util.UI
 /**
  * The OBS-style SOURCE DOCK (plan §4.3): every source as a mixer row.
  *
- *   [👁] [🔇]  🎥 Camera take   SOLO          ⠿
- *   [👁] [🔇]  🎬 My Video.mp4  PAUSED        ⠿
+ *   [👁]  🎥 Camera take                          ⠿
+ *         LIVE
+ *   [👁]  🎬 My Video.mp4                   [🔇]  ⠿
+ *         SOLO · PAUSED
  *
  * Rows are in Z order (top row = front-most). Tap selects, eye/mute toggle
  * instantly, long-press opens the advanced sheet and the ⠿ handle drag-
@@ -63,14 +65,24 @@ class SourceDock(
         }
     }
 
+    /**
+     * One row, 52dp:  [eye] · type · name / status … [mute] [⠿]
+     *
+     * Fixed pieces are 44dp targets (eye, mute for clips, drag handle) and a
+     * 30dp type glyph; the name/status column is the only flexible piece, so
+     * it gets everything that is left — 64dp at the 240dp phone-landscape
+     * panel minimum, ~120dp at a 300dp panel — and ellipsizes, never clips.
+     * State (LIVE · MUTED · PAUSED · SOLO · LOOP · LOCKED · FIT) is the status
+     * line, not a row of badges that would squeeze the name to nothing.
+     */
     private fun buildRow(l: Layer): LinearLayout {
         val selected = l.id == selectedId()
         val row = LinearLayout(act)
         row.orientation = LinearLayout.HORIZONTAL
         row.gravity = Gravity.CENTER_VERTICAL
-        row.setPadding(UI.dp(act, 8), 0, UI.dp(act, 8), 0)
+        row.setPadding(UI.dp(act, 4), 0, UI.dp(act, 4), 0)
         val bg = GradientDrawable()
-        bg.cornerRadius = UI.dpf(act, 14f)
+        bg.cornerRadius = UI.dpf(act, 10f)
         bg.setColor(if (selected) Color.argb(70, 255, 90, 44) else Color.argb(120, 20, 23, 31))
         bg.setStroke(UI.dp(act, 1),
             if (selected) Color.argb(255, 255, 130, 80) else Color.argb(40, 255, 255, 255))
@@ -89,43 +101,28 @@ class SourceDock(
         eye.setOnClickListener { onQuickToggle(l, "vis") }
         row.addView(eye)
 
-        // --- mute (only meaningful for video-like sources) ---
-        if (l.isClip()) {
-            val mute = IconBtn(act)
-            mute.layoutParams = IconBtn.sized(act, 44)
-            val effMuted = l.muted || mutedBySolo(l)
-            mute.setIcon(
-                if (effMuted) R.drawable.ic_volume_off else R.drawable.ic_volume,
-                if (effMuted) UI.DANGER else UI.FG,
-                if (effMuted) "Unmute ${l.name}" else "Mute ${l.name}")
-            mute.setOnClickListener { onQuickToggle(l, "mute") }
-            row.addView(mute)
-        } else {
-            val spacer = View(act)
-            row.addView(spacer, LinearLayout.LayoutParams(UI.dp(act, 44), UI.dp(act, 44)))
-        }
-
-        // --- type icon ---
+        // --- type icon (18dp glyph in a 30dp slot; same x on every row) ---
         val typeIc = ImageView(act)
         typeIc.setImageDrawable(Ic.get(act, Ic.typeIcon(l.type),
-            if (l.visible) UI.ACCENT2 else Color.argb(120, 255, 255, 255)))
+            if (!l.visible) Color.argb(120, 255, 255, 255) else if (l.isLive()) UI.OK else UI.ACCENT2))
         val tlp = LinearLayout.LayoutParams(UI.dp(act, 18), UI.dp(act, 18))
-        tlp.setMargins(UI.dp(act, 8), 0, UI.dp(act, 10), 0)
+        tlp.setMargins(UI.dp(act, 4), 0, UI.dp(act, 8), 0)
         typeIc.layoutParams = tlp
         row.addView(typeIc)
 
-        // --- name + status ---
+        // --- name + status: the flexible column ---
         val col = LinearLayout(act)
         col.orientation = LinearLayout.VERTICAL
-        val clp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        col.layoutParams = clp
+        col.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
 
         val nm = TextView(act)
-        nm.text = l.name.ifBlank { l.type.name }
+        nm.text = l.name.ifBlank { l.type.label }
         nm.setTextColor(if (l.visible) Color.WHITE else Color.argb(150, 255, 255, 255))
         nm.textSize = 13f
-        nm.typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        nm.typeface = Typeface.create("sans-serif-medium", if (selected) Typeface.BOLD else Typeface.NORMAL)
         nm.maxLines = 1
+        nm.ellipsize = android.text.TextUtils.TruncateAt.END
+        nm.includeFontPadding = false
         col.addView(nm)
 
         val st = TextView(act)
@@ -133,6 +130,9 @@ class SourceDock(
         st.textSize = 10f
         st.setTextColor(statusColor(l))
         st.maxLines = 1
+        st.ellipsize = android.text.TextUtils.TruncateAt.END
+        st.includeFontPadding = false
+        st.setPadding(0, UI.dp(act, 2), 0, 0)
         if (l.isClip()) {
             // the PAUSED/playing line is itself the play switch: one tap,
             // no ring dive, and TalkBack announces the state + action
@@ -144,19 +144,25 @@ class SourceDock(
         col.addView(st)
         row.addView(col)
 
-        // --- badges ---
-        if (l.isLive()) row.addView(badge("LIVE", UI.OK))
-        if (l.solo) row.addView(badge("SOLO", UI.ACCENT2))
-        if (l.loop && l.isClip()) row.addView(badge("LOOP", UI.OK))
-        if (l.locked) row.addView(badge("LOCK", Color.argb(200, 255, 200, 120)))
+        // --- mute (clips only; non-clip rows simply have a wider name) ---
+        if (l.isClip()) {
+            val mute = IconBtn(act)
+            mute.layoutParams = IconBtn.sized(act, 44)
+            val effMuted = l.muted || mutedBySolo(l)
+            mute.setIcon(
+                if (effMuted) R.drawable.ic_volume_off else R.drawable.ic_volume,
+                if (effMuted) UI.DANGER else UI.FG,
+                if (effMuted) "Unmute ${l.name}" else "Mute ${l.name}")
+            mute.setOnClickListener { onQuickToggle(l, "mute") }
+            row.addView(mute)
+        }
 
         // --- drag handle ---
         val handle = ImageView(act)
         handle.setImageDrawable(Ic.get(act, R.drawable.ic_drag, Color.argb(170, 255, 255, 255)))
-        handle.setPadding(UI.dp(act, 8), UI.dp(act, 8), UI.dp(act, 8), UI.dp(act, 8))
+        handle.setPadding(UI.dp(act, 10), UI.dp(act, 10), UI.dp(act, 10), UI.dp(act, 10))
         handle.contentDescription = "Drag to reorder ${l.name}"
-        val hlp = LinearLayout.LayoutParams(UI.dp(act, 44), UI.dp(act, 44))
-        handle.layoutParams = hlp
+        handle.layoutParams = LinearLayout.LayoutParams(UI.dp(act, 44), UI.dp(act, 44))
         handle.setOnTouchListener { _, ev -> handleTouch(ev, row, l) }
         row.addView(handle)
 
@@ -174,16 +180,18 @@ class SourceDock(
     private fun statusOf(l: Layer): String {
         val bits = ArrayList<String>()
         if (!l.visible) bits.add("HIDDEN")
-        if (l.isLive()) bits.add("LIVE CAMERA ON CANVAS")
+        if (l.isLive()) bits.add("LIVE")
         if (l.isClip()) {
+            if (l.solo) bits.add("SOLO")
             if (mutedBySolo(l) && !l.muted) bits.add("MUTED BY SOLO")
             else if (l.muted) bits.add("MUTED")
             if (!l.playing) bits.add("PAUSED")
+            if (l.loop) bits.add("LOOP")
         }
         if (l.locked) bits.add("LOCKED")
         if (l.fit == Layer.FIT_FIT && !l.isText()) bits.add("FIT")
         if (bits.isEmpty()) {
-            return if (l.isLive()) "Live camera · framing on the canvas"
+            return if (l.isLive()) "Live camera on the canvas"
             else if (l.isClip()) "Visible · Sound on · Playing"
             else if (l.isText()) "Text overlay" else "Visible"
         }
@@ -195,26 +203,6 @@ class SourceDock(
         mutedBySolo(l) || l.muted -> UI.DANGER
         l.isClip() && !l.playing -> UI.ACCENT2
         else -> Color.argb(140, 255, 255, 255)
-    }
-
-    private fun badge(text: String, color: Int): TextView {
-        val b = TextView(act)
-        b.text = text
-        b.textSize = 7.5f
-        b.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-        b.setTextColor(color)
-        b.gravity = Gravity.CENTER
-        b.setPadding(UI.dp(act, 5), UI.dp(act, 2), UI.dp(act, 5), UI.dp(act, 2))
-        val g = GradientDrawable()
-        g.cornerRadius = UI.dpf(act, 6f)
-        g.setColor(Color.argb(60, Color.red(color), Color.green(color), Color.blue(color)))
-        g.setStroke(1, Color.argb(140, Color.red(color), Color.green(color), Color.blue(color)))
-        b.background = g
-        val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT)
-        lp.setMargins(UI.dp(act, 3), 0, UI.dp(act, 3), 0)
-        b.layoutParams = lp
-        return b
     }
 
     // ---------- drag-to-reorder Z ----------

@@ -235,6 +235,9 @@ for rel, needle in (
     ("core/Model.kt", "fun placeNewPip"),
     ("export/CompositionRecorder.kt", "ClipCursor"),
     ("editor/SourceDock.kt", "private val ROW_DP = 52"),
+    ("editor/SourceDock.kt", "ellipsize = android.text.TextUtils.TruncateAt.END"),
+    ("editor/SourcesPanel.kt", "fun setCompact(compact: Boolean)"),
+    ("core/ChromeBudget.kt", "const val PORTRAIT_SPARE_MIN_DP"),
 ):
     text = (SRC / rel).read_text()
     contains(text, needle, f"preserved integration dependency {rel}: {needle}")

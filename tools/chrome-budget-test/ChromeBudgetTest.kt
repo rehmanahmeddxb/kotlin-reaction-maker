@@ -155,9 +155,15 @@ object ChromeBudgetTest {
             if (panel == null) {
                 if (d.tablet) check("$tag: tablet default = canvas + panel", b.panelBodyDp > 0)
                 else {
-                    val fits = bodyH - canvasWant >= ChromeBudget.portraitPanelMinDp(false)
-                    check("$tag: phone default panel only when it fits under a full-width canvas",
-                        (b.panelBodyDp > 0) == fits, "want=$canvasWant free=${bodyH - canvasWant}")
+                    val free = bodyH - canvasWant
+                    val fits = free >= ChromeBudget.PORTRAIT_SPARE_MIN_DP
+                    check("$tag: phone default panel only when a usable panel fits under a full-width canvas",
+                        (b.panelBodyDp > 0) == fits, "want=$canvasWant free=$free")
+                    // no black bars: while the spare is usable the picture keeps its full width
+                    if (fits && free <= ChromeBudget.portraitPanelMaxDp(false))
+                        check("$tag: default panel takes exactly the spare, canvas keeps its want",
+                            b.canvasDp == canvasWant || b.canvasDp == maxOf((bodyH * ChromeBudget.MIN_CANVAS_SHARE).toInt(), 96),
+                            "canvas=${b.canvasDp} want=$canvasWant panel=${b.panelBodyDp}")
                 }
             }
             val again = ChromeBudget.portrait(usableW, usableH, aw, ah, d.tablet, panel)

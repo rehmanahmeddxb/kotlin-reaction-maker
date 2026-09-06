@@ -68,9 +68,14 @@ context panel → tool rail → camera row → timeline.
   minimum, then collapses the rail, before the canvas may drop — and it never
   drops below 45 % of the width. Explicit close → canvas reclaims the width.
   Invariant: `rail + canvas + panel == usableW`.
-* `portrait(...)` – same idea on the height axis: panel body between min and
-  max, canvas ≥ 45 % of the body; the panel collapses (tabs strip stays) when
-  a 16:9 canvas would not otherwise fit.
+* `portrait(...)` – same idea on the height axis: the canvas wants
+  `width / aspect`; the panel opens by default when ≥ 120dp is left under
+  that (`PORTRAIT_SPARE_MIN_DP`) and takes exactly the spare up to its
+  maximum, so the picture keeps its full-width size — a 16:9 canvas on a
+  360×640 phone gets 202dp of canvas and a 178dp panel instead of a
+  letterboxed canvas over an empty tab strip. Canvas ≥ 45 % of the body
+  always; below 120dp of spare the panel collapses to its tab strip and
+  opens on demand at its minimum.
 * `extrasFit(usableH, landscape, tablet, extrasDp)` – the optional rows come
   out of the flexible body; they are shown only when the body would still be
   ≥ 260dp (portrait) / ≥ 200dp (landscape). The timeline is dropped first,
@@ -82,11 +87,11 @@ Default results (dp) from the test's device table — `rail=true` everywhere:
 
 | device (usable, dp) | 16:9 land canvas / panel | 9:16 land canvas / panel | 16:9 port canvas / panel body | 9:16 port canvas / panel body |
 |---|---|---|---|---|
-| small phone 360×640 | 536 / collapsed | 296 / 240 | 380 / collapsed (open = 200) | 380 / collapsed |
+| small phone 360×640 | 536 / collapsed | 296 / 240 | 202 / 178 | 380 / collapsed (open = 200) |
 | Pixel-class 393×851 | 499 / 248 | 474 / 273 | 265 / 326 | 591 / collapsed |
 | tall phone 412×915 | 533 / 278 | 517 / 294 | 295 / 360 | 655 / collapsed |
-| short phone 360×592 | 488 / collapsed | 248 / 240 | 332 / collapsed (open = 183) | 332 / collapsed |
-| foldable inner 673×841 | 457 / 280 | 457 / 280 | 321 / 260 | 321 / 260 |
+| short phone 360×592 | 488 / collapsed | 248 / 240 | 202 / 130 | 332 / collapsed (open = 183) |
+| foldable inner 673×841 | 457 / 280 | 457 / 280 | 378 / 203 | 321 / 260 |
 | tablet 800×1280 | 944 / 280 | 892 / 332 | 648 / 420 | 808 / 260 |
 | large tablet 1024×1366 | 1030 / 280 | 955 / 355 | 734 / 420 | 894 / 260 |
 
@@ -103,11 +108,19 @@ under 45 %.
 | | phone portrait | phone landscape | tablet portrait | tablet landscape |
 |---|---|---|---|---|
 | bars | 48 / 52 | **44 / 44** | 48 / 52 | 48 / 52 |
-| tool rail | bottom row 48dp | left 56dp, **"Hide tools" collapses it** into an edge handle | bottom row | left 56dp |
+| tool rail | bottom row 48dp: Add · Undo · Redo · panel · timeline | left 56dp: Add · Undo · Redo · hide; **"Hide tools" collapses it** into an edge handle | bottom row: all seven tools + panel toggle | left 56dp: all seven tools |
 | context panel | below canvas, tabs + body; ⌄/⌃ collapses body | right, budget dp; ✕ collapses whole panel → edge handle | below canvas | right |
 | timeline default | open | **collapsed** | open | open |
-| Save | icon (✓) | icon | text pill | text pill |
-| timeline toggle | in tool row | in tool rail | in transport | in transport |
+| top bar | Back · title · aspect · Save (icon) · Export (icon) · ⋯ | + Export pill | + Save pill, Settings | + Save pill, Settings |
+| REC pill | 44dp glyph, "■ 0:12" while recording | "● REC" | "● START RECORDING" | same |
+| timeline toggle | in tool row | in transport | in transport | in transport |
+
+Phones do not carry the five separate add-tools: a 360dp row cannot hold
+seven 48dp targets plus the view toggles without scrolling Undo/Redo off the
+end. **Add** opens the existing Add ring (camera · video · image · screen ·
+text — the same five verbs, one tap deeper), and the Sources tab's empty
+state lists them as full-width shortcuts. Every width claim in this table is
+checked by `tools/chrome-fit-check.py` (see §7).
 
 Tablets get rail + canvas + panel simultaneously in both orientations
 (asserted by the test). Phones in landscape get the compact tier the brief
@@ -117,11 +130,18 @@ collapsed by default.
 ## 4. Panels (one active body, `showTab`)
 
 * **Sources** – fixed header (title · "N hidden" badge · "+ Add") over a
-  scrolling list. The list *is* the existing `SourceDock` (eye · mute ·
-  name/status · badges · drag handle, 52dp rows) hosted in
+  scrolling list. The list *is* the existing `SourceDock`, hosted in
   `SourcesPanel.dockContainer`; reorder is the dock's own drag →
-  `SourceController.reorderLive`. Under the list: a selection action row
-  (forward / backward / remove). Empty project: the five add shortcuts.
+  `SourceController.reorderLive`. A row is 52dp: `[eye] type name/status …
+  [mute, clips] [⠿]` — the fixed pieces are 44dp targets and the name/status
+  column is the only flexible one, so at the 240dp phone-landscape minimum
+  the name still has 66dp and ellipsizes (the old row also carried a run of
+  LIVE/SOLO/LOOP/LOCK badges, which at 240dp left the name ~18dp: state is
+  now the status line — `SOLO · PAUSED · LOCKED`). Under the list: a
+  selection action row (forward / backward / hide / props / remove); on a
+  portrait phone panel shorter than 200dp that row is dropped
+  (`setCompact`) because each of its verbs is also on the row, in Props or
+  on the wheel. Empty project: the five add shortcuts.
 * **Mixer** – per audible source: type · name · PAUSED badge · M · S ·
   volume fader (`engine.setVolume`), monitor-mute in the header, mic strip
   read-only, "Silent — another source is soloed" explained inline. Faders
@@ -172,9 +192,10 @@ and became a Sources-header badge; the stats HUD is opt-in.
 
 | check | command | result |
 |---|---|---|
-| APK build (kotlinc + d8, offline toolchain) | `./build-apk.sh` | green (build #14) |
+| APK build (kotlinc + d8, offline toolchain) | `./build-apk.sh` | green (build #19) |
 | static integration guard, 96 needles | `python3 tools/validate-integration.py` | 96 / 0 |
-| chrome budget, 7 devices × 3 aspects × panel/rail overrides × extras | `bash tools/chrome-budget-test/run.sh` | 1836 / 0 |
+| chrome budget, 7 devices × 3 aspects × panel/rail overrides × extras | `bash tools/chrome-budget-test/run.sh` | 1840 / 0 |
+| fixed-bar fit: what each bar *contains* vs. the narrowest width of each tier (top bar idle + capturing, transport seek ≥ 96dp, rail/row without scrolling, tab strip at panel minimum, source row name ≥ 60dp, camera row) | `python3 tools/chrome-fit-check.py` | all green |
 | viewport fit | `bash tools/viewport-fit-test/run.sh` | 420 / 0 |
 | stage geometry | `bash tools/step2-geom-check.sh` | all green |
 | dex symbols the CI asserts (incl. `ChromeBudget`, `TimelineView`, `PropertiesPanel`, `EffectsPanel`) | `unzip -p artifacts/*.apk classes.dex \| strings` | all present; `ControlsPanel` 0 refs |
@@ -192,9 +213,14 @@ function is pure.
 * **No device or emulator run.** This sandbox has no adb, no emulator and no
   KVM. Nothing in this document is a screenshot. The claims "no clipping /
   no overlap / no off-screen control" rest on (a) the dp budget being
-  asserted for the device table above and (b) the layout being a single
-  column of fixed rows plus one flexible cell, i.e. there is no mechanism
-  left that *could* overlap. That is strong evidence, not proof.
+  asserted for the device table above, (b) the per-bar fit arithmetic in
+  `chrome-fit-check.py` — which, when first run, found two real overflows on
+  a 360dp phone (an "Export" pill pushing ⋯ off the top bar while the REC
+  chip was up; a 77–91dp seek bar) that are fixed by the phone-portrait icon
+  Export and glyph REC pill — and (c) the layout being a single column of
+  fixed rows plus one flexible cell, i.e. there is no mechanism left that
+  *could* overlap. That is strong evidence, not proof; the text-width
+  estimates in (b) are ±10 %.
 * **Regression list not executed on hardware.** Add video / image / camera /
   text, select / hide / mute / pause / lock / solo / loop, fit / fill, move /
   resize / rotate, wheel, advanced sheet, undo / redo, play / record / stop /
@@ -227,20 +253,20 @@ build + tests + reading, not on hardware (see §7).
 | 2 | Does landscape compute rail / canvas / panel from usable width with minimums, collapsing rail & panel before the canvas? | **YES** | `ChromeBudget.landscape`, invariants in test |
 | 3 | Do the tabs SOURCES / MIXER / PROPS / EFFECTS show one active body that fills the area? | **YES** | `buildContextPanel` + `showTab`; bodies are `MATCH_PARENT` in a weight-1 frame |
 | 4 | Does ✕ collapse the whole panel, does the canvas reclaim the space, and can it be re-opened? | **YES** | landscape: `setPanelOpen(false)` → `panelDp = 0`, edge handle re-opens; portrait: ⌄/⌃ toggle on the strip; tabs also re-open |
-| 5 | Sources: type, name, selected, visibility, mute, pause, lock, status, reorder, scrolling list with fixed header? | **YES** | `SourcesPanel` header outside the `ScrollView`; rows are `SourceDock` (existing, 52dp) |
+| 5 | Sources: type, name, selected, visibility, mute, pause, lock, status, reorder, scrolling list with fixed header? | **YES** | `SourcesPanel` header outside the `ScrollView`; rows are `SourceDock` (52dp; name ≥ 66dp at the narrowest panel, ellipsized; pause = tap the status line; lock/solo/loop in the status line) |
 | 6 | Mixer: compact empty state; source / volume / mute / solo / status through the existing listener? | **YES** | `MixerPanel.bind`; `engine.setVolume`, `ctrl.toggleMuted/toggleSolo` |
 | 7 | RadialWheel kept, and not exploded into permanent buttons? | **YES** | `RadialMenuView` in dex; only 7 rail tools + 5 top-bar items + 8 transport items are permanent |
 | 8 | SourceDock kept at an adequate size with handles / eye / mute reachable? | **YES** | `ROW_DP = 52`, eye/mute 44dp, drag handle unchanged |
-| 9 | Tool rail: Add / Camera / Video / Image / Text / Undo / Redo, compact, scrollable, collapsible when narrow? | **YES** | `buildRail`, `ScrollView`/`HorizontalScrollView`; phone landscape "Hide tools" → edge handle |
+| 9 | Tool rail: Add / Camera / Video / Image / Text / Undo / Redo, compact, scrollable, collapsible when narrow? | **YES** | tablets: all seven, no scrolling needed (fit-checked); phones: Add (→ Add ring with the same five verbs) · Undo · Redo · view toggles, fits 360dp without scrolling; scroll containers remain for font-scale overflow; phone landscape "Hide tools" → edge handle |
 | 10 | Timeline collapsible and compact when empty? | **YES** | `TimelineView` measures 0dp with no lanes; toggle; dropped first by `extrasFit` |
 | 11 | Transport independent, consistent height: Play / Record / Stop / time / duration? | **YES** | fixed 52dp (44dp compact) row; never part of the panel |
-| 12 | Top bar: Back / Aspect / Settings-diagnostics / Save / Export with a stable, touch-friendly height? | **YES** | 48dp (44dp compact); 44dp icon targets; Export long-press = export settings, ⋯ long-press = diagnostics |
+| 12 | Top bar: Back / Aspect / Settings-diagnostics / Save / Export with a stable, touch-friendly height? | **YES** | 48dp (44dp compact); 44dp targets; tablets have a Settings button (tap diagnostics, long-press export settings); phones (no width for a sixth item at 360dp) reach diagnostics via ⋯ long-press and the wheel's Project ring; Export long-press = export settings |
 | 13 | Portrait: top / dominant canvas / tabs / active panel / timeline + transport? | **YES** | `buildPortraitBody`; canvas ≥ 45 % of body, panel body 200–360dp (tablet 260–420) |
 | 14 | Phone landscape differs from tablet landscape (compact bar, collapsible rail & panel, timeline collapsed by default)? | **YES** | `Tier.PHONE_LANDSCAPE`: 44dp bars, "Hide tools", timeline default closed; tablets always rail + canvas + panel |
 | 15 | Status / nav bars, gesture area, cutout, edge-to-edge handled? | **YES (static)** | inset listener → column padding; Full Canvas immersive; exit button offset by cutout |
 | 16 | Structural hacks removed (percent weights, negative margins, translations, overlapping frames, invisible touch-intercepting views, duplicated UI)? | **YES** | grep clean; `ControlsPanel` deleted; one injector |
 | 17 | `onConfigurationChanged` rebuild path preserved with no state loss? | **YES** | `relayoutChrome()`; tri-state chrome flags + tab + selection + progress card + screen-light survive; engine untouched |
-| 18 | Touch targets ~44–48dp without overlaps? | **YES** | `TAP_DP = 44` everywhere in chrome; tabs full 40dp strip height; mixer toggles 40dp; dock 44dp; header "+ Add" hit area 40dp |
+| 18 | Touch targets ~44–48dp without overlaps? | **YES** | `TAP_DP = 44` everywhere in chrome; tabs full 40dp strip height; mixer toggles 40dp; dock 44dp; Props button rows 40dp at a 44dp pitch; header "+ Add" hit area 40dp; the REC glyph pill has `minWidth = 44dp` |
 
 **Verdict:** no answer is NO. Eight of the eighteen are "YES (static)" or
 depend on the static evidence in §7; they should be re-answered from a

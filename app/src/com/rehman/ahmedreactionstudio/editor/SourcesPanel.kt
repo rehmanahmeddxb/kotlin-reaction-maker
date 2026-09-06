@@ -63,6 +63,8 @@ class SourcesPanel(context: Context) : LinearLayout(context) {
     private val propsBtn: IconBtn
     private val removeBtn: IconBtn
     private val actionHint: TextView
+    private var actionRow: LinearLayout? = null
+    private var actionDivider: View? = null
 
     init {
         orientation = VERTICAL
@@ -133,13 +135,18 @@ class SourcesPanel(context: Context) : LinearLayout(context) {
         buildShortcuts()
 
         // ---- selection action row -------------------------------------------
+        // (forward · backward · hide · props · remove for the selection; every
+        // verb is also on the row itself / in Props, so a short phone panel
+        // may drop it — see setCompact)
         val divider = View(context)
         divider.setBackgroundColor(Color.argb(40, 255, 255, 255))
         addView(divider, LayoutParams(LayoutParams.MATCH_PARENT, 1))
+        actionDivider = divider
         val row = LinearLayout(context)
         row.orientation = HORIZONTAL
         row.gravity = Gravity.CENTER_VERTICAL
         row.setPadding(UI.dp(context, 6), 0, UI.dp(context, 6), 0)
+        actionRow = row
         fun action(icon: Int, desc: String, tint: Int = UI.FG, fn: () -> Unit): IconBtn {
             val b = IconBtn(context)
             b.layoutParams = IconBtn.sized(context, 40)
@@ -156,6 +163,7 @@ class SourcesPanel(context: Context) : LinearLayout(context) {
             setTextColor(UI.FG2)
             gravity = Gravity.CENTER
             maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
             includeFontPadding = false
         }
         row.addView(actionHint, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
@@ -168,6 +176,17 @@ class SourcesPanel(context: Context) : LinearLayout(context) {
     }
 
     private var sel: Layer? = null
+
+    /**
+     * Short portrait panels (< 200dp body on a 360dp phone) give the whole
+     * height to header + list: the action row's verbs remain on the rows
+     * (eye, drag handle), in Props (ARRANGE, DANGER) and on the wheel.
+     */
+    fun setCompact(compact: Boolean) {
+        val v = if (compact) View.GONE else View.VISIBLE
+        actionRow?.visibility = v
+        actionDivider?.visibility = v
+    }
 
     /** "N hidden" in the header; tap selects the first hidden source. */
     fun setHidden(n: Int, onTap: () -> Unit) {

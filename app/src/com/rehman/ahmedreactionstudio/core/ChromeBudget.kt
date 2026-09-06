@@ -64,6 +64,17 @@ object ChromeBudget {
     fun panelMaxDp(tablet: Boolean) = if (tablet) 360 else 300
     fun portraitPanelMinDp(tablet: Boolean) = if (tablet) 260 else 200
     fun portraitPanelMaxDp(tablet: Boolean) = if (tablet) 420 else 360
+    /**
+     * Portrait: the panel opens by default whenever the canvas leaves at least
+     * this much under itself. Between this and [portraitPanelMinDp] the panel
+     * takes exactly the spare (the picture keeps its full-width size): black
+     * bars around a letterboxed canvas plus an empty tab strip are worse than
+     * a short panel (header + 1.5–2.5 source rows, and the list scrolls). The
+     * panels drop their secondary rows under [PORTRAIT_COMPACT_BELOW_DP].
+     */
+    const val PORTRAIT_SPARE_MIN_DP = 120
+    /** panel bodies shorter than this hide their secondary (duplicated-elsewhere) rows */
+    const val PORTRAIT_COMPACT_BELOW_DP = 200
 
     /**
      * @param usableW usable width in dp (window minus system bars)
@@ -126,12 +137,18 @@ object ChromeBudget {
         val pMax = portraitPanelMaxDp(tablet)
         val free = bodyH - canvasWant
         // tablets keep canvas + context together in portrait too
-        val panelDefault = tablet || free >= pMin
+        val panelDefault = tablet || free >= PORTRAIT_SPARE_MIN_DP
         val canvasMin = maxOf((bodyH * MIN_CANVAS_SHARE).toInt(), 96)
-        // what an open panel gets: the free height if generous, else its minimum,
-        // and never so much that the canvas drops under its floor — on a screen
-        // too short for both, the panel is what shrinks (canvas first)
-        var openBody = free.coerceIn(pMin, pMax)
+        // what an open panel gets: the free height if generous; exactly the
+        // spare when that is short but still usable (the picture keeps its
+        // full-width size — no black bars); else its minimum, and never so much
+        // that the canvas drops under its floor — on a screen too short for
+        // both, the panel is what shrinks (canvas first)
+        var openBody = when {
+            free >= pMin -> free.coerceAtMost(pMax)
+            free >= PORTRAIT_SPARE_MIN_DP -> free
+            else -> pMin
+        }
         if (bodyH - openBody < canvasMin) openBody = (bodyH - canvasMin).coerceAtLeast(0)
         val open = panelOpen ?: panelDefault
         val body = if (open) openBody else 0

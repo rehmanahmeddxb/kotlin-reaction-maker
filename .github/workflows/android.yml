@@ -58,6 +58,7 @@ jobs:
           bash tools/audio-math-test/run.sh
           bash tools/viewport-fit-test/run.sh
           bash tools/chrome-budget-test/run.sh
+          python3 tools/chrome-fit-check.py
           bash tools/layer-model-test/run.sh
           bash tools/step2-geom-check.sh
 

@@ -592,6 +592,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             lp.height = if (b.panelBodyDp > 0) portraitPanelHeightPx else ViewGroup.LayoutParams.WRAP_CONTENT
             contextPanel.layoutParams = lp
             panelBody.visibility = if (b.panelBodyDp > 0) View.VISIBLE else View.GONE
+            sourcesPanel?.setCompact(b.panelBodyDp in 1 until ChromeBudget.PORTRAIT_COMPACT_BELOW_DP)
             contextPanel.visibility = View.VISIBLE
             toolRail.visibility = View.VISIBLE
             // the strip's last button is "collapse" while open and "expand" while collapsed
@@ -1009,12 +1010,13 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         row.orientation = LinearLayout.HORIZONTAL
         row.setPadding(UI.dp(this, 8), 0, UI.dp(this, 8), 0)
         for ((label, fn) in items) {
-            val b = StudioLayoutInjector.pillBtn(this, label, UI.FG, UI.BG3, 36) { fn() }
+            // 40dp pills at a 44dp pitch: touch targets, not chips
+            val b = StudioLayoutInjector.pillBtn(this, label, UI.FG, UI.BG3, 40) { fn() }
             b.textSize = 11.5f
             b.maxLines = 2
             b.setPadding(UI.dp(this, 6), 0, UI.dp(this, 6), 0)
-            val lp = LinearLayout.LayoutParams(0, UI.dp(this, 36), 1f)
-            lp.setMargins(UI.dp(this, 3), UI.dp(this, 3), UI.dp(this, 3), UI.dp(this, 3))
+            val lp = LinearLayout.LayoutParams(0, UI.dp(this, 40), 1f)
+            lp.setMargins(UI.dp(this, 3), UI.dp(this, 2), UI.dp(this, 3), UI.dp(this, 2))
             b.layoutParams = lp
             row.addView(b)
         }
@@ -2108,10 +2110,14 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         val hasLive = p.layers.any { it.isLive() }
         val hasClip = p.layers.any { it.isClip() }
         val ready = hasLive && hasClip
-        val compact = chromeTier == StudioLayoutInjector.Tier.PHONE_LANDSCAPE ||
-            chromeTier == StudioLayoutInjector.Tier.PHONE_PORTRAIT
+        // tablets spell it out; phone landscape says "● REC"; phone portrait's
+        // 360dp transport gets a 44dp record glyph that widens only for the timer
+        val tier = chromeTier
+        val glyphOnly = tier == StudioLayoutInjector.Tier.PHONE_PORTRAIT
+        val compact = glyphOnly || tier == StudioLayoutInjector.Tier.PHONE_LANDSCAPE
         recordBtn.text = when {
-            recording -> "■  " + UI.fmtTime(android.os.SystemClock.elapsedRealtime() - recordStartMs)
+            recording -> (if (glyphOnly) "■ " else "■  ") + UI.fmtTime(android.os.SystemClock.elapsedRealtime() - recordStartMs)
+            glyphOnly -> "●"
             ready -> if (compact) "●  REC" else "●  START RECORDING"
             else -> if (compact) "●  REC" else "●  RECORD"
         }

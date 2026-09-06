@@ -244,10 +244,36 @@ object StudioLayoutInjector {
             bar.addView(save)
         }
 
-        val export = pillBtn(activity, "Export", Color.WHITE, UI.ACCENT, 32) { activity.quickExport() }
-        export.contentDescription = "Export video"
-        export.setOnLongClickListener { activity.openExportSettings(); true }
-        bar.addView(export)
+        if (activity.chromeTier == Tier.PHONE_PORTRAIT) {
+            // 360dp: an "Export" pill next to the REC chip pushes ⋯ off the bar,
+            // so the primary action is an accent-filled icon here (still 44dp)
+            val export = IconBtn(activity)
+            export.layoutParams = IconBtn.sized(activity, TAP_DP)
+            export.setIcon(R.drawable.ic_export, Color.WHITE, "Export video")
+            export.background = android.graphics.drawable.InsetDrawable(
+                Ic.pill(activity, UI.ACCENT, 16f, HAIRLINE), UI.dp(activity, 4))
+            export.setOnClickListener { activity.quickExport() }
+            export.setOnLongClickListener { activity.openExportSettings(); true }
+            bar.addView(export)
+        } else {
+            val export = pillBtn(activity, "Export", Color.WHITE, UI.ACCENT, 32) { activity.quickExport() }
+            export.contentDescription = "Export video"
+            export.setOnLongClickListener { activity.openExportSettings(); true }
+            bar.addView(export)
+        }
+
+        // Settings / diagnostics. Tablets: its own button. Phones: a 360dp bar
+        // holding Back · aspect · Save · Export · ⋯ leaves the title 88dp and,
+        // with the REC chip up, 18dp — one more 44dp item would push ⋯ off the
+        // edge — so there it is the ⋯ long-press and the wheel's Project ring.
+        if (isTablet(activity.chromeTier)) {
+            val settings = IconBtn(activity)
+            settings.layoutParams = IconBtn.sized(activity, TAP_DP)
+            settings.setIcon(R.drawable.ic_settings, UI.FG, "Settings and diagnostics")
+            settings.setOnClickListener { activity.openDiagnostics() }
+            settings.setOnLongClickListener { activity.openExportSettings(); true }
+            bar.addView(settings)
+        }
 
         val more = IconBtn(activity)
         more.layoutParams = IconBtn.sized(activity, TAP_DP)
@@ -321,6 +347,7 @@ object StudioLayoutInjector {
         column.addView(panel, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             if (b.panelBodyDp > 0) activity.portraitPanelHeightPx else ViewGroup.LayoutParams.WRAP_CONTENT))
         activity.panelBody.visibility = if (b.panelBodyDp > 0) View.VISIBLE else View.GONE
+        activity.sourcesPanel?.setCompact(b.panelBodyDp in 1 until ChromeBudget.PORTRAIT_COMPACT_BELOW_DP)
 
         val toolRow = buildRail(activity, vertical = false)
         column.addView(toolRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, UI.dp(activity, TOOLROW_DP)))
@@ -447,12 +474,24 @@ object StudioLayoutInjector {
     // tool rail (vertical in landscape, a row in portrait)
     // =====================================================================
 
+    /**
+     * Tool rail (landscape, vertical) / tool row (portrait, horizontal).
+     *
+     * Phones do not get the full seven-tool rail: a 360dp-wide row cannot hold
+     * seven 48dp targets plus the view toggles, and a phone-landscape rail has
+     * ~250dp of height. Instead of a scrolling strip that hides Undo/Redo off
+     * the end, the phone tier shows Add (the Add ring: camera · video · image ·
+     * screen · text — the same five verbs, one tap deeper) + Undo · Redo + the
+     * view toggles: 274dp in a portrait row, 226dp in a landscape rail, so
+     * nothing scrolls on a 360dp phone. Tablets get every tool.
+     */
     private fun buildRail(activity: EditorActivity, vertical: Boolean): View {
         val items = LinearLayout(activity)
         items.orientation = if (vertical) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
         items.gravity = Gravity.CENTER
         items.setBackgroundColor(BAR_BG)
         items.setPadding(UI.dp(activity, 4), UI.dp(activity, 4), UI.dp(activity, 4), UI.dp(activity, 4))
+        val tablet = isTablet(activity.chromeTier)
 
         fun tool(icon: Int, label: String, fn: () -> Unit): IconBtn {
             val b = IconBtn(activity)
@@ -463,30 +502,36 @@ object StudioLayoutInjector {
             items.addView(b)
             return b
         }
+        fun gap() {
+            // a hairline separates creation · history · view toggles
+            val g = View(activity)
+            g.setBackgroundColor(HAIRLINE)
+            items.addView(g, if (vertical) LinearLayout.LayoutParams(UI.dp(activity, 24), 1).apply { setMargins(0, UI.dp(activity, 6), 0, UI.dp(activity, 6)) }
+                             else LinearLayout.LayoutParams(1, UI.dp(activity, 24)).apply { setMargins(UI.dp(activity, 6), 0, UI.dp(activity, 6), 0) })
+        }
         tool(R.drawable.ic_add, "Add source") { activity.openAddChooser() }
-        tool(R.drawable.ic_camera, "Live camera") { activity.addLiveCamera() }
-        tool(R.drawable.ic_video, "Video file") { activity.pickMedia(true) }
-        tool(R.drawable.ic_image, "Image") { activity.pickMedia(false) }
-        tool(R.drawable.ic_text, "Text") { activity.addText() }
-        // a hairline gap separates history from creation
-        val gap = View(activity)
-        gap.setBackgroundColor(HAIRLINE)
-        items.addView(gap, if (vertical) LinearLayout.LayoutParams(UI.dp(activity, 24), 1).apply { setMargins(0, UI.dp(activity, 6), 0, UI.dp(activity, 6)) }
-                          else LinearLayout.LayoutParams(1, UI.dp(activity, 24)).apply { setMargins(UI.dp(activity, 6), 0, UI.dp(activity, 6), 0) })
+        if (tablet) {
+            tool(R.drawable.ic_camera, "Live camera") { activity.addLiveCamera() }
+            tool(R.drawable.ic_video, "Video file") { activity.pickMedia(true) }
+            tool(R.drawable.ic_image, "Image") { activity.pickMedia(false) }
+            tool(R.drawable.ic_text, "Text") { activity.addText() }
+        }
+        gap()
         activity.undoBtn = tool(R.drawable.ic_undo, "Undo") { activity.doUndo() }
         activity.redoBtn = tool(R.drawable.ic_redo, "Redo") { activity.doRedo() }
+        if (!vertical || !tablet) gap()
         if (!vertical) {
             // portrait has no top-bar room for the panel toggle; put it here
             tool(R.drawable.ic_panel, "Show or hide panel") { activity.setPanelOpen(!activity.isPanelShown()) }
         }
-        if (!isTablet(activity.chromeTier)) {
-            // phones: the timeline toggle lives here (the transport stays minimal)
+        if (activity.chromeTier == Tier.PHONE_PORTRAIT) {
+            // the one tier whose transport has no room for the timeline toggle
             val tl = timelineToggle(activity)
-            // IconBtn.sized() yields FrameLayout params — give the rail its own
+            // IconBtn.sized() yields FrameLayout params — give the row its own
             items.addView(tl, LinearLayout.LayoutParams(UI.dp(activity, TAP_DP), UI.dp(activity, TAP_DP))
                 .apply { setMargins(UI.dp(activity, 2), UI.dp(activity, 2), UI.dp(activity, 2), UI.dp(activity, 2)) })
         }
-        if (vertical && !isTablet(activity.chromeTier)) {
+        if (vertical && !tablet) {
             // phone landscape: the rail can be tucked away to widen the canvas
             tool(R.drawable.ic_back, "Hide tools") { activity.setRailOpen(false) }
         }
@@ -580,6 +625,9 @@ object StudioLayoutInjector {
             t.gravity = Gravity.CENTER
             t.includeFontPadding = false
             t.maxLines = 1
+            // four labels share a 240dp panel (≈47dp each): shrink before clipping
+            t.setAutoSizeTextTypeUniformWithConfiguration(9, 12, 1, android.util.TypedValue.COMPLEX_UNIT_SP)
+            t.setPadding(UI.dp(activity, 2), 0, UI.dp(activity, 2), 0)
             t.setTextColor(UI.FG2)
             t.contentDescription = "$label tab"
             // the pill is drawn 32dp tall (4dp inset) but the touch target is the full 40dp strip
@@ -748,9 +796,10 @@ object StudioLayoutInjector {
         activity.durationLabel = durationLabel
         bar.addView(durationLabel)
 
-        // timeline show/hide: here on tablets; phones keep the transport to
-        // play · stop · time · seek · duration · REC and put it in the tool rail
-        if (isTablet(activity.chromeTier)) bar.addView(timelineToggle(activity))
+        // timeline show/hide lives here unless the bar is a 360dp phone-portrait
+        // one (play · stop · time · seek · duration · REC already leave the seek
+        // ~110dp there); phone portrait puts it in the tool row instead
+        if (activity.chromeTier != Tier.PHONE_PORTRAIT) bar.addView(timelineToggle(activity))
 
         // record: one pill whose label is the state (updateRecordButton owns it)
         val recBtn = TextView(activity)
@@ -762,7 +811,12 @@ object StudioLayoutInjector {
         recBtn.includeFontPadding = false
         recBtn.maxLines = 1
         recBtn.setTextColor(Color.WHITE)
-        recBtn.setPadding(UI.dp(activity, 14), 0, UI.dp(activity, 14), 0)
+        // phone portrait: a 44dp glyph pill ("●"; "■ 0:12" while recording) —
+        // see EditorActivity.updateRecordButton; elsewhere a text pill
+        val glyphOnly = activity.chromeTier == Tier.PHONE_PORTRAIT
+        val hp = UI.dp(activity, if (glyphOnly) 8 else 14)
+        recBtn.setPadding(hp, 0, hp, 0)
+        recBtn.minWidth = UI.dp(activity, TAP_DP)
         recBtn.background = Ic.pill(activity, Color.argb(240, 200, 34, 34), 18f, Color.argb(160, 255, 120, 120))
         recBtn.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(activity, 36))
         recBtn.setOnClickListener { activity.recordButtonTap() }
