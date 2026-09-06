@@ -32,6 +32,8 @@ class SourcesPanel(context: Context) : LinearLayout(context) {
         fun onRemove()
         fun onHide()
         fun onProperties()
+        fun onMoveUp(id: String)
+        fun onMoveDown(id: String)
     }
 
     var listener: Listener? = null
@@ -176,6 +178,20 @@ class SourcesPanel(context: Context) : LinearLayout(context) {
             setPadding(UI.dp(context, 8), 0, 0, 0)
         }
         row.addView(lbl, LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
+        val up = ImageButton(context).apply {
+            setImageDrawable(Ic.get(context, R.drawable.ic_up, Color.WHITE))
+            setBackgroundColor(Color.TRANSPARENT)
+            setOnClickListener { listener?.onMoveUp(l.id) }
+        }
+        row.addView(up, LinearLayout.LayoutParams(UI.dp(context, 36), UI.dp(context, 36)))
+
+        val down = ImageButton(context).apply {
+            setImageDrawable(Ic.get(context, R.drawable.ic_down, Color.WHITE))
+            setBackgroundColor(Color.TRANSPARENT)
+            setOnClickListener { listener?.onMoveDown(l.id) }
+        }
+        row.addView(down, LinearLayout.LayoutParams(UI.dp(context, 36), UI.dp(context, 36)))
+
         val eye = ImageButton(context).apply {
             setImageDrawable(Ic.get(context,
                 if (l.visible) R.drawable.ic_eye else R.drawable.ic_eye_off,
