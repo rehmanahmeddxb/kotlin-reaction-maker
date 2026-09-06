@@ -2,6 +2,7 @@ package com.rehman.ahmedreactionstudio.editor
 
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -14,9 +15,46 @@ import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Button
 import com.rehman.ahmedreactionstudio.R
+import com.rehman.ahmedreactionstudio.core.Aspect
+import com.rehman.ahmedreactionstudio.core.Project
 import com.rehman.ahmedreactionstudio.util.UI
 
 object StudioLayoutInjector {
+
+    /**
+     * A compact, theme-matched pill control (replaces the raw android [Button]
+     * widgets that used to sit in the thin top / transport bars). Raw Buttons
+     * carry Android's ~48dp default min-height, all-caps and large internal
+     * padding, so inside a short weighted bar they overflowed vertically (text
+     * clipped) and sat at different heights/baselines than the neighbouring
+     * 44dp icon buttons and labels — the "cropped / misaligned" buttons. This
+     * pill is a [TextView] with zero minimum height and an explicit height, so
+     * it centres cleanly against the row's other controls.
+     */
+    private fun pillBtn(activity: EditorActivity, text: String, textColor: Int,
+                        fill: Int, heightDp: Int = 32, bold: Boolean = true,
+                        onClick: () -> Unit): TextView {
+        val t = TextView(activity)
+        t.text = text
+        t.textSize = 12f
+        t.typeface = Typeface.create("sans-serif-medium", if (bold) Typeface.BOLD else Typeface.NORMAL)
+        t.isAllCaps = false
+        t.gravity = Gravity.CENTER
+        t.setTextColor(textColor)
+        t.includeFontPadding = false
+        t.setPadding(UI.dp(activity, 12), 0, UI.dp(activity, 12), 0)
+        val g = GradientDrawable()
+        g.cornerRadius = UI.dpf(activity, heightDp / 2f)
+        g.setColor(fill)
+        g.setStroke(UI.dp(activity, 1), Color.argb(70, 255, 255, 255))
+        t.background = g
+        val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(activity, heightDp))
+        lp.setMargins(UI.dp(activity, 2), 0, UI.dp(activity, 2), 0)
+        t.layoutParams = lp
+        t.setOnClickListener { onClick() }
+        return t
+    }
+
     fun inject(activity: EditorActivity, root: FrameLayout) {
         val dm = activity.resources.displayMetrics
         val isLandscape = dm.widthPixels > dm.heightPixels
@@ -35,7 +73,13 @@ object StudioLayoutInjector {
         activity.recChip = TextView(activity)
         activity.statsHud = TextView(activity)
         activity.hiddenPill = TextView(activity)
-        activity.dock = SourceDock(activity, activity.dockContainer, { null!! }, { null }, { }, { _, _ -> }, { }, { }, { }, { _, _ -> }, { }) // dummy
+        // Stand-in dock created during a chrome (re)layout. EditorActivity always
+        // calls rebindDock() right after inject, so this is transient — but it
+        // must never throw (a `{ null!! }` project ref used to NPE on the next
+        // rebuildDock if a re-inject ran mid-permission-flow), so point it at the
+        // real project and fall back to an empty project instead of null.
+        activity.dock = SourceDock(activity, activity.dockContainer,
+            { activity.proj ?: Project("", "", Aspect.R169) }, { null }, { }, { _, _ -> }, { }, { }, { }, { _, _ -> }, { }) // stand-in
         activity.studioBtn = IconBtn(activity)
         activity.tabBar = LinearLayout(activity)
         activity.transportBar = LinearLayout(activity)
@@ -89,18 +133,14 @@ object StudioLayoutInjector {
         }
         topBar.addView(settingsBtn)
 
-        val saveBtnTop = Button(activity).apply {
-            text = "Save"
-            setPadding(UI.dp(activity, 4), 0, UI.dp(activity, 4), 0)
-            setOnClickListener { activity.saveNow() }
-        }
+        // Accent-fill Save / Export pills at the row's natural control height so
+        // they align with the back label and don't overflow the short top bar.
+        val saveBtnTop = pillBtn(activity, "Save", Color.WHITE,
+            Color.rgb(230, 70, 32), heightDp = 30) { activity.saveNow() }
         topBar.addView(saveBtnTop)
 
-        val exportBtnTop = Button(activity).apply {
-            text = "Export"
-            setPadding(UI.dp(activity, 4), 0, UI.dp(activity, 4), 0)
-            setOnClickListener { activity.quickExport() }
-        }
+        val exportBtnTop = pillBtn(activity, "Export", Color.WHITE,
+            UI.ACCENT2, heightDp = 30) { activity.quickExport() }
         topBar.addView(exportBtnTop)
 
         if (isLandscape) {
@@ -487,19 +527,31 @@ object StudioLayoutInjector {
         activity.playBtn = playBtn
         bar.addView(playBtn, LinearLayout.LayoutParams(UI.dp(activity, 44), UI.dp(activity, 44)))
 
-        
-        val recBtn = Button(activity).apply {
+        // Same visual grammar and height as the play icon so the whole row is
+        // one aligned baseline. recordBtn is a TextView (per its declared type)
+        // — updateRecordButton() restyles it into a full pill + label anyway.
+        val recBtn = TextView(activity).apply {
             activity.recordBtn = this
             text = "● Record"
-            setTextColor(Color.RED)
+            textSize = 12f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            setTextColor(Color.argb(255, 255, 90, 90))
+            setPadding(UI.dp(activity, 12), 0, UI.dp(activity, 12), 0)
             setOnClickListener { activity.recordButtonTap() }
         }
+        val recG = GradientDrawable()
+        recG.cornerRadius = UI.dpf(activity, 17f)
+        recG.setColor(Color.argb(200, 200, 34, 34))
+        recBtn.background = recG
+        val recLp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(activity, 34))
+        recLp.setMargins(UI.dp(activity, 2), 0, UI.dp(activity, 2), 0)
+        recBtn.layoutParams = recLp
         bar.addView(recBtn)
-        
-        val stopBtn = Button(activity).apply {
-            text = "⏹ Stop"
-            setOnClickListener { activity.controlsStopTap() }
-        }
+
+        val stopBtn = pillBtn(activity, "⏹ Stop", UI.FG,
+            Color.argb(150, 38, 42, 52), heightDp = 34, bold = false) { activity.controlsStopTap() }
         bar.addView(stopBtn)
         
         val timeLabel = TextView(activity).apply {

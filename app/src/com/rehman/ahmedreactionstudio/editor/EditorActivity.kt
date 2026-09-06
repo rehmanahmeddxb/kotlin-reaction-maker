@@ -244,17 +244,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             }
         }
 
-        dockContainer = LinearLayout(this)
-        dockContainer.orientation = LinearLayout.VERTICAL
         buildUi()
-        dock = SourceDock(this, dockContainer, { this.proj!! }, { selectedId },
-            { id -> select(id) },
-            { l, what -> quickToggle(l, what) },
-            { l -> engine.toggleLayerPlay(l); markDirty(); refreshAll() },
-            { l -> openAdvancedSheet(l) },
-            { pushUndo() },
-            { from, to -> ctrl.reorderLive(from, to); stage.refresh() },
-            { markDirty(); refreshAll() })
+        rebindDock()
         rebuildDock()
         rebuildSourceDock()
         refreshContextBar()
@@ -370,6 +361,11 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         super.onConfigurationChanged(newConfig)
         rootFrame.removeAllViews()
         com.rehman.ahmedreactionstudio.editor.StudioLayoutInjector.inject(this, rootFrame)
+        rebindDock()
+        rebuildDock()
+        rebuildSourceDock()
+        refreshContextBar()
+        updateRecordButton()
         stage.post { syncPreviewTarget() }
         stage.refresh()
     }
@@ -436,6 +432,9 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     private fun relayoutChrome(vararg args: Any?) {
         rootFrame.removeAllViews()
         com.rehman.ahmedreactionstudio.editor.StudioLayoutInjector.inject(this, rootFrame)
+        rebindDock()
+        rebuildDock()
+        rebuildSourceDock()
     }
 
     private fun dockBtn(parent: LinearLayout, icon: Int, label: String, desc: String,
@@ -790,6 +789,28 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     // ================= panel: MIXER (sliders need a sheet) =================
 
     private fun buildMixerPanel(vararg args: Any?) { }
+
+    /**
+     * (Re)create the live-camera / source dock and its callbacks. The layout
+     * chrome ([StudioLayoutInjector]) installs a lightweight stand-in dock on
+     * every build (including each [onConfigurationChanged] re-layout), so it
+     * must be rebound to a real [SourceDock] whenever the chrome is rebuilt —
+     * otherwise the stand-in's `projectRef { null!! }` throws on the next
+     * [rebuildDock]. Call right after any chrome (re)build.
+     */
+    private fun rebindDock() {
+        val container = LinearLayout(this)
+        container.orientation = LinearLayout.VERTICAL
+        dockContainer = container
+        dock = SourceDock(this, container, { this.proj!! }, { selectedId },
+            { id -> select(id) },
+            { l, what -> quickToggle(l, what) },
+            { l -> engine.toggleLayerPlay(l); markDirty(); refreshAll() },
+            { l -> openAdvancedSheet(l) },
+            { pushUndo() },
+            { from, to -> ctrl.reorderLive(from, to); stage.refresh() },
+            { markDirty(); refreshAll() })
+    }
 
     private fun rebuildDock() {
         if (this::dock.isInitialized) dock.rebuild()
