@@ -112,6 +112,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     private lateinit var hiddenPill: TextView
     private lateinit var wheel: RadialMenuView
     private lateinit var dock: SourceDock
+    private var sourcesPanel: SourcesPanel? = null
+    private var controlsPanel: ControlsPanel? = null
     override lateinit var ctrl: SourceController
     private lateinit var rootFrame: FrameLayout
     private lateinit var studioBtn: IconBtn
@@ -255,6 +257,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         engine.refreshFrames()
         updateEmptyState()
         updateRecordButton()
+        bindSidePanels()
     }
 
     private fun applyOrientationFor(a: Aspect) {
@@ -392,18 +395,48 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         root.addView(mixerPanelView, FrameLayout.LayoutParams(
             UI.dp(this, 260), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START or Gravity.CENTER_VERTICAL))
 
+        // Right rail: Sources stretched to fill remaining height, Controls box under it.
+        val rightCol = LinearLayout(this)
+        rightCol.orientation = LinearLayout.VERTICAL
+        rightCol.setPadding(0, UI.dp(this, 8), 0, UI.dp(this, 8))
         val sourcesPanelView = SourcesPanel(this)
-        root.addView(sourcesPanelView, FrameLayout.LayoutParams(
-            UI.dp(this, 260), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END or Gravity.CENTER_VERTICAL))
+        sourcesPanel = sourcesPanelView
+        rightCol.addView(sourcesPanelView, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        val controlsPanelView = ControlsPanel(this)
+        controlsPanel = controlsPanelView
+        val controlsLp = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        controlsLp.topMargin = UI.dp(this, 8)
+        rightCol.addView(controlsPanelView, controlsLp)
+        root.addView(rightCol, FrameLayout.LayoutParams(
+            UI.dp(this, 260), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END))
 
-        // Wire interactive panels to EditorActivity / SourceController
         sourcesPanelView.listener = object : SourcesPanel.Listener {
             override fun onSelect(id: String) { select(id) }
             override fun onToggleVisible(id: String) { ctrl.toggleVisible(id) }
-            override fun onAdd() { addLiveCamera() }
-            override fun onRemove() { selectedId?.let { ctrl.toggleVisible(it) } /* simple proxy */ }
+            override fun onAdd() {
+                if (proj?.layers.isNullOrEmpty()) addLiveCamera() else pickMedia(video = true)
+            }
+            override fun onAddVideo() { pickMedia(video = true) }
+            override fun onAddImage() { pickMedia(video = false) }
+            override fun onRemove() { removeSelectedSource() }
             override fun onHide() { selectedId?.let { ctrl.toggleVisible(it) } }
-            override fun onProperties() { startActivity(Intent(this@EditorActivity, DiagnosticsActivity::class.java)) }
+            override fun onProperties() {
+                val l = selectedId?.let { proj?.layerById(it) }
+                if (l != null) openAdvancedSheet(l)
+                else UI.toast(this@EditorActivity, "Select a source first")
+            }
+        }
+        controlsPanelView.listener = object : ControlsPanel.Listener {
+            override fun onStartRecording() { recordButtonTap() }
+            override fun onPause() {
+                if (recording) UI.toast(this@EditorActivity, "Recording can't be paused — tap Stop to finish")
+                else togglePlay()
+            }
+            override fun onStop() { controlsStopTap() }
+            override fun onSave() { saveNow() }
+            override fun onFlashlight() { controlsFlashTap() }
         }
         mixerPanelView.listener = object : MixerPanel.Listener {
             override fun onMute(id: String) { selectedId?.let { ctrl.toggleMuted(it) } }
@@ -2456,6 +2489,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     override fun select(id: String?) {
         selectedId = id
         refreshContextBar(); rebuildDock(); rebuildSourceDock(); stage.refresh()
+        bindSidePanels()
     }
     override fun bitmapOf(l: Layer): Bitmap? = engine.frameOf(l)
     override fun textOf(l: Layer): String = l.text
@@ -2539,6 +2573,48 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         updateRecordButton()
         updateHiddenPill()
         refreshTabBar()
+        bindSidePanels()
+    }
+
+    private fun bindSidePanels() {
+        val p = proj
+        sourcesPanel?.bind(p?.layers ?: emptyList(), selectedId)
+        val hasLive = p?.layers?.any { it.isLive() } == true
+        val hasClip = p?.layers?.any { it.isClip() } == true
+        val flashOn = liveCam?.isTorchLitForFront() == true ||
+            liveCam?.isTorchLitForBack() == true || screenLight
+        val playing = engineReady() && engine.anyPlaying()
+        controlsPanel?.bind(recording, playing, flashOn, hasLive && hasClip)
+    }
+
+    private fun removeSelectedSource() {
+        val id = selectedId ?: run {
+            UI.toast(this, "Select a source first")
+            return
+        }
+        val l = proj?.layerById(id) ?: return
+        if (l.isLive()) {
+            removeLiveCameraLayer()
+            return
+        }
+        if (engineReady()) engine.evict(id)
+        selectedId = null
+        ctrl.delete(id)
+    }
+
+    private fun controlsStopTap() {
+        if (recording) { stopCompositeRecording(); return }
+        if (engineReady() && engine.anyPlaying()) {
+            engine.pauseAll()
+            engine.stopSnapshots()
+            refreshAll()
+        } else UI.toast(this, "Nothing is playing")
+    }
+
+    private fun controlsFlashTap() {
+        val live = proj?.layers?.firstOrNull { it.isLive() }
+        if (live != null && liveCam != null && liveCam!!.hasFlashUnit) toggleTorch(live)
+        else toggleScreenLight()
     }
 
     private fun updateHiddenPill() {
@@ -3042,31 +3118,34 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
      * each, so the button stays hidden otherwise.
      */
     private fun updateRecordButton() {
-        if (!this::recordBtn.isInitialized) return
-        // the contextual bar mirrors the record state (Record / Stop verb)
-        if (selectedId == null) refreshContextBar()
-        val p = proj ?: return
-        val hasLive = p.layers.any { it.isLive() }
-        val hasClip = p.layers.any { it.isClip() }
-        val ready = hasLive && hasClip
-        recordBtn.visibility = View.VISIBLE
-        recordBtn.text = when {
-            recording -> "■  STOP & SAVE"
-            ready -> "●  START RECORDING"
-            !hasLive && !hasClip -> "●  ADD CAMERA + VIDEO TO RECORD"
-            !hasLive -> "●  ADD CAMERA TO RECORD"
-            else -> "●  ADD VIDEO TO RECORD"
+        if (this::recordBtn.isInitialized) {
+            // the contextual bar mirrors the record state (Record / Stop verb)
+            if (selectedId == null) refreshContextBar()
+            val p = proj
+            if (p != null) {
+                val hasLive = p.layers.any { it.isLive() }
+                val hasClip = p.layers.any { it.isClip() }
+                val ready = hasLive && hasClip
+                recordBtn.visibility = View.VISIBLE
+                recordBtn.text = when {
+                    recording -> "■  STOP & SAVE"
+                    ready -> "●  START RECORDING"
+                    !hasLive && !hasClip -> "●  ADD CAMERA + VIDEO TO RECORD"
+                    !hasLive -> "●  ADD CAMERA TO RECORD"
+                    else -> "●  ADD VIDEO TO RECORD"
+                }
+                recordBtn.alpha = if (recording || ready) 1f else 0.65f
+                recordBtn.contentDescription = recordBtn.text.toString()
+                recordBtn.background = if (recording)
+                    Ic.pill(this, Color.argb(240, 200, 34, 34), 20f, Color.argb(180, 255, 120, 120))
+                else if (ready)
+                    Ic.pill(this, Color.argb(240, 255, 90, 44), 20f, Color.argb(140, 255, 200, 160))
+                else
+                    Ic.pill(this, Color.argb(170, 38, 42, 52), 20f, Color.argb(70, 255, 255, 255))
+                try { refreshTabBar() } catch (_: Exception) {}
+            }
         }
-        recordBtn.alpha = if (recording || ready) 1f else 0.65f
-        recordBtn.contentDescription = recordBtn.text.toString()
-        recordBtn.background = if (recording)
-            Ic.pill(this, Color.argb(240, 200, 34, 34), 20f, Color.argb(180, 255, 120, 120))
-        else if (ready)
-            Ic.pill(this, Color.argb(240, 255, 90, 44), 20f, Color.argb(140, 255, 200, 160))
-        else
-            Ic.pill(this, Color.argb(170, 38, 42, 52), 20f, Color.argb(70, 255, 255, 255))
-        // ensure tabBar reflects recording state if needed
-        try { refreshTabBar() } catch (_: Exception) {}
+        bindSidePanels()
     }
 
     /** record taps when the setup is incomplete explain + open Add instead of hiding */
