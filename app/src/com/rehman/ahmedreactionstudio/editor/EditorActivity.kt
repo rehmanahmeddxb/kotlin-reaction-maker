@@ -112,6 +112,9 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     private lateinit var hiddenPill: TextView
     private lateinit var wheel: RadialMenuView
     private lateinit var dock: SourceDock
+    private var sourcesPanel: SourcesPanel? = null
+    private var controlsPanel: ControlsPanel? = null
+    private var mixerPanel: MixerPanel? = null
     override lateinit var ctrl: SourceController
     private lateinit var rootFrame: FrameLayout
     private lateinit var studioBtn: IconBtn
@@ -255,6 +258,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         engine.refreshFrames()
         updateEmptyState()
         updateRecordButton()
+        bindSidePanels()
     }
 
     private fun applyOrientationFor(a: Aspect) {
@@ -280,6 +284,18 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     }
 
     private fun engineReady(): Boolean = this::engine.isInitialized
+
+    /** Bottom-sheet transport (seek / duration). The experimental side-panel
+     *  layout omits [buildSheet], so these stay uninitialized — callers must
+     *  not touch them. */
+    private fun transportReady(): Boolean =
+        this::seek.isInitialized && this::durationLabel.isInitialized
+
+    private fun sheetReady(): Boolean =
+        this::sheet.isInitialized && this::panelScroll.isInitialized &&
+            this::panelContent.isInitialized && this::panelDivider.isInitialized
+
+    private fun wheelReady(): Boolean = this::wheel.isInitialized
 
     override fun onResume() {
         super.onResume()
@@ -338,7 +354,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     }
 
     override fun onBackPressed() {
-        if (wheel.isOpen()) { wheel.pop(); return }
+        if (wheelReady() && wheel.isOpen()) { wheel.pop(); return }
         if (fullCanvas) { setFullCanvas(false); return }
         if (sheetTab != null) { setSheet(null); return }
         flushSave()
@@ -377,26 +393,64 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
         // ===== experiment left/right settings panels =====
         val mixerPanelView = MixerPanel(this)
+        mixerPanel = mixerPanelView
         root.addView(mixerPanelView, FrameLayout.LayoutParams(
-            UI.dp(this, 260), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START or Gravity.CENTER_VERTICAL))
+            UI.dp(this, 260), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START))
 
+        // Right rail: Sources stretched to fill remaining height, Controls box under it.
+        val rightCol = LinearLayout(this)
+        rightCol.orientation = LinearLayout.VERTICAL
+        rightCol.setPadding(0, UI.dp(this, 8), 0, UI.dp(this, 8))
         val sourcesPanelView = SourcesPanel(this)
-        root.addView(sourcesPanelView, FrameLayout.LayoutParams(
-            UI.dp(this, 260), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END or Gravity.CENTER_VERTICAL))
+        sourcesPanel = sourcesPanelView
+        rightCol.addView(sourcesPanelView, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        val controlsPanelView = ControlsPanel(this)
+        controlsPanel = controlsPanelView
+        val controlsLp = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        controlsLp.topMargin = UI.dp(this, 8)
+        rightCol.addView(controlsPanelView, controlsLp)
+        root.addView(rightCol, FrameLayout.LayoutParams(
+            UI.dp(this, 260), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END))
 
-        // Wire interactive panels to EditorActivity / SourceController
         sourcesPanelView.listener = object : SourcesPanel.Listener {
             override fun onSelect(id: String) { select(id) }
             override fun onToggleVisible(id: String) { ctrl.toggleVisible(id) }
-            override fun onAdd() { addLiveCamera() }
-            override fun onRemove() { selectedId?.let { ctrl.toggleVisible(it) } /* simple proxy */ }
+            override fun onAdd() {
+                if (proj?.layers.isNullOrEmpty()) addLiveCamera() else pickMedia(video = true)
+            }
+            override fun onAddVideo() { pickMedia(video = true) }
+            override fun onAddImage() { pickMedia(video = false) }
+            override fun onRemove() { removeSelectedSource() }
             override fun onHide() { selectedId?.let { ctrl.toggleVisible(it) } }
-            override fun onProperties() { startActivity(Intent(this@EditorActivity, DiagnosticsActivity::class.java)) }
+            override fun onProperties() {
+                val l = selectedId?.let { proj?.layerById(it) }
+                if (l != null) openAdvancedSheet(l)
+                else UI.toast(this@EditorActivity, "Select a source first")
+            }
+        }
+        controlsPanelView.listener = object : ControlsPanel.Listener {
+            override fun onStartRecording() { recordButtonTap() }
+            override fun onPause() {
+                if (recording) UI.toast(this@EditorActivity, "Recording can't be paused — tap Stop to finish")
+                else togglePlay()
+            }
+            override fun onStop() { controlsStopTap() }
+            override fun onSave() { saveNow() }
+            override fun onFlashlight() { controlsFlashTap() }
+            override fun onExport() { quickExport() }
         }
         mixerPanelView.listener = object : MixerPanel.Listener {
-            override fun onMute(id: String) { selectedId?.let { ctrl.toggleMuted(it) } }
-            override fun onSolo(id: String) { selectedId?.let { ctrl.toggleSolo(it) } }
-            override fun onMasterVolume(v: Float) { selectedId?.let { ctrl.setVolume(it, v) } }
+            override fun onSelect(id: String) { select(id) }
+            override fun onMute(id: String) { ctrl.toggleMuted(id) }
+            override fun onSolo(id: String) { ctrl.toggleSolo(id) }
+            override fun onVolume(id: String, v: Float) {
+                val l = proj?.layerById(id) ?: return
+                pushUndoLight()
+                if (engineReady()) engine.setVolume(l, v) else l.volume = v
+                markDirty()
+            }
         }
 
         // empty-state prompt
@@ -530,7 +584,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
         stage.contentDescription = "Composition canvas. Tap a source to select it."
         // buildSnackBar(root)  // removed for experiment
-        // buildProgOverlay(root)  // removed for experiment
+        buildProgOverlay(root)
 
         setContentView(root)
         stage.post { syncPreviewTarget() }
@@ -541,6 +595,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     /** Step 5's 38% panel cap / 28% canvas reserve, including floating controls. */
     private fun capPanelHeight(topPx: Int, viewHeight: Int) {
+        if (!sheetReady()) return
         if (chromeLandscape == true || panelScroll.visibility != View.VISIBLE || sheet.height <= 0) return
         val fixedSheet = (sheet.height - panelScroll.height).coerceAtLeast(0)
         val controls = if (quickWrap.visibility == View.VISIBLE) quickWrap.height + UI.dp(this, 8) else 0
@@ -1129,6 +1184,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
      */
     private fun setFullCanvas(on: Boolean) {
         if (fullCanvas == on) return
+        if (!this::topBar.isInitialized || !this::sheet.isInitialized ||
+            !this::fullExitBtn.isInitialized) return
         fullCanvas = on
         if (on) {
             setSheet(null)
@@ -1207,7 +1264,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
      * rotating the phone all keep the whole composition on screen.
      */
     private fun applyViewportInsets() {
-        if (!this::stage.isInitialized || !this::sheet.isInitialized || rootFrame.height <= 0) return
+        if (!this::stage.isInitialized || !this::sheet.isInitialized ||
+            !this::topBar.isInitialized || rootFrame.height <= 0) return
         val gap = UI.dp(this, 8)
         val land = chromeLandscape == true
         // Insets are included in chrome padding exactly once, then we measure
@@ -1407,6 +1465,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     /** Open the root ring, blooming from the Studio button. */
     private fun openRootWheel() {
+        if (!wheelReady()) return
         setSheet(null)
         val loc = IntArray(2); val rootLoc = IntArray(2)
         if (this::studioBtn.isInitialized) {
@@ -1422,6 +1481,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     /** Open a specific ring at a point (used by canvas long-press and ◉). */
     private fun openWheelLevel(level: RadialMenuView.Level, ax: Float, ay: Float) {
+        if (!wheelReady()) return
         setSheet(null)
         wheel.show(level, ax, ay)
     }
@@ -1429,6 +1489,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     // ================= sheet (only where a ring is the wrong tool) =================
 
     private fun setSheet(tab: String?) {
+        if (!sheetReady()) { sheetTab = tab; return }
         if (tab != null && fullCanvas) setFullCanvas(false)
         sheetTab = tab
         val sv = panelScroll
@@ -1640,6 +1701,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     // ================= panel: ADD =================
 
     private fun section(title: String) {
+        if (!this::panelContent.isInitialized) return
         val t = TextView(this)
         t.text = title
         t.setTextColor(UI.ACCENT2)
@@ -1701,12 +1763,14 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             .setItems(labels.toTypedArray()) { _, which ->
                 val next = Aspect.entries[which]
                 if (next == cur) return@setItems
-                aspectChip.animate().cancel()
-                aspectChip.animate().scaleX(0.8f).scaleY(0.8f).setDuration(80).withEndAction {
-                    changeAspect(next)
-                    aspectChip.animate().scaleX(1f).scaleY(1f).setDuration(260)
-                        .setInterpolator(OvershootInterpolator(2f)).start()
-                }.start()
+                if (this::aspectChip.isInitialized) {
+                    aspectChip.animate().cancel()
+                    aspectChip.animate().scaleX(0.8f).scaleY(0.8f).setDuration(80).withEndAction {
+                        changeAspect(next)
+                        aspectChip.animate().scaleX(1f).scaleY(1f).setDuration(260)
+                            .setInterpolator(OvershootInterpolator(2f)).start()
+                    }.start()
+                } else changeAspect(next)
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -1726,7 +1790,10 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         showUndoSnack("Canvas ${a.code} — every source keeps its own frame ratio")
     }
 
-    private fun updateAspectChip() { aspectChip.text = proj!!.aspect.code }
+    private fun updateAspectChip() {
+        if (!this::aspectChip.isInitialized) return
+        aspectChip.text = proj!!.aspect.code
+    }
 
     // ================= panel: EXPORT =================
 
@@ -2120,6 +2187,12 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     }
 
     private fun openAdvancedSheet(l: Layer) {
+        if (!sheetReady()) {
+            selectedId = l.id
+            refreshContextBar(); rebuildDock(); rebuildSourceDock()
+            if (this::stage.isInitialized) stage.refresh()
+            return
+        }
         if (fullCanvas) setFullCanvas(false)
         setSheet(null)
         selectedId = l.id
@@ -2345,19 +2418,19 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     private var lastHudMs = 0L
 
     private fun onTick(ms: Long) {
-        if (!this::playBtn.isInitialized || !this::statsHud.isInitialized) return
-        // The master clock ticks at ~60 Hz; the transport only needs ~20 Hz.
-        // Throttling keeps TextView.setText / SeekBar progress off the main
-        // thread's critical path so it cannot steal time from the stage draw.
+        // Always keep the stage painting even when the experimental layout
+        // omitted the transport bar (playBtn / seek never built).
         val now = android.os.SystemClock.elapsedRealtime()
         if (!scrubbing && now - lastUiTickMs >= 50L) {
             lastUiTickMs = now
-            timeLabel.text = UI.fmtTime(ms)
-            val max = seek.max
-            if (max > 0) seek.progress = ms.toInt().coerceAtMost(max)
+            if (this::timeLabel.isInitialized) timeLabel.text = UI.fmtTime(ms)
+            if (this::seek.isInitialized) {
+                val max = seek.max
+                if (max > 0) seek.progress = ms.toInt().coerceAtMost(max)
+            }
         }
         // HUD refreshes at ~2 Hz — it reports the engine's own 500 ms window
-        if (now - lastHudMs >= 500L) {
+        if (this::statsHud.isInitialized && now - lastHudMs >= 500L) {
             lastHudMs = now
             val show = !fullCanvas && editorPrefs().getBoolean(PREF_STATS_HUD, true) &&
                 (engine.anyPlaying() || recording)
@@ -2375,13 +2448,15 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         if (sig != lastPlayingSig) {
             lastPlayingSig = sig
             val playingNow = engine.anyPlaying()
-            playBtn.setIcon(if (playingNow) R.drawable.ic_pause else R.drawable.ic_play,
-                Color.WHITE, if (playingNow) "Pause" else "Play")
+            if (this::playBtn.isInitialized) {
+                playBtn.setIcon(if (playingNow) R.drawable.ic_pause else R.drawable.ic_play,
+                    Color.WHITE, if (playingNow) "Pause" else "Play")
+            }
             // state change (e.g. a non-loop source auto-pausing at its end):
             // refresh all source surfaces so statuses never go stale
             refreshAll()
         }
-        if (engine.consumeNewFrames()) stage.refresh()
+        if (engineReady() && engine.consumeNewFrames() && this::stage.isInitialized) stage.refresh()
     }
 
     /** cheap signature of per-source play states (detects auto-pause at end) */
@@ -2423,6 +2498,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     override fun select(id: String?) {
         selectedId = id
         refreshContextBar(); rebuildDock(); rebuildSourceDock(); stage.refresh()
+        bindSidePanels()
     }
     override fun bitmapOf(l: Layer): Bitmap? = engine.frameOf(l)
     override fun textOf(l: Layer): String = l.text
@@ -2506,6 +2582,49 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         updateRecordButton()
         updateHiddenPill()
         refreshTabBar()
+        bindSidePanels()
+    }
+
+    private fun bindSidePanels() {
+        val p = proj
+        sourcesPanel?.bind(p?.layers ?: emptyList(), selectedId)
+        val hasLive = p?.layers?.any { it.isLive() } == true
+        val hasClip = p?.layers?.any { it.isClip() } == true
+        val flashOn = liveCam?.isTorchLitForFront() == true ||
+            liveCam?.isTorchLitForBack() == true || screenLight
+        val playing = engineReady() && engine.anyPlaying()
+        controlsPanel?.bind(recording, playing, flashOn, hasLive && hasClip)
+        mixerPanel?.bind(p?.layers ?: emptyList(), selectedId)
+    }
+
+    private fun removeSelectedSource() {
+        val id = selectedId ?: run {
+            UI.toast(this, "Select a source first")
+            return
+        }
+        val l = proj?.layerById(id) ?: return
+        if (l.isLive()) {
+            removeLiveCameraLayer()
+            return
+        }
+        if (engineReady()) engine.evict(id)
+        selectedId = null
+        ctrl.delete(id)
+    }
+
+    private fun controlsStopTap() {
+        if (recording) { stopCompositeRecording(); return }
+        if (engineReady() && engine.anyPlaying()) {
+            engine.pauseAll()
+            engine.stopSnapshots()
+            refreshAll()
+        } else UI.toast(this, "Nothing is playing")
+    }
+
+    private fun controlsFlashTap() {
+        val live = proj?.layers?.firstOrNull { it.isLive() }
+        if (live != null && liveCam != null && liveCam!!.hasFlashUnit) toggleTorch(live)
+        else toggleScreenLight()
     }
 
     private fun updateHiddenPill() {
@@ -2557,21 +2676,26 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     }
 
     private fun afterStructureChange() {
-        engine.attach(projectId)
+        if (engineReady()) engine.attach(projectId)
         reconcileLiveCamera()
         // aspect can change via undo/redo, so re-sync orientation + chip here
-        if (this::aspectChip.isInitialized) {
-            applyOrientationFor(proj!!.aspect)
-            updateAspectChip()
-            stage.post { syncPreviewTarget() }
-        }
+        applyOrientationFor(proj!!.aspect)
+        if (this::aspectChip.isInitialized) updateAspectChip()
+        if (this::stage.isInitialized) stage.post { syncPreviewTarget() }
         refreshAll()
         val dur = proj!!.durationMs().toInt().coerceAtLeast(1)
-        seek.max = dur
-        durationLabel.text = "/ " + UI.fmtTime(dur.toLong())
-        stage.refresh()
-        engine.refreshFrames()
-        if (engine.anyPlaying()) engine.startSnapshots()
+        // The experimental side-panel layout omits the transport bar, so seek /
+        // durationLabel may never have been built. Adding a source (camera
+        // permission result, import, undo) must still succeed.
+        if (transportReady()) {
+            seek.max = dur
+            durationLabel.text = "/ " + UI.fmtTime(dur.toLong())
+        }
+        if (this::stage.isInitialized) stage.refresh()
+        if (engineReady()) {
+            engine.refreshFrames()
+            if (engine.anyPlaying()) engine.startSnapshots()
+        }
         markDirty()
     }
 
@@ -2628,6 +2752,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, res: IntArray) {
         super.onRequestPermissionsResult(code, perms, res)
+        if (isFinishing || isDestroyed) return
         if (code == REQ_APP_PERMS) launchProjection()
         if (code == REQ_CAMERA_PERM) {
             if (checkSelfPermission(android.Manifest.permission.CAMERA) ==
@@ -3003,31 +3128,34 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
      * each, so the button stays hidden otherwise.
      */
     private fun updateRecordButton() {
-        if (!this::recordBtn.isInitialized) return
-        // the contextual bar mirrors the record state (Record / Stop verb)
-        if (selectedId == null) refreshContextBar()
-        val p = proj ?: return
-        val hasLive = p.layers.any { it.isLive() }
-        val hasClip = p.layers.any { it.isClip() }
-        val ready = hasLive && hasClip
-        recordBtn.visibility = View.VISIBLE
-        recordBtn.text = when {
-            recording -> "■  STOP & SAVE"
-            ready -> "●  START RECORDING"
-            !hasLive && !hasClip -> "●  ADD CAMERA + VIDEO TO RECORD"
-            !hasLive -> "●  ADD CAMERA TO RECORD"
-            else -> "●  ADD VIDEO TO RECORD"
+        if (this::recordBtn.isInitialized) {
+            // the contextual bar mirrors the record state (Record / Stop verb)
+            if (selectedId == null) refreshContextBar()
+            val p = proj
+            if (p != null) {
+                val hasLive = p.layers.any { it.isLive() }
+                val hasClip = p.layers.any { it.isClip() }
+                val ready = hasLive && hasClip
+                recordBtn.visibility = View.VISIBLE
+                recordBtn.text = when {
+                    recording -> "■  STOP & SAVE"
+                    ready -> "●  START RECORDING"
+                    !hasLive && !hasClip -> "●  ADD CAMERA + VIDEO TO RECORD"
+                    !hasLive -> "●  ADD CAMERA TO RECORD"
+                    else -> "●  ADD VIDEO TO RECORD"
+                }
+                recordBtn.alpha = if (recording || ready) 1f else 0.65f
+                recordBtn.contentDescription = recordBtn.text.toString()
+                recordBtn.background = if (recording)
+                    Ic.pill(this, Color.argb(240, 200, 34, 34), 20f, Color.argb(180, 255, 120, 120))
+                else if (ready)
+                    Ic.pill(this, Color.argb(240, 255, 90, 44), 20f, Color.argb(140, 255, 200, 160))
+                else
+                    Ic.pill(this, Color.argb(170, 38, 42, 52), 20f, Color.argb(70, 255, 255, 255))
+                try { refreshTabBar() } catch (_: Exception) {}
+            }
         }
-        recordBtn.alpha = if (recording || ready) 1f else 0.65f
-        recordBtn.contentDescription = recordBtn.text.toString()
-        recordBtn.background = if (recording)
-            Ic.pill(this, Color.argb(240, 200, 34, 34), 20f, Color.argb(180, 255, 120, 120))
-        else if (ready)
-            Ic.pill(this, Color.argb(240, 255, 90, 44), 20f, Color.argb(140, 255, 200, 160))
-        else
-            Ic.pill(this, Color.argb(170, 38, 42, 52), 20f, Color.argb(70, 255, 255, 255))
-        // ensure tabBar reflects recording state if needed
-        try { refreshTabBar() } catch (_: Exception) {}
+        bindSidePanels()
     }
 
     /** record taps when the setup is incomplete explain + open Add instead of hiding */
@@ -3288,6 +3416,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
      * fit / z-order all live.
      */
     private fun addLiveCamera() {
+        if (isFinishing || isDestroyed || proj == null) return
         if (liveCamLayerId != null) {
             val existing = proj!!.layerById(liveCamLayerId!!)
             if (existing != null) {
@@ -3488,14 +3617,14 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     override fun toggleMasterPlay() { togglePlay() }
     override fun restart() {
         engine.seekTo(0L)
-        seek.progress = 0
+        if (this::seek.isInitialized) seek.progress = 0
         onTick(0L)
     }
     override fun nudge(ms: Long) {
         val dur = proj!!.durationMs()
         val t = (engine.master() + ms).coerceIn(0L, dur)
         engine.seekTo(t)
-        seek.progress = t.toInt().coerceAtMost(seek.max)
+        if (this::seek.isInitialized) seek.progress = t.toInt().coerceAtMost(seek.max)
         onTick(t)
     }
     override fun toggleSourcePlay(l: Layer) {
