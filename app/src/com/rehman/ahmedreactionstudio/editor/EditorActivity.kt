@@ -27,6 +27,7 @@ import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
+import android.widget.ImageView
 import android.widget.TextView
 import com.rehman.ahmedreactionstudio.R
 import com.rehman.ahmedreactionstudio.camera.CameraActivity
@@ -364,12 +365,39 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         // ===== stage fills the whole screen =====
         val stageFrame = FrameLayout(this)
         stageFrame.setBackgroundColor(Color.rgb(4, 5, 7))
-        root.addView(stageFrame, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        val stageLp = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        stageLp.leftMargin = UI.dp(this, 260)
+        stageLp.rightMargin = UI.dp(this, 260)
+        root.addView(stageFrame, stageLp)
         stage = StageView(this)
         stage.host = this
         stageFrame.addView(stage, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER))
+
+        // ===== experiment left/right settings panels =====
+        val mixerPanelView = MixerPanel(this)
+        root.addView(mixerPanelView, FrameLayout.LayoutParams(
+            UI.dp(this, 260), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START or Gravity.CENTER_VERTICAL))
+
+        val sourcesPanelView = SourcesPanel(this)
+        root.addView(sourcesPanelView, FrameLayout.LayoutParams(
+            UI.dp(this, 260), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END or Gravity.CENTER_VERTICAL))
+
+        // Wire interactive panels to EditorActivity / SourceController
+        sourcesPanelView.listener = object : SourcesPanel.Listener {
+            override fun onSelect(id: String) { select(id) }
+            override fun onToggleVisible(id: String) { ctrl.toggleVisible(id) }
+            override fun onAdd() { addLiveCamera() }
+            override fun onRemove() { selectedId?.let { ctrl.toggleVisible(it) } /* simple proxy */ }
+            override fun onHide() { selectedId?.let { ctrl.toggleVisible(it) } }
+            override fun onProperties() { startActivity(Intent(this@EditorActivity, DiagnosticsActivity::class.java)) }
+        }
+        mixerPanelView.listener = object : MixerPanel.Listener {
+            override fun onMute(id: String) { selectedId?.let { ctrl.toggleMuted(it) } }
+            override fun onSolo(id: String) { selectedId?.let { ctrl.toggleSolo(it) } }
+            override fun onMasterVolume(v: Float) { selectedId?.let { ctrl.setVolume(it, v) } }
+        }
 
         // empty-state prompt
         emptyOverlay = LinearLayout(this)
@@ -378,8 +406,9 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         emptyOverlay.setPadding(UI.dp(this, 24), 0, UI.dp(this, 24), 0)
         root.addView(emptyOverlay, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        emptyOverlay.visibility = View.GONE
 
-        buildTopBar(root)
+        // buildTopBar(root)  // removed for experiment
 
         // screen-recording chip
         recChip = TextView(this)
@@ -474,10 +503,10 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
         quickWrap = qWrap
 
-        buildSheet(root)
-        buildSideRail(root)
-        relayoutChrome(isLandscape())
-        buildFullCanvasExit(root)
+        // buildSheet(root)  // removed for experiment
+        // buildSideRail(root)  // removed for experiment
+        // relayoutChrome(isLandscape())  // removed for experiment
+        // buildFullCanvasExit(root)  // removed for experiment
 
         // ===== the canvas is fitted into whatever the chrome leaves free =====
         // System bars + display cutout come from WindowInsets; the top bar,
@@ -494,14 +523,14 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         root.viewTreeObserver.addOnGlobalLayoutListener(chromeLayoutListener)
         stage.onCanvasLayout = { _, _ -> stage.post { syncPreviewTarget() } }
 
-        // ===== nested radial menu overlay (top of everything) =====
-        wheel = RadialMenuView(this)
-        root.addView(wheel, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        // ===== nested radial menu overlay (top of everything) — removed =====
+        // wheel = RadialMenuView(this)
+        // root.addView(wheel, FrameLayout.LayoutParams(
+        //     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         stage.contentDescription = "Composition canvas. Tap a source to select it."
-        buildSnackBar(root)
-        buildProgOverlay(root)
+        // buildSnackBar(root)  // removed for experiment
+        // buildProgOverlay(root)  // removed for experiment
 
         setContentView(root)
         stage.post { syncPreviewTarget() }
@@ -524,91 +553,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     }
 
     private fun buildTopBar(root: FrameLayout) {
-        val top = LinearLayout(this)
-        topBar = top
-        top.orientation = LinearLayout.HORIZONTAL
-        top.gravity = Gravity.CENTER_VERTICAL
-        top.setPadding(UI.dp(this, 12), UI.dp(this, 10), UI.dp(this, 12), UI.dp(this, 10))
-        val tg = GradientDrawable()
-        tg.orientation = GradientDrawable.Orientation.TOP_BOTTOM
-        tg.colors = intArrayOf(Color.argb(210, 0, 0, 0), Color.argb(55, 0, 0, 0), Color.argb(0, 0, 0, 0))
-        top.background = tg
-        root.addView(top, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP))
-
-        val back = IconBtn(this)
-        back.layoutParams = IconBtn.sized(this, 44)
-        back.setIcon(R.drawable.ic_back, UI.FG, "Back")
-        back.setOnClickListener { onBackPressed() }
-        top.addView(back)
-
-        val nameCol = LinearLayout(this)
-        nameCol.orientation = LinearLayout.VERTICAL
-        val nlp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        nlp.setMargins(UI.dp(this, 10), 0, UI.dp(this, 8), 0)
-        nameCol.layoutParams = nlp
-        val nameView = TextView(this)
-        nameView.id = View.generateViewId()
-        nameView.tag = "name"
-        nameView.setTextColor(UI.FG)
-        nameView.textSize = 14f
-        nameView.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-        nameView.maxLines = 1
-        nameView.ellipsize = android.text.TextUtils.TruncateAt.END
-        nameCol.addView(nameView)
-        val meta = TextView(this)
-        meta.tag = "meta"
-        meta.setTextColor(Color.argb(190, 255, 255, 255))
-        meta.textSize = 10f
-        meta.maxLines = 1
-        meta.ellipsize = android.text.TextUtils.TruncateAt.END
-        nameCol.addView(meta)
-        nameCol.isClickable = true
-        nameCol.isFocusable = true
-        nameCol.contentDescription = "Rename project"
-        nameCol.setOnClickListener { renameProject() }
-        top.addView(nameCol)
-
-        aspectChip = TextView(this)
-        aspectChip.gravity = Gravity.CENTER
-        aspectChip.setTextColor(Color.WHITE)
-        aspectChip.textSize = 11.5f
-        aspectChip.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-        aspectChip.setPadding(UI.dp(this, 14), UI.dp(this, 9), UI.dp(this, 14), UI.dp(this, 9))
-        aspectChip.background = Ic.pill(this, Color.argb(210, 30, 34, 44), 18f,
-            Color.argb(100, 255, 255, 255))
-        aspectChip.contentDescription = "Change canvas aspect ratio"
-        aspectChip.setOnClickListener { showAspectPicker() }
-        val alp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT)
-        alp.setMargins(0, 0, UI.dp(this, 10), 0)
-        aspectChip.layoutParams = alp
-        top.addView(aspectChip)
-        updateAspectChip()
-
-        val undoB = IconBtn(this)
-        undoB.layoutParams = IconBtn.sized(this, 44)
-        undoB.setIcon(R.drawable.ic_undo, UI.FG, "Undo")
-        undoB.setOnClickListener { doUndo() }
-        top.addView(undoB)
-
-        val redoB = IconBtn(this)
-        redoB.layoutParams = IconBtn.sized(this, 44)
-        redoB.setIcon(R.drawable.ic_redo, UI.FG, "Redo")
-        redoB.setOnClickListener { doRedo() }
-        top.addView(redoB)
-
-        val full = IconBtn(this)
-        full.layoutParams = IconBtn.sized(this, 44)
-        full.setIcon(R.drawable.ic_fullscreen, UI.FG, "Full canvas: hide all controls")
-        full.setOnClickListener { setFullCanvas(true) }
-        top.addView(full)
-
-        val diag = IconBtn(this)
-        diag.layoutParams = IconBtn.sized(this, 44)
-        diag.setIcon(R.drawable.ic_settings, UI.FG, "Project settings")
-        diag.setOnClickListener { startActivity(Intent(this, DiagnosticsActivity::class.java)) }
-        top.addView(diag)
+        // removed for experiment — no top bar controls
     }
 
     private fun buildSheet(root: FrameLayout) {
