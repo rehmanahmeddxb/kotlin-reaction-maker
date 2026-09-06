@@ -1,7 +1,7 @@
 package com.rehman.ahmedreactionstudio.core
 
 /**
- * OBS-style source command layer (docs/OBS_SOURCE_PLAN.md §6).
+ * OBS-style source command layer.
  *
  * Every mutation of a source goes through one of these verbs:
  *
@@ -111,9 +111,9 @@ class SourceController(
      * The live camera is refused HERE, not in the UI: there is exactly one
      * camera capture session, so a second "live" layer would render an empty
      * box in the preview and in the export. Both the ring and the sheets used
-     * to carry their own copy of this rule and disagreed about it (UI Plan2
-     * V14 / T-06); the rule now lives on the single verb so every present and
-     * future surface inherits it. Record a take first, then duplicate the take.
+     * to carry their own copy of this rule and disagreed about it; the rule now
+     * lives on the single verb so every present and future surface inherits
+     * it. Record a take first, then duplicate the take.
      */
     fun canDuplicate(id: String?): Boolean {
         val l = p.layerById(id ?: return false) ?: return false

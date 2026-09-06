@@ -181,8 +181,8 @@ class CompositionRecorder(
     /**
      * Microphone gain (1 = unity) and master gain applied to clip audio.
      *
-     * UI Plan2 T-14 — DECISION (2026-09-05): these stay **internal**, with no
-     * user-facing control.
+     * DECISION (2026-09-05): these stay **internal**, with no user-facing
+     * control.
      *
      * `masterGain` is applied here, in the live recording mixer. `Exporter` has
      * no equivalent stage (it mixes per-clip `l.volume` only). Surfacing a

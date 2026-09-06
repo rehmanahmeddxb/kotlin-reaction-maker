@@ -39,7 +39,7 @@ enum class LayerType(val label: String) {
  * `pausedMediaMs` is the media position the layer is frozen at while paused
  * (freeze is separate from master playback, per spec section 14).
  *
- * OBS-style source controls (see docs/OBS_SOURCE_PLAN.md):
+ * OBS-style source controls:
  *  - fit   : "fill" = COVER (frame fills its box, edges cropped) or
  *            "fit"  = CONTAIN (whole frame visible, letterboxed in the box).
  *            The "camera cuts out on canvas" bug was a world where only COVER

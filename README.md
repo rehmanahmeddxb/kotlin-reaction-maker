@@ -5,15 +5,9 @@ framework APIs (`android.app`, `android.view`, `Camera2`, `MediaCodec`,
 `MediaMuxer`, OpenGL-free CPU compositor), packaged as
 `com.rehman.ahmedreactionstudio`.
 
-> **Architecture:** OBS-style source controls — see
-> [`docs/OBS_SOURCE_PLAN.md`](docs/OBS_SOURCE_PLAN.md). Sources are
-> first-class citizens: select one and its controls are one tap away,
-> never buried in settings. What you see is exactly what gets exported.
-
-> **Consolidated baseline (2026-09-05):** Phase 2 canvas/selection/audio work
-> and the Step 5 editor UI are kept together. See the
-> [branch preservation report](docs/BRANCH_CONSOLIDATION_2026-09-05.md) for
-> original commit IDs, conflict decisions, regression tests and device checks.
+> **Architecture:** OBS-style source controls. Sources are first-class
+> citizens: select one and its controls are one tap away, never buried in
+> settings. What you see is exactly what gets exported.
 
 - Animated splash screen (`SplashActivity`) then project home.
 - **Full-screen studio**: the composition contain-fits the space left by
