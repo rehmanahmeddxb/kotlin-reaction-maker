@@ -70,14 +70,18 @@ check("both orientations bind their panels", count(injector, "bindPanels(activit
 check("both orientations build the transport bar", count(injector, "buildTransport(activity,") == 2)
 check("both orientations build the timeline seek", count(injector, "activity.seek = seek") == 2)
 
-# Top bar actions must reach the real verbs, not dead buttons.
+# Top bar actions must reach the real verbs, not dead buttons. Save is
+# automatic (autosave), so the header no longer needs a Save button; the
+# explicit "Save now" verb remains in the project radial menu.
 for needle, name in (
-    ("activity.saveNow()", "top bar Save is wired"),
     ("activity.quickExport()", "top bar Export is wired"),
     ("activity.showAspectPicker()", "aspect chip opens the aspect picker"),
     ("activity.openDiagnostics()", "settings opens diagnostics"),
 ):
     contains(injector, needle, name)
+
+radial = (SRC / "editor/RadialMenus.kt").read_text()
+check("project menu keeps explicit Save now", "fun saveNow()" in editor and 'h.saveNow()' in radial)
 
 # Landscape left tool rail: every tool wired to a real editor verb.
 for needle, name in (
