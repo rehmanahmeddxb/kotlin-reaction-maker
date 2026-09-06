@@ -490,13 +490,15 @@ class StageView @JvmOverloads constructor(
                 val x = lx(e); val y = ly(e)
                 when (mode) {
                     Mode.MOVE -> {
-                        if (!LayerFit.isFullBleed(l)) {
-                            l.cx = startCx + nx(x - downX)
-                            l.cy = startCy + ny(y - downY)
-                            snapMove(l)
-                            LayerFit.clampInside(l)
-                            if (hypot(x - downX, y - downY) > UI.dpf(context, 3f)) touchMoved()
-                        }
+                        // Even a full-bleed main source can be dragged: it
+                        // becomes a movable (then resizable) layer instead of a
+                        // frozen full-screen background. Use Fit/Fill/Set as
+                        // background to go back to true full-bleed quickly.
+                        l.cx = startCx + nx(x - downX)
+                        l.cy = startCy + ny(y - downY)
+                        snapMove(l)
+                        LayerFit.clampInside(l)
+                        if (hypot(x - downX, y - downY) > UI.dpf(context, 3f)) touchMoved()
                     }
                     Mode.PINCH -> if (e.pointerCount >= 2) { pinchMove(l, e); touchMoved() }
                     Mode.CORNER, Mode.EDGE -> { resizeTo(l, x, y); touchMoved() }
@@ -653,14 +655,11 @@ class StageView @JvmOverloads constructor(
         val minPx = UI.dpf(context, 24f)
         var newW = if (hsx != 0f) abs(px).coerceAtLeast(minPx) else startWpx
         var newH = if (hsy != 0f) abs(py).coerceAtLeast(minPx) else startHpx
-        // Corner handles (both axes) keep a media layer's aspect ratio; edge
-        // handles (one axis) stretch only that side, so width/height move
-        // independently and the box can be freely distorted along an edge.
-        if (!l.isText() && hsx != 0f && hsy != 0f) {
-            val k = (newW / startWpx + newH / startHpx) / 2f
-            newW = startWpx * k
-            newH = startHpx * k
-        }
+        // Crop-style resize: the dragged side/corner follows the finger while
+        // the opposite side stays anchored. Media layers are NOT forced back
+        // to their source aspect here — the user can crop one side at a time
+        // with an edge handle, or both sides independently with a corner
+        // handle. Pinch still keeps both axes locked for classic scaling.
         newW = newW.coerceIn(minPx, cw * MAX_BOX_N)
         newH = newH.coerceIn(minPx, ch * MAX_BOX_N)
 

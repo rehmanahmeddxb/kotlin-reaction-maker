@@ -1,6 +1,7 @@
 package com.rehman.ahmedreactionstudio.editor
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -37,6 +38,12 @@ class SourcesPanel(context: Context) : LinearLayout(context) {
     }
 
     var listener: Listener? = null
+
+    /**
+     * Optional async thumbnail loader (same contract as SourceDock). When
+     * absent the rows show the type icon only.
+     */
+    var thumbProvider: ((Layer, (Bitmap?) -> Unit) -> Unit)? = null
 
     private val list: LinearLayout
 
@@ -169,7 +176,20 @@ class SourcesPanel(context: Context) : LinearLayout(context) {
             setImageDrawable(Ic.get(context, Ic.typeIcon(l.type),
                 if (selected) Color.WHITE else Color.rgb(200, 210, 230)))
         }
-        row.addView(iconView, LinearLayout.LayoutParams(UI.dp(context, 22), UI.dp(context, 22)))
+        row.addView(iconView, LinearLayout.LayoutParams(UI.dp(context, 30), UI.dp(context, 30)))
+        if (l.isClip() || l.type == com.rehman.ahmedreactionstudio.core.LayerType.IMAGE) {
+            thumbProvider?.let { load ->
+                load(l) { bmp ->
+                    if (bmp != null && !bmp.isRecycled) {
+                        iconView.post {
+                            iconView.scaleType = ImageView.ScaleType.CENTER_CROP
+                            iconView.setImageBitmap(bmp)
+                            iconView.contentDescription = "Thumbnail - ${l.name}"
+                        }
+                    }
+                }
+            }
+        }
         val lbl = TextView(context).apply {
             text = l.name.ifBlank { l.type.label }
             setTextColor(if (l.visible) Color.rgb(230, 232, 238) else Color.argb(140, 230, 232, 238))

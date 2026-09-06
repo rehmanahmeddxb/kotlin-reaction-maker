@@ -1,6 +1,7 @@
 package com.rehman.ahmedreactionstudio.editor
 
 import android.app.Activity
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -44,6 +45,12 @@ class SourceDock(
     private val ROW_DP = 52
     private var dragRow: LinearLayout? = null
     private var dragLayer: Layer? = null
+
+    /**
+     * Optional async thumbnail loader. The host supplies it; when absent the
+     * row falls back to the type icon. The callback is invoked on the UI thread.
+     */
+    var thumbProvider: ((Layer, (Bitmap?) -> Unit) -> Unit)? = null
 
     fun rebuild() {
         container.removeAllViews()
@@ -105,14 +112,27 @@ class SourceDock(
             row.addView(spacer, LinearLayout.LayoutParams(UI.dp(act, 44), UI.dp(act, 44)))
         }
 
-        // --- type icon ---
+        // --- type icon / video thumbnail ---
         val typeIc = ImageView(act)
         typeIc.setImageDrawable(Ic.get(act, Ic.typeIcon(l.type),
             if (l.visible) UI.ACCENT2 else Color.argb(120, 255, 255, 255)))
-        val tlp = LinearLayout.LayoutParams(UI.dp(act, 18), UI.dp(act, 18))
+        val tlp = LinearLayout.LayoutParams(UI.dp(act, 30), UI.dp(act, 30))
         tlp.setMargins(UI.dp(act, 8), 0, UI.dp(act, 10), 0)
         typeIc.layoutParams = tlp
         row.addView(typeIc)
+        if (l.isClip() || l.type == com.rehman.ahmedreactionstudio.core.LayerType.IMAGE) {
+            thumbProvider?.let { load ->
+                load(l) { bmp ->
+                    if (bmp != null && !bmp.isRecycled) {
+                        typeIc.post {
+                            typeIc.scaleType = ImageView.ScaleType.CENTER_CROP
+                            typeIc.setImageBitmap(bmp)
+                            typeIc.contentDescription = "Thumbnail - ${l.name}"
+                        }
+                    }
+                }
+            }
+        }
 
         // --- name + status ---
         val col = LinearLayout(act)

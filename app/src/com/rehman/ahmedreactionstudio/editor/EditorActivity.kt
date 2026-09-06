@@ -31,6 +31,7 @@ import android.widget.ImageView
 import android.widget.TextView
 import com.rehman.ahmedreactionstudio.R
 import com.rehman.ahmedreactionstudio.camera.CameraActivity
+import com.rehman.ahmedreactionstudio.camera.TorchController
 import com.rehman.ahmedreactionstudio.capture.ScreenCaptureService
 import com.rehman.ahmedreactionstudio.core.Aspect
 import com.rehman.ahmedreactionstudio.core.Layer
@@ -171,6 +172,16 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     /** live camera feed → canvas (one at a time; see LiveCamera) */
     private var liveCam: LiveCamera? = null
     private var liveCamLayerId: String? = null
+    /**
+     * Editor-level hardware LED torch. Used when there is no live camera source
+     * (Flash must still work on an empty/new project) and as the "any flash"
+     * fallback when the selected camera side has no LED. It drives
+     * CameraManager.setTorchMode directly and is independent of the live
+     * preview session.
+     */
+    private var editorTorch: TorchController? = null
+    private var standaloneFrontTorch = false
+    private var standaloneBackTorch = false
     /** true after we've auto-opened the fullscreen recorder once for a
      *  live-camera failure, so a busy camera can never bounce between
      *  screens in a loop; reset whenever a live camera starts cleanly. */
@@ -209,6 +220,9 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     }
     /** on-the-fly decode cache so IMAGE sources render during recording */
     private val recordImageCache = HashMap<String, Bitmap>()
+    /** small thumbnails shown in the source list/dock (decoded once, off UI) */
+    private val thumbCache = HashMap<String, Bitmap>()
+    private val thumbLoading = HashSet<String>()
 
     // role assigned to the next imported media: "main" canvas or "pip"
     private var pendingRole = "main"
@@ -230,6 +244,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         store.markOpen(projectId)
 
         ctrl = SourceController({ this.proj!! }, { pushUndo() }, { onSourceChanged() })
+        editorTorch = TorchController(this)
 
         applyOrientationFor(p.aspect)
         engine = PreviewEngine(this, { this.proj!! }, store) { ms -> onTick(ms) }
@@ -294,6 +309,10 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     override fun onResume() {
         super.onResume()
+        // Refresh the editor-level torch inventory so Flash works even on an
+        // empty project / before a live camera is added.
+        try { editorTorch?.start() } catch (_: Exception) { }
+        try { editorTorch?.refresh() } catch (_: Exception) { }
         val pending = ScreenCaptureService.pendingFile
         if (pending != null && pending.exists()) {
             ScreenCaptureService.pendingFile = null
@@ -322,6 +341,10 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         if (liveCam?.recording != true) stopLiveCamera(evict = false)
         // never leave the panel glowing / brightness pinned in the background
         if (screenLight) { screenLight = false; applyScreenLight() }
+        // an editor-level hardware torch must never stay on in the background
+        standaloneFrontTorch = false
+        standaloneBackTorch = false
+        try { editorTorch?.releaseAll() } catch (_: Exception) { }
         super.onStop()
     }
 
@@ -340,6 +363,10 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         for (b in recordImageCache.values) try { b.recycle() } catch (_: Exception) { }
         recordImageCache.clear()
         stopLiveCamera(evict = true)
+        try { editorTorch?.shutdown() } catch (_: Exception) { }
+        editorTorch = null
+        for (b in thumbCache.values) try { b.recycle() } catch (_: Exception) { }
+        thumbCache.clear()
         saveHandler.removeCallbacksAndMessages(null)
         flushSave()
         if (engineReady()) engine.release()
@@ -810,6 +837,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             { pushUndo() },
             { from, to -> ctrl.reorderLive(from, to); stage.refresh() },
             { markDirty(); refreshAll() })
+        dock.thumbProvider = { l, done -> provideThumb(l, done) }
     }
 
     private fun rebuildDock() {
@@ -1325,7 +1353,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         val hasLive = p?.layers?.any { it.isLive() } == true
         val hasClip = p?.layers?.any { it.isClip() } == true
         val flashOn = liveCam?.isTorchLitForFront() == true ||
-            liveCam?.isTorchLitForBack() == true || screenLight
+            liveCam?.isTorchLitForBack() == true ||
+            anyStandaloneTorchOn() || screenLight
         val playing = engineReady() && engine.anyPlaying()
         controlsPanel?.bind(recording, playing, flashOn, hasLive && hasClip)
         mixerPanel?.bind(p?.layers ?: emptyList(), selectedId)
@@ -1355,10 +1384,33 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         } else UI.toast(this, "Nothing is playing")
     }
 
+    /**
+     * The one-tap Flash control must never be a dead end:
+     *  1. live camera with a real LED on the current side -> hardware torch;
+     *  2. no live camera / no LED on that side, but the phone has a rear or
+     *     front LED -> drive it directly through CameraManager.setTorchMode;
+     *  3. no hardware flash at all -> honest screen-light fallback.
+     */
     fun controlsFlashTap() {
         val live = proj?.layers?.firstOrNull { it.isLive() }
-        if (live != null && liveCam != null && liveCam!!.hasFlashUnit) toggleTorch(live)
-        else toggleScreenLight()
+        if (live != null && liveCam != null) {
+            // While a live camera owns the hardware, route through its own
+            // flash controller (or the screen-light fallback) so its open
+            // session and the editor-level torch never fight over one LED.
+            if (liveCam!!.hasFlashUnit) toggleTorch(live)
+            else toggleScreenLight()
+            return
+        }
+        // No live camera: a real LED can be switched with setTorchMode even on
+        // an empty project / with only a local video on the canvas. If there is
+        // no hardware flash, fall back to the screen light.
+        if (standaloneFlashAvailable(false)) {
+            if (toggleStandaloneTorch(false)) return
+        }
+        if (standaloneFlashAvailable(true)) {
+            if (toggleStandaloneTorch(true)) return
+        }
+        toggleScreenLight()
     }
 
     private fun updateHiddenPill(vararg args: Any?) { }
@@ -1622,6 +1674,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
                     showSnack("Could not add \"$name\": ${err ?: "unreadable file"}")
                     return@runOnUiThread
                 }
+                var addedId: String? = null
                 mutateThen {
                     val p = proj!!
                     val l = if (type == LayerType.IMAGE)
@@ -1630,14 +1683,84 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
                     else
                         Layer(type = type, name = name, relPath = relPath, durMs = info.durMs,
                             srcW = info.width, srcH = info.height, srcRotation = info.rotation)
+                    // Local media is expected to start playing automatically.
+                    // This explicit flag also survives a source added through
+                    // any alternate path (screen record, camera take swap).
+                    if (l.isClip()) l.playing = true
                     p.layers.add(l)
                     if (role == "main" || p.layers.size == 1) placeMain(l, p) else placePip(l, p)
                     selectedId = l.id
+                    addedId = l.id
+                }
+                // Seed a real first frame immediately so the new source never
+                // sits as a black box while the continuous decoder warms up.
+                if (addedId != null && type != LayerType.IMAGE) {
+                    primeFirstFrame(addedId!!, relPath)
                 }
                 try { if (!inProject) src.delete() } catch (_: Exception) { }
                 finishAddSource(src, role, name, type)
             }
         }, "add-source").start()
+    }
+
+    /**
+     * First-frame seed. A video added to the canvas starts decoding on the GPU
+     * pipeline, but the very first decode can take 100-300 ms; in that window
+     * the layer draws as a black box. This one-shot retriever grab shows the
+     * real first frame immediately and lets the continuous decoder take over.
+     */
+    private fun primeFirstFrame(id: String, relPath: String?) {
+        if (relPath.isNullOrBlank()) return
+        val path = File(store.projectDir(projectId), relPath).absolutePath
+        Thread({
+            val bmp = try { MediaKit.videoFrame(path, 0L, 480) } catch (_: Exception) { null }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) {
+                    try { bmp?.recycle() } catch (_: Exception) { }
+                    return@runOnUiThread
+                }
+                if (bmp != null && !bmp.isRecycled && engineReady()) {
+                    engine.seedFrame(id, bmp)
+                    if (this::stage.isInitialized) stage.refresh()
+                } else {
+                    try { bmp?.recycle() } catch (_: Exception) { }
+                }
+            }
+        }, "prime-frame").start()
+    }
+
+    /**
+     * Async thumbnail for the source list/dock. Decodes a small still off the
+     * main thread once, then caches it. The callback is always posted so it is
+     * safe for live panel bindings.
+     */
+    fun provideThumb(l: Layer, onDone: (Bitmap?) -> Unit) {
+        val rel = l.relPath
+        if (rel.isNullOrBlank()) return
+        val path = File(store.projectDir(projectId), rel).absolutePath
+        val key = path
+        thumbCache[key]?.let { bmp ->
+            if (!bmp.isRecycled) {
+                runOnUiThread { onDone(bmp) }
+                return
+            }
+            thumbCache.remove(key)
+        }
+        if (!thumbLoading.add(key)) return
+        Thread({
+            val bmp = try {
+                if (l.type == LayerType.IMAGE) MediaKit.image(path, 256)
+                else MediaKit.videoFrame(path, 0L, 256)
+            } catch (_: Exception) { null }
+            runOnUiThread {
+                thumbLoading.remove(key)
+                if (bmp != null && !bmp.isRecycled) {
+                    thumbCache[key]?.let { try { it.recycle() } catch (_: Exception) { } }
+                    thumbCache[key] = bmp
+                    onDone(bmp)
+                } else onDone(null)
+            }
+        }, "thumb").start()
     }
 
     private fun finishAddSource(src: File, role: String, name: String, type: LayerType) {
@@ -1869,7 +1992,11 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
                     !hasLive -> "●  ADD CAMERA TO RECORD"
                     else -> "●  ADD VIDEO TO RECORD"
                 }
-                recordBtn.alpha = if (recording || ready) 1f else 0.65f
+                // The button's own background is red/accent/dark, so the label
+                // must always be light — the old red-on-red text is what made
+                // the record label look empty until recording actually started.
+                recordBtn.setTextColor(if (recording || ready) Color.WHITE else UI.FG)
+                recordBtn.alpha = if (recording || ready) 1f else 0.85f
                 recordBtn.contentDescription = recordBtn.text.toString()
                 recordBtn.background = if (recording)
                     Ic.pill(this, Color.argb(240, 200, 34, 34), 20f, Color.argb(180, 255, 120, 120))
@@ -2550,6 +2677,60 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         UI.toast(this, if (turnOn) "Both flashes on" else "Both flashes off")
         refreshAll()
     }
+
+    // ------------------ editor standalone hardware flashlight ------------------
+    // Works without a source: CameraManager.setTorchMode() does not need a
+    // camera open, which is exactly what "flashlight should turn on even if no
+    // camera or local media is selected" is asking for.
+
+    fun standaloneFlashAvailable(front: Boolean): Boolean = try {
+        editorTorch?.refresh()
+        editorTorch?.hasFlash(front) == true
+    } catch (_: Exception) { false }
+
+    fun standaloneFlashOn(front: Boolean): Boolean {
+        val t = editorTorch ?: return false
+        val wanted = if (front) standaloneFrontTorch else standaloneBackTorch
+        return wanted && t.isTorchOn(front)
+    }
+
+    override fun anyStandaloneTorchOn(): Boolean =
+        standaloneFlashOn(false) || standaloneFlashOn(true)
+
+    /** Toggle the standalone rear/front LED. Returns true when the LED is now on. */
+    fun toggleStandaloneTorch(front: Boolean): Boolean {
+        val t = editorTorch ?: return false
+        try { t.refresh() } catch (_: Exception) { }
+        if (!t.hasFlash(front)) return false
+        val wanted = !(if (front) standaloneFrontTorch else standaloneBackTorch)
+        if (wanted) {
+            if (!t.setTorch(front, true)) {
+                UI.toast(this, t.failureText().ifBlank { "Flash unavailable" })
+                return false
+            }
+            // one editor torch at a time: switching to the other side turns it off
+            if (front) {
+                standaloneBackTorch = false
+                try { t.setTorch(false, false) } catch (_: Exception) { }
+            } else {
+                standaloneFrontTorch = false
+                try { t.setTorch(true, false) } catch (_: Exception) { }
+            }
+        } else {
+            if (front) standaloneFrontTorch = false else standaloneBackTorch = false
+            try { t.setTorch(front, false) } catch (_: Exception) { }
+        }
+        UI.toast(this, if (wanted) "Flashlight on" else "Flashlight off")
+        refreshAll()
+        return wanted
+    }
+
+    override fun standaloneFrontTorchAvailable(): Boolean = standaloneFlashAvailable(true)
+    override fun standaloneBackTorchAvailable(): Boolean = standaloneFlashAvailable(false)
+    override fun standaloneFrontTorchOn(): Boolean = standaloneFlashOn(true)
+    override fun standaloneBackTorchOn(): Boolean = standaloneFlashOn(false)
+    override fun toggleStandaloneFrontTorch(): Boolean = toggleStandaloneTorch(true)
+    override fun toggleStandaloneBackTorch(): Boolean = toggleStandaloneTorch(false)
 
     override fun isScreenLightOn(): Boolean = screenLight
 

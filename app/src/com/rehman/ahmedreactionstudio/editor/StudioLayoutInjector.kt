@@ -103,23 +103,44 @@ object StudioLayoutInjector {
         val topBar = LinearLayout(activity)
         topBar.orientation = LinearLayout.HORIZONTAL
         topBar.gravity = Gravity.CENTER_VERTICAL
-        topBar.setPadding(UI.dp(activity, 12), UI.dp(activity, 8), UI.dp(activity, 12), UI.dp(activity, 8))
+        topBar.setPadding(UI.dp(activity, 10), UI.dp(activity, 6), UI.dp(activity, 10), UI.dp(activity, 6))
         topBar.setBackgroundColor(Color.rgb(12, 14, 19))
-        val topBarLp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 0.07f)
+        // A weighted 7% bar was ~24-28 dp on a phone and clipped every 30-34 dp
+        // pill/text row. A fixed, measured bar is the safe chrome; the canvas
+        // and panels below simply share the remaining weighted space.
+        val topBarLp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+            UI.dp(activity, 54))
         mainLayout.addView(topBar, topBarLp)
 
         val backBtn = TextView(activity).apply {
-            text = "← Studio"
+            text = "‹ Studio"
             setTextColor(Color.WHITE)
-            textSize = 16f
+            textSize = 13f
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            maxLines = 1
             setOnClickListener { activity.onBackPressed() }
         }
-        topBar.addView(backBtn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        topBar.addView(backBtn, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
+        // Project name in the header. EditorActivity.updateName() finds it by
+        // this tag, so the name stays in sync after rename and autosave.
+        val nameView = TextView(activity).apply {
+            text = activity.proj?.name ?: "Untitled"
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            tag = "name"
+        }
+        topBar.addView(nameView, LinearLayout.LayoutParams(0,
+            ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
         val aspectRatioBtn = TextView(activity).apply {
-            text = "16:9 ▾"
+            text = "16:9"
             setTextColor(Color.WHITE)
+            textSize = 13f
             setPadding(UI.dp(activity, 8), UI.dp(activity, 4), UI.dp(activity, 8), UI.dp(activity, 4))
             setOnClickListener { activity.showAspectPicker() }
         }
@@ -133,15 +154,19 @@ object StudioLayoutInjector {
         }
         topBar.addView(settingsBtn)
 
-        // Accent-fill Save / Export pills at the row's natural control height so
-        // they align with the back label and don't overflow the short top bar.
-        val saveBtnTop = pillBtn(activity, "Save", Color.WHITE,
-            Color.rgb(230, 70, 32), heightDp = 30) { activity.saveNow() }
-        topBar.addView(saveBtnTop)
-
+        // Autosave runs on every change, so a top-bar Save button was both
+        // confusing and part of the crowded/cropped header. The project menu
+        // still has "Save now"; the header keeps only the actions that are not
+        // automatic (Export + Flash) plus project back/navigation.
         val exportBtnTop = pillBtn(activity, "Export", Color.WHITE,
             UI.ACCENT2, heightDp = 30) { activity.quickExport() }
         topBar.addView(exportBtnTop)
+
+        // Always-visible flashlight. It uses the hardware LED when available
+        // (even with no live camera source) and falls back to screen light.
+        val flashBtnTop = pillBtn(activity, "Flash", Color.WHITE,
+            Color.rgb(40, 44, 56), heightDp = 30, bold = false) { activity.controlsFlashTap() }
+        topBar.addView(flashBtnTop)
 
         if (isLandscape) {
             val middleRow = LinearLayout(activity)
@@ -207,6 +232,7 @@ object StudioLayoutInjector {
             rightPanel.addView(contentArea, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
             val sourcesPanel = SourcesPanel(activity)
+            sourcesPanel.thumbProvider = { l, done -> activity.provideThumb(l, done) }
             val mixerPanel = MixerPanel(activity)
             val propertiesPanel = FrameLayout(activity)
             val scrollerProp = ScrollView(activity)
@@ -326,7 +352,11 @@ object StudioLayoutInjector {
             transportBar.orientation = LinearLayout.HORIZONTAL
             transportBar.gravity = Gravity.CENTER_VERTICAL
             transportBar.setBackgroundColor(Color.rgb(9, 10, 14))
-            val transLp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 0.10f)
+            // Same reasoning as the top bar: a weighted transport bar on a
+            // short landscape phone is ~30 dp and clips the 44 dp play button
+            // and the time labels. A fixed 52 dp row keeps everything visible.
+            val transLp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                UI.dp(activity, 52))
             mainLayout.addView(transportBar, transLp)
             
             activity.transportBar = transportBar
@@ -357,6 +387,7 @@ object StudioLayoutInjector {
             contextPanel.addView(contentArea, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
             val sourcesPanel = SourcesPanel(activity)
+            sourcesPanel.thumbProvider = { l, done -> activity.provideThumb(l, done) }
             val mixerPanel = MixerPanel(activity)
             val propertiesPanel = FrameLayout(activity)
             val scrollerProp = ScrollView(activity)
@@ -478,7 +509,10 @@ object StudioLayoutInjector {
             transportBar.orientation = LinearLayout.HORIZONTAL
             transportBar.gravity = Gravity.CENTER_VERTICAL
             transportBar.setBackgroundColor(Color.rgb(9, 10, 14))
-            val transLp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 0.08f)
+            // Fixed height keeps play/record/time/duration fully visible after
+            // the seek bar is moved/adjusted (the old 8% row was too short).
+            val transLp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                UI.dp(activity, 52))
             mainLayout.addView(transportBar, transLp)
             
             activity.transportBar = transportBar
@@ -537,7 +571,9 @@ object StudioLayoutInjector {
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
             gravity = Gravity.CENTER
             includeFontPadding = false
-            setTextColor(Color.argb(255, 255, 90, 90))
+            // White label on the red pill. updateRecordButton() repaints it to
+            // match state, but the default must never be red-on-red.
+            setTextColor(Color.WHITE)
             setPadding(UI.dp(activity, 12), 0, UI.dp(activity, 12), 0)
             setOnClickListener { activity.recordButtonTap() }
         }

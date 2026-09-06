@@ -91,6 +91,14 @@ object RadialMenus {
         /** screen flash: the canvas glows white to light a front-camera face */
         fun isScreenLightOn(): Boolean
         fun toggleScreenLight()
+        /** editor-level hardware LED (works without a live camera source) */
+        fun standaloneFrontTorchAvailable(): Boolean
+        fun standaloneBackTorchAvailable(): Boolean
+        fun standaloneFrontTorchOn(): Boolean
+        fun standaloneBackTorchOn(): Boolean
+        fun toggleStandaloneFrontTorch(): Boolean
+        fun toggleStandaloneBackTorch(): Boolean
+        fun anyStandaloneTorchOn(): Boolean
         fun openFlashRing(l: Layer)
 
         // preview health overlay (also toggled from the editor overflow)
@@ -125,7 +133,8 @@ object RadialMenus {
     ) {
         val n = h.project.layers.size
         val live = h.project.layers.firstOrNull { it.isLive() }
-        val lightBadge = if (h.isScreenLightOn() || (live != null && (h.isTorchOn(live) || h.isFrontTorchOn() || h.isBackTorchOn())) || h.isBothTorchOn()) "ON" else null
+        val lightBadge = if (h.isScreenLightOn() || h.anyStandaloneTorchOn() ||
+            (live != null && (h.isTorchOn(live) || h.isFrontTorchOn() || h.isBackTorchOn())) || h.isBothTorchOn()) "ON" else null
         val audioN = h.project.layers.count { it.isClip() }
         listOf(
             folder(R.drawable.ic_layers, "Sources", badge = if (n > 0) "$n" else null) { sources(h) },
@@ -147,7 +156,25 @@ object RadialMenus {
         if (live != null) {
             out.addAll(flashItems(h, live))
         } else {
-            out.add(item(R.drawable.ic_camera, "Add live camera first") { h.addCameraLive() })
+            val frontHas = h.standaloneFrontTorchAvailable()
+            val backHas = h.standaloneBackTorchAvailable()
+            val frontOn = h.standaloneFrontTorchOn()
+            val backOn = h.standaloneBackTorchOn()
+            if (backHas) out.add(item(R.drawable.ic_flash,
+                if (backOn) "Back flash: on" else "Back flash: off",
+                active = backOn, badge = if (backOn) "LED" else null, keepOpen = true) {
+                h.toggleStandaloneBackTorch()
+            })
+            if (frontHas) out.add(item(R.drawable.ic_flash,
+                if (frontOn) "Front flash: on" else "Front flash: off",
+                active = frontOn, badge = if (frontOn) "LED" else null, keepOpen = true) {
+                h.toggleStandaloneFrontTorch()
+            })
+            if (backHas || frontHas) {
+                out.add(item(R.drawable.ic_camera, "Add live camera for on-canvas light") { h.addCameraLive() })
+            } else {
+                out.add(item(R.drawable.ic_camera, "Add live camera first") { h.addCameraLive() })
+            }
             val screenOn = h.isScreenLightOn()
             out.add(item(R.drawable.ic_eye, if (screenOn) "Screen light: on" else "Screen light: off", active = screenOn, keepOpen = true) { h.toggleScreenLight() })
         }

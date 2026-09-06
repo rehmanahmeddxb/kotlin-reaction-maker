@@ -630,8 +630,33 @@ class PreviewEngine(
         if (project().layerById(id) == null) return
         val prev = frames.put(id, bmp)
         if (prev === bmp) return
+        // A previous software/seed frame that is NOT owned by the GPU decoder
+        // must be recycled, otherwise a one-shot first-frame seed leaks every
+        // time the real MediaCodec decoder starts publishing.
+        if (prev != null && !externalIds.contains(id) && !decoderOwns(id, prev)) {
+            try { prev.recycle() } catch (_: Exception) { }
+        }
         softNow.remove(id)
         fpsCount++
+        newFrames.set(true)
+        onFrameReady(masterMs)
+    }
+
+    /**
+     * One-shot preview seed. Used right after a clip is added so the canvas
+     * shows a real first frame instead of a black box while the continuous
+     * decoder warms up. The bitmap becomes the engine-owned preview frame and
+     * is replaced (and recycled) by the next decoded frame.
+     */
+    fun seedFrame(id: String, bmp: Bitmap) {
+        if (bmp == null || project().layerById(id) == null) {
+            try { bmp?.recycle() } catch (_: Exception) { }
+            return
+        }
+        val prev = frames.put(id, bmp)
+        if (prev != null && prev !== bmp && !externalIds.contains(id) && !gpuIds.contains(id)) {
+            try { prev.recycle() } catch (_: Exception) { }
+        }
         newFrames.set(true)
         onFrameReady(masterMs)
     }
@@ -771,7 +796,9 @@ class PreviewEngine(
                 keep[id] = b
                 continue
             }
-            if (gpuIds.contains(id)) continue  // decoder owns it
+            // GPU-owned bitmaps are recycled by the decoder; a one-shot seed or
+            // software frame sitting in the map for a GPU layer is ours to free.
+            if (gpuIds.contains(id) && decoderOwns(id, b)) continue
             try { b.recycle() } catch (_: Exception) { }
         }
         frames.clear()
