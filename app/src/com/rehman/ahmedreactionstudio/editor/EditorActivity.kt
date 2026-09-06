@@ -281,6 +281,18 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     private fun engineReady(): Boolean = this::engine.isInitialized
 
+    /** Bottom-sheet transport (seek / duration). The experimental side-panel
+     *  layout omits [buildSheet], so these stay uninitialized — callers must
+     *  not touch them. */
+    private fun transportReady(): Boolean =
+        this::seek.isInitialized && this::durationLabel.isInitialized
+
+    private fun sheetReady(): Boolean =
+        this::sheet.isInitialized && this::panelScroll.isInitialized &&
+            this::panelContent.isInitialized && this::panelDivider.isInitialized
+
+    private fun wheelReady(): Boolean = this::wheel.isInitialized
+
     override fun onResume() {
         super.onResume()
         val pending = ScreenCaptureService.pendingFile
@@ -338,7 +350,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     }
 
     override fun onBackPressed() {
-        if (wheel.isOpen()) { wheel.pop(); return }
+        if (wheelReady() && wheel.isOpen()) { wheel.pop(); return }
         if (fullCanvas) { setFullCanvas(false); return }
         if (sheetTab != null) { setSheet(null); return }
         flushSave()
@@ -541,6 +553,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     /** Step 5's 38% panel cap / 28% canvas reserve, including floating controls. */
     private fun capPanelHeight(topPx: Int, viewHeight: Int) {
+        if (!sheetReady()) return
         if (chromeLandscape == true || panelScroll.visibility != View.VISIBLE || sheet.height <= 0) return
         val fixedSheet = (sheet.height - panelScroll.height).coerceAtLeast(0)
         val controls = if (quickWrap.visibility == View.VISIBLE) quickWrap.height + UI.dp(this, 8) else 0
@@ -1129,6 +1142,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
      */
     private fun setFullCanvas(on: Boolean) {
         if (fullCanvas == on) return
+        if (!this::topBar.isInitialized || !this::sheet.isInitialized ||
+            !this::fullExitBtn.isInitialized) return
         fullCanvas = on
         if (on) {
             setSheet(null)
@@ -1207,7 +1222,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
      * rotating the phone all keep the whole composition on screen.
      */
     private fun applyViewportInsets() {
-        if (!this::stage.isInitialized || !this::sheet.isInitialized || rootFrame.height <= 0) return
+        if (!this::stage.isInitialized || !this::sheet.isInitialized ||
+            !this::topBar.isInitialized || rootFrame.height <= 0) return
         val gap = UI.dp(this, 8)
         val land = chromeLandscape == true
         // Insets are included in chrome padding exactly once, then we measure
@@ -1407,6 +1423,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     /** Open the root ring, blooming from the Studio button. */
     private fun openRootWheel() {
+        if (!wheelReady()) return
         setSheet(null)
         val loc = IntArray(2); val rootLoc = IntArray(2)
         if (this::studioBtn.isInitialized) {
@@ -1422,6 +1439,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     /** Open a specific ring at a point (used by canvas long-press and ◉). */
     private fun openWheelLevel(level: RadialMenuView.Level, ax: Float, ay: Float) {
+        if (!wheelReady()) return
         setSheet(null)
         wheel.show(level, ax, ay)
     }
@@ -1429,6 +1447,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     // ================= sheet (only where a ring is the wrong tool) =================
 
     private fun setSheet(tab: String?) {
+        if (!sheetReady()) { sheetTab = tab; return }
         if (tab != null && fullCanvas) setFullCanvas(false)
         sheetTab = tab
         val sv = panelScroll
@@ -1640,6 +1659,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     // ================= panel: ADD =================
 
     private fun section(title: String) {
+        if (!this::panelContent.isInitialized) return
         val t = TextView(this)
         t.text = title
         t.setTextColor(UI.ACCENT2)
@@ -1701,12 +1721,14 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             .setItems(labels.toTypedArray()) { _, which ->
                 val next = Aspect.entries[which]
                 if (next == cur) return@setItems
-                aspectChip.animate().cancel()
-                aspectChip.animate().scaleX(0.8f).scaleY(0.8f).setDuration(80).withEndAction {
-                    changeAspect(next)
-                    aspectChip.animate().scaleX(1f).scaleY(1f).setDuration(260)
-                        .setInterpolator(OvershootInterpolator(2f)).start()
-                }.start()
+                if (this::aspectChip.isInitialized) {
+                    aspectChip.animate().cancel()
+                    aspectChip.animate().scaleX(0.8f).scaleY(0.8f).setDuration(80).withEndAction {
+                        changeAspect(next)
+                        aspectChip.animate().scaleX(1f).scaleY(1f).setDuration(260)
+                            .setInterpolator(OvershootInterpolator(2f)).start()
+                    }.start()
+                } else changeAspect(next)
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -1726,7 +1748,10 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         showUndoSnack("Canvas ${a.code} — every source keeps its own frame ratio")
     }
 
-    private fun updateAspectChip() { aspectChip.text = proj!!.aspect.code }
+    private fun updateAspectChip() {
+        if (!this::aspectChip.isInitialized) return
+        aspectChip.text = proj!!.aspect.code
+    }
 
     // ================= panel: EXPORT =================
 
@@ -2120,6 +2145,12 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     }
 
     private fun openAdvancedSheet(l: Layer) {
+        if (!sheetReady()) {
+            selectedId = l.id
+            refreshContextBar(); rebuildDock(); rebuildSourceDock()
+            if (this::stage.isInitialized) stage.refresh()
+            return
+        }
         if (fullCanvas) setFullCanvas(false)
         setSheet(null)
         selectedId = l.id
@@ -2345,19 +2376,19 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     private var lastHudMs = 0L
 
     private fun onTick(ms: Long) {
-        if (!this::playBtn.isInitialized || !this::statsHud.isInitialized) return
-        // The master clock ticks at ~60 Hz; the transport only needs ~20 Hz.
-        // Throttling keeps TextView.setText / SeekBar progress off the main
-        // thread's critical path so it cannot steal time from the stage draw.
+        // Always keep the stage painting even when the experimental layout
+        // omitted the transport bar (playBtn / seek never built).
         val now = android.os.SystemClock.elapsedRealtime()
         if (!scrubbing && now - lastUiTickMs >= 50L) {
             lastUiTickMs = now
-            timeLabel.text = UI.fmtTime(ms)
-            val max = seek.max
-            if (max > 0) seek.progress = ms.toInt().coerceAtMost(max)
+            if (this::timeLabel.isInitialized) timeLabel.text = UI.fmtTime(ms)
+            if (this::seek.isInitialized) {
+                val max = seek.max
+                if (max > 0) seek.progress = ms.toInt().coerceAtMost(max)
+            }
         }
         // HUD refreshes at ~2 Hz — it reports the engine's own 500 ms window
-        if (now - lastHudMs >= 500L) {
+        if (this::statsHud.isInitialized && now - lastHudMs >= 500L) {
             lastHudMs = now
             val show = !fullCanvas && editorPrefs().getBoolean(PREF_STATS_HUD, true) &&
                 (engine.anyPlaying() || recording)
@@ -2375,13 +2406,15 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         if (sig != lastPlayingSig) {
             lastPlayingSig = sig
             val playingNow = engine.anyPlaying()
-            playBtn.setIcon(if (playingNow) R.drawable.ic_pause else R.drawable.ic_play,
-                Color.WHITE, if (playingNow) "Pause" else "Play")
+            if (this::playBtn.isInitialized) {
+                playBtn.setIcon(if (playingNow) R.drawable.ic_pause else R.drawable.ic_play,
+                    Color.WHITE, if (playingNow) "Pause" else "Play")
+            }
             // state change (e.g. a non-loop source auto-pausing at its end):
             // refresh all source surfaces so statuses never go stale
             refreshAll()
         }
-        if (engine.consumeNewFrames()) stage.refresh()
+        if (engineReady() && engine.consumeNewFrames() && this::stage.isInitialized) stage.refresh()
     }
 
     /** cheap signature of per-source play states (detects auto-pause at end) */
@@ -2557,21 +2590,26 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     }
 
     private fun afterStructureChange() {
-        engine.attach(projectId)
+        if (engineReady()) engine.attach(projectId)
         reconcileLiveCamera()
         // aspect can change via undo/redo, so re-sync orientation + chip here
-        if (this::aspectChip.isInitialized) {
-            applyOrientationFor(proj!!.aspect)
-            updateAspectChip()
-            stage.post { syncPreviewTarget() }
-        }
+        applyOrientationFor(proj!!.aspect)
+        if (this::aspectChip.isInitialized) updateAspectChip()
+        if (this::stage.isInitialized) stage.post { syncPreviewTarget() }
         refreshAll()
         val dur = proj!!.durationMs().toInt().coerceAtLeast(1)
-        seek.max = dur
-        durationLabel.text = "/ " + UI.fmtTime(dur.toLong())
-        stage.refresh()
-        engine.refreshFrames()
-        if (engine.anyPlaying()) engine.startSnapshots()
+        // The experimental side-panel layout omits the transport bar, so seek /
+        // durationLabel may never have been built. Adding a source (camera
+        // permission result, import, undo) must still succeed.
+        if (transportReady()) {
+            seek.max = dur
+            durationLabel.text = "/ " + UI.fmtTime(dur.toLong())
+        }
+        if (this::stage.isInitialized) stage.refresh()
+        if (engineReady()) {
+            engine.refreshFrames()
+            if (engine.anyPlaying()) engine.startSnapshots()
+        }
         markDirty()
     }
 
@@ -2628,6 +2666,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
     override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, res: IntArray) {
         super.onRequestPermissionsResult(code, perms, res)
+        if (isFinishing || isDestroyed) return
         if (code == REQ_APP_PERMS) launchProjection()
         if (code == REQ_CAMERA_PERM) {
             if (checkSelfPermission(android.Manifest.permission.CAMERA) ==
@@ -3288,6 +3327,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
      * fit / z-order all live.
      */
     private fun addLiveCamera() {
+        if (isFinishing || isDestroyed || proj == null) return
         if (liveCamLayerId != null) {
             val existing = proj!!.layerById(liveCamLayerId!!)
             if (existing != null) {
@@ -3488,14 +3528,14 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     override fun toggleMasterPlay() { togglePlay() }
     override fun restart() {
         engine.seekTo(0L)
-        seek.progress = 0
+        if (this::seek.isInitialized) seek.progress = 0
         onTick(0L)
     }
     override fun nudge(ms: Long) {
         val dur = proj!!.durationMs()
         val t = (engine.master() + ms).coerceIn(0L, dur)
         engine.seekTo(t)
-        seek.progress = t.toInt().coerceAtMost(seek.max)
+        if (this::seek.isInitialized) seek.progress = t.toInt().coerceAtMost(seek.max)
         onTick(t)
     }
     override fun toggleSourcePlay(l: Layer) {
