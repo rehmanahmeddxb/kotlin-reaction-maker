@@ -14,7 +14,6 @@ import android.widget.SeekBar
 import android.widget.TextView
 import com.rehman.ahmedreactionstudio.R
 import com.rehman.ahmedreactionstudio.core.Layer
-import com.rehman.ahmedreactionstudio.core.LayerType
 import com.rehman.ahmedreactionstudio.util.UI
 
 /**
@@ -103,12 +102,10 @@ class MixerPanel(context: Context) : LinearLayout(context) {
             contentDescription = "Select ${l.name.ifBlank { l.type.label }}"
             setOnClickListener { listener?.onSelect(l.id) }
         }
-        val icon = when (l.type) {
-            LayerType.CAMERA -> R.drawable.ic_camera
-            LayerType.VIDEO -> R.drawable.ic_video
-            LayerType.SCREEN -> R.drawable.ic_screen
-            else -> R.drawable.ic_volume
-        }
+        // Note: inside a View subclass the simple name `LayerType` resolves to
+        // android.view.View.LayerType, so delegate to Ic.typeIcon (which uses
+        // fully-qualified names) to pick the per-source glyph.
+        val icon = if (l.isClip()) Ic.typeIcon(l.type) else R.drawable.ic_volume
         val iconView = ImageView(context).apply {
             setImageDrawable(Ic.get(context, icon, Color.rgb(200, 210, 230)))
         }
