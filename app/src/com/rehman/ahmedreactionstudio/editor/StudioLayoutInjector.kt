@@ -482,8 +482,9 @@ object StudioLayoutInjector {
         if (!isTablet(activity.chromeTier)) {
             // phones: the timeline toggle lives here (the transport stays minimal)
             val tl = timelineToggle(activity)
-            (tl.layoutParams as LinearLayout.LayoutParams).setMargins(UI.dp(activity, 2), UI.dp(activity, 2), UI.dp(activity, 2), UI.dp(activity, 2))
-            items.addView(tl)
+            // IconBtn.sized() yields FrameLayout params — give the rail its own
+            items.addView(tl, LinearLayout.LayoutParams(UI.dp(activity, TAP_DP), UI.dp(activity, TAP_DP))
+                .apply { setMargins(UI.dp(activity, 2), UI.dp(activity, 2), UI.dp(activity, 2), UI.dp(activity, 2)) })
         }
         if (vertical && !isTablet(activity.chromeTier)) {
             // phone landscape: the rail can be tucked away to widen the canvas
