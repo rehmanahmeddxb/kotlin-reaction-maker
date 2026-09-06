@@ -719,7 +719,10 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         snackAction!!.setTextColor(UI.ACCENT2)
         snackAction!!.textSize = 12.5f
         snackAction!!.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-        snackAction!!.setPadding(UI.dp(this, 12), UI.dp(this, 6), UI.dp(this, 12), UI.dp(this, 6))
+        snackAction!!.setPadding(UI.dp(this, 12), 0, UI.dp(this, 12), 0)
+        snackAction!!.gravity = Gravity.CENTER
+        snackAction!!.minHeight = UI.dp(this, StudioLayoutInjector.TAP_DP)
+        snackAction!!.minWidth = UI.dp(this, StudioLayoutInjector.TAP_DP)
         bar.addView(snackAction)
         snackBar = bar
         val lp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
@@ -791,7 +794,8 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         progCancel!!.setTextColor(UI.DANGER)
         progCancel!!.textSize = 13f
         progCancel!!.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-        progCancel!!.setPadding(0, UI.dp(this, 10), 0, UI.dp(this, 2))
+        progCancel!!.setPadding(0, UI.dp(this, 6), 0, 0)
+        progCancel!!.minHeight = UI.dp(this, StudioLayoutInjector.TAP_DP)
         progCancel!!.contentDescription = "Cancel"
         progCancel!!.setOnClickListener { progOnCancel?.invoke() }
         card.addView(progCancel)
@@ -1032,13 +1036,15 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
         row.orientation = LinearLayout.HORIZONTAL
         row.setPadding(UI.dp(this, 8), 0, UI.dp(this, 8), 0)
         for ((label, fn) in items) {
-            // 40dp pills at a 44dp pitch: touch targets, not chips
-            val b = StudioLayoutInjector.pillBtn(this, label, UI.FG, UI.BG3, 40) { fn() }
+            // a 40dp pill on a 44dp target (the pitch stays 44dp): the whole
+            // row height is tappable, the look stays compact
+            val b = StudioLayoutInjector.pillBtn(this, label, UI.FG, UI.BG3, 40,
+                hitDp = StudioLayoutInjector.TAP_DP) { fn() }
             b.textSize = 11.5f
             b.maxLines = 2
             b.setPadding(UI.dp(this, 6), 0, UI.dp(this, 6), 0)
-            val lp = LinearLayout.LayoutParams(0, UI.dp(this, 40), 1f)
-            lp.setMargins(UI.dp(this, 3), UI.dp(this, 2), UI.dp(this, 3), UI.dp(this, 2))
+            val lp = LinearLayout.LayoutParams(0, UI.dp(this, StudioLayoutInjector.TAP_DP), 1f)
+            lp.setMargins(UI.dp(this, 3), 0, UI.dp(this, 3), 0)
             b.layoutParams = lp
             row.addView(b)
         }
@@ -2151,11 +2157,14 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             else -> "Record — add a video first"
         }
         recordBtn.alpha = if (recording || ready) 1f else 0.6f
-        recordBtn.background = when {
+        val pill = when {
             recording -> Ic.pill(this, Color.argb(240, 200, 34, 34), 18f, Color.argb(180, 255, 120, 120))
             ready -> Ic.pill(this, Color.argb(240, 255, 90, 44), 18f, Color.argb(140, 255, 200, 160))
             else -> Ic.pill(this, Color.argb(170, 38, 42, 52), 18f, Color.argb(70, 255, 255, 255))
         }
+        // same geometry as buildTransport: REC_PILL_DP drawn inside a TAP_DP hit box
+        recordBtn.background = StudioLayoutInjector.insetPill(this, pill,
+            StudioLayoutInjector.REC_PILL_DP, StudioLayoutInjector.TAP_DP)
     }
 
     /** record taps when the setup is incomplete explain + open Add instead of hiding */

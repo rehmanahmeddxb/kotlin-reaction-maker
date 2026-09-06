@@ -223,7 +223,7 @@ class MixerPanel(context: Context) : LinearLayout(context) {
                 override fun onStopTrackingTouch(s: SeekBar?) { s?.parent?.requestDisallowInterceptTouchEvent(false) }
             })
         }
-        levelRow.addView(sb, LayoutParams(0, UI.dp(context, 36), 1f))
+        levelRow.addView(sb, LayoutParams(0, UI.dp(context, 40), 1f))
         levelRow.addView(lvl)
         wrap.addView(levelRow)
 

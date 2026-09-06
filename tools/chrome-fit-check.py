@@ -43,6 +43,8 @@ TABS = const("TABS_DP")
 TOOLROW = const("TOOLROW_DP")
 CAMERA_ROW = const("CAMERA_ROW_DP")
 TAP = const("TAP_DP", injector)
+REC_PILL = const("REC_PILL_DP", injector)   # drawn height of the transport REC pill (hit box = TAP)
+CHIP = const("CHIP_DP", injector)           # drawn height of the top-bar chips (hit box = TAP)
 PANEL_MIN_PHONE = int(re.search(r"fun panelMinDp\(tablet: Boolean\) = if \(tablet\) (\d+) else (\d+)", budget).group(2))
 PANEL_MIN_TABLET = int(re.search(r"fun panelMinDp\(tablet: Boolean\) = if \(tablet\) (\d+) else (\d+)", budget).group(1))
 
@@ -153,7 +155,8 @@ check("camera row is a 44dp touch-target strip", CAMERA_ROW >= 44)
 
 # --------------------------------------------------------- bars vs targets --
 check("top bar (compact) holds a 44dp target", COMPACT >= TAP)
-check("transport holds a 44dp target with room for a 36dp REC pill", TRANSPORT >= TAP and COMPACT >= 36)
+check("transport holds a 44dp target with room for the REC pill", TRANSPORT >= TAP and COMPACT >= TAP and TAP >= REC_PILL)
+check("top-bar chips draw inside their 44dp hit box (aspect · REC · Save · Export)", TAP >= CHIP and CHIP >= 28)
 check("portrait tool row holds a 44dp target", TOOLROW >= TAP)
 
 print(f"\n{'CHROME FIT CHECK: all green' if fails == 0 else f'CHROME FIT CHECK: {fails} failed'}")

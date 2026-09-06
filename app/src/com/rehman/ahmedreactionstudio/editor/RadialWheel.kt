@@ -103,6 +103,8 @@ class RadialMenuView(context: Context) : FrameLayout(context) {
     init {
         visibility = View.GONE
         isClickable = true
+        // TalkBack / UI-automation: the open menu announces itself as one region
+        contentDescription = "Radial menu"
     }
 
     fun isOpen(): Boolean = open

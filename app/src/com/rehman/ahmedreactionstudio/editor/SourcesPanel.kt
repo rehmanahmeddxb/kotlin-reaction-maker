@@ -96,10 +96,14 @@ class SourcesPanel(context: Context) : LinearLayout(context) {
             includeFontPadding = false
             maxLines = 1
             setPadding(UI.dp(context, 8), 0, UI.dp(context, 8), 0)
-            background = Ic.pill(context, Color.argb(60, 255, 255, 255), 13f, Color.argb(40, 255, 255, 255))
+            // a 26dp pill drawn on the full 40dp header height: it is tappable
+            // ("tap to select"), so its hit box is the header, not the pill
+            background = android.graphics.drawable.InsetDrawable(
+                Ic.pill(context, Color.argb(60, 255, 255, 255), 13f, Color.argb(40, 255, 255, 255)),
+                0, UI.dp(context, 7), 0, UI.dp(context, 7))
             visibility = View.GONE
         }
-        head.addView(hiddenBadge, LayoutParams(LayoutParams.WRAP_CONTENT, UI.dp(context, 26)).apply { marginEnd = UI.dp(context, 6) })
+        head.addView(hiddenBadge, LayoutParams(LayoutParams.WRAP_CONTENT, UI.dp(context, 40)).apply { marginEnd = UI.dp(context, 6) })
         val add = TextView(context).apply {
             text = "+ Add"
             textSize = 12f

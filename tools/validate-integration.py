@@ -233,6 +233,32 @@ check("dp budget re-applied in place (no rebuild) when a piece opens/closes",
       and "applyChromeBudget()" in method("setPanelOpen", "fun")
       and "applyChromeBudget()" in method("setRailOpen", "fun"))
 
+# ------------------------------------------------------------ touch targets ---
+# Every compact-looking chrome control keeps a TAP_DP hit box: the pill is
+# drawn smaller INSIDE the view (InsetDrawable), the view itself is TAP_DP.
+check("top-bar chips and pills: 32dp look on a 44dp hit box",
+      "const val TAP_DP = 44" in injector and "const val CHIP_DP = 32" in injector
+      and injector.count("insetPill(") >= 5
+      and "hitDp = TAP_DP" in injector
+      and 'aspect.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(activity, TAP_DP))' in injector
+      and 'rec.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(activity, TAP_DP))' in injector)
+check("transport: REC pill and the seek band are TAP_DP tall",
+      "const val REC_PILL_DP = 36" in injector
+      and "recBtn.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(activity, TAP_DP))" in injector
+      and "bar.addView(seek, LinearLayout.LayoutParams(0, UI.dp(activity, TAP_DP), 1f)" in injector
+      and "StudioLayoutInjector.insetPill(this, pill," in method("updateRecordButton"))
+check("edge handles are TAP_DP wide (pill inset inside)",
+      "const val EDGE_DP = TAP_DP" in injector and "const val EDGE_PILL_DP = 36" in injector)
+check("Props button rows: 40dp pills on TAP_DP targets",
+      "hitDp = StudioLayoutInjector.TAP_DP" in method("panelButtonRow")
+      and "LinearLayout.LayoutParams(0, UI.dp(this, StudioLayoutInjector.TAP_DP), 1f)" in method("panelButtonRow"))
+check("snackbar action and progress Cancel are TAP_DP tall",
+      "snackAction!!.minHeight = UI.dp(this, StudioLayoutInjector.TAP_DP)" in editor
+      and "progCancel!!.minHeight = UI.dp(this, StudioLayoutInjector.TAP_DP)" in editor)
+check("stage and wheel announce themselves (TalkBack + the emulator smoke test)",
+      'stage.contentDescription = "Canvas"' in injector
+      and 'contentDescription = "Radial menu"' in (SRC / "editor/RadialWheel.kt").read_text())
+
 # ------------------------------------------------- cross-file dependencies ---
 for rel, needle in (
     ("editor/StageView.kt", "Compositor.chromeRect"),
@@ -240,6 +266,9 @@ for rel, needle in (
     ("core/Model.kt", "fun placeNewPip"),
     ("export/CompositionRecorder.kt", "ClipCursor"),
     ("editor/SourceDock.kt", "private val ROW_DP = 52"),
+    ("editor/SourceDock.kt", "private val STATUS_BAND_DP = 24"),
+    ("editor/SourcesPanel.kt", "head.addView(hiddenBadge, LayoutParams(LayoutParams.WRAP_CONTENT, UI.dp(context, 40))"),
+    ("editor/MixerPanel.kt", "levelRow.addView(sb, LayoutParams(0, UI.dp(context, 40), 1f))"),
     ("editor/SourceDock.kt", "ellipsize = android.text.TextUtils.TruncateAt.END"),
     ("editor/SourcesPanel.kt", "fun setCompact(compact: Boolean)"),
     ("core/ChromeBudget.kt", "const val PORTRAIT_SPARE_MIN_DP"),

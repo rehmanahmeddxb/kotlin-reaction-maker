@@ -44,6 +44,8 @@ class SourceDock(
 ) {
 
     private val ROW_DP = 52
+    /** the status line's tap band (clips: play/pause) inside the row */
+    private val STATUS_BAND_DP = 24
     private var dragRow: LinearLayout? = null
     private var dragLayer: Layer? = null
 
@@ -111,9 +113,11 @@ class SourceDock(
         row.addView(typeIc)
 
         // --- name + status: the flexible column ---
+        // name over status, splitting the row height: the status line is the
+        // clip's play/pause switch, so it gets a 24dp band (not a 12dp text run)
         val col = LinearLayout(act)
         col.orientation = LinearLayout.VERTICAL
-        col.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        col.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
 
         val nm = TextView(act)
         nm.text = l.name.ifBlank { l.type.label }
@@ -123,7 +127,8 @@ class SourceDock(
         nm.maxLines = 1
         nm.ellipsize = android.text.TextUtils.TruncateAt.END
         nm.includeFontPadding = false
-        col.addView(nm)
+        nm.gravity = Gravity.BOTTOM or Gravity.START
+        col.addView(nm, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
         val st = TextView(act)
         st.text = statusOf(l)
@@ -132,7 +137,9 @@ class SourceDock(
         st.maxLines = 1
         st.ellipsize = android.text.TextUtils.TruncateAt.END
         st.includeFontPadding = false
+        st.gravity = Gravity.TOP or Gravity.START
         st.setPadding(0, UI.dp(act, 2), 0, 0)
+        st.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, UI.dp(act, STATUS_BAND_DP))
         if (l.isClip()) {
             // the PAUSED/playing line is itself the play switch: one tap,
             // no ring dive, and TalkBack announces the state + action

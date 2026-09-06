@@ -4,7 +4,9 @@ import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.InsetDrawable
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -66,9 +68,19 @@ object StudioLayoutInjector {
     private const val RAIL_DP = ChromeBudget.RAIL_DP
     private const val TABS_DP = ChromeBudget.TABS_DP
     private const val TOOLROW_DP = ChromeBudget.TOOLROW_DP
-    private const val TAP_DP = 44
-    /** width of the slim re-open handles on the canvas cell's edges */
-    const val EDGE_DP = 28
+    /** every chrome control is at least this tall/wide as a TOUCH target (its pill may draw smaller) */
+    const val TAP_DP = 44
+    /** the transport REC pill's drawn height; its hit box is TAP_DP */
+    const val REC_PILL_DP = 36
+    /** the top-bar chips' (aspect · REC · Save · Export) drawn height; hit box TAP_DP */
+    const val CHIP_DP = 32
+    /**
+     * Width of the re-open handles on the canvas cell's edges: a full touch
+     * target (the pill draws [EDGE_PILL_DP] wide inside it). The stage insets
+     * its picture by this much, so no part of the picture sits under a handle.
+     */
+    const val EDGE_DP = TAP_DP
+    const val EDGE_PILL_DP = 36
 
     /** Which chrome tier is built. Decided from the configuration, never from pixels. */
     enum class Tier { PHONE_PORTRAIT, PHONE_LANDSCAPE, TABLET_LANDSCAPE, TABLET_PORTRAIT }
@@ -208,10 +220,11 @@ object StudioLayoutInjector {
         rec.includeFontPadding = false
         rec.maxLines = 1
         rec.setPadding(UI.dp(activity, 8), 0, UI.dp(activity, 8), 0)
-        rec.background = Ic.pill(activity, Color.argb(235, 200, 34, 34), 16f, Color.argb(160, 255, 120, 120))
+        rec.background = insetPill(activity,
+            Ic.pill(activity, Color.argb(235, 200, 34, 34), 16f, Color.argb(160, 255, 120, 120)), CHIP_DP, TAP_DP)
         rec.visibility = View.GONE
         rec.setOnClickListener { activity.recChipTap() }
-        rec.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(activity, 32))
+        rec.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(activity, TAP_DP))
             .apply { marginEnd = UI.dp(activity, 6) }
         activity.recChip = rec
         bar.addView(rec)
@@ -224,16 +237,16 @@ object StudioLayoutInjector {
         aspect.gravity = Gravity.CENTER
         aspect.includeFontPadding = false
         aspect.setPadding(UI.dp(activity, 8), 0, UI.dp(activity, 8), 0)
-        aspect.background = Ic.pill(activity, Color.argb(30, 255, 255, 255), 8f, HAIRLINE)
+        aspect.background = insetPill(activity, Ic.pill(activity, Color.argb(30, 255, 255, 255), 8f, HAIRLINE), CHIP_DP, TAP_DP)
         aspect.contentDescription = "Canvas aspect ratio"
-        aspect.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(activity, 32))
+        aspect.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(activity, TAP_DP))
             .apply { marginEnd = UI.dp(activity, 6) }
         aspect.setOnClickListener { activity.showAspectPicker() }
         activity.aspectChip = aspect
         bar.addView(aspect)
 
         if (isTablet(activity.chromeTier)) {
-            val save = pillBtn(activity, "Save", UI.FG, Color.argb(30, 255, 255, 255), 32) { activity.saveNow() }
+            val save = pillBtn(activity, "Save", UI.FG, Color.argb(30, 255, 255, 255), CHIP_DP, hitDp = TAP_DP) { activity.saveNow() }
             save.contentDescription = "Save project"
             bar.addView(save)
         } else {
@@ -250,13 +263,13 @@ object StudioLayoutInjector {
             val export = IconBtn(activity)
             export.layoutParams = IconBtn.sized(activity, TAP_DP)
             export.setIcon(R.drawable.ic_export, Color.WHITE, "Export video")
-            export.background = android.graphics.drawable.InsetDrawable(
+            export.background = InsetDrawable(
                 Ic.pill(activity, UI.ACCENT, 16f, HAIRLINE), UI.dp(activity, 4))
             export.setOnClickListener { activity.quickExport() }
             export.setOnLongClickListener { activity.openExportSettings(); true }
             bar.addView(export)
         } else {
-            val export = pillBtn(activity, "Export", Color.WHITE, UI.ACCENT, 32) { activity.quickExport() }
+            val export = pillBtn(activity, "Export", Color.WHITE, UI.ACCENT, CHIP_DP, hitDp = TAP_DP) { activity.quickExport() }
             export.contentDescription = "Export video"
             export.setOnLongClickListener { activity.openExportSettings(); true }
             bar.addView(export)
@@ -365,6 +378,7 @@ object StudioLayoutInjector {
         activity.stage = StageView(activity)
         activity.stage.host = activity
         val stage = activity.stage
+        stage.contentDescription = "Canvas"
         cell.addView(stage, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         // The cell is the only thing that bounds the stage now — nothing
@@ -464,7 +478,11 @@ object StudioLayoutInjector {
         h.gravity = Gravity.CENTER
         h.setTextColor(UI.FG)
         h.contentDescription = if (left) "Show tools" else "Open panel"
-        h.background = Ic.pill(activity, Color.argb(190, 26, 29, 38), 10f, HAIRLINE)
+        // EDGE_DP wide hit box, EDGE_PILL_DP wide pill, flush with the cell edge
+        val side = UI.dp(activity, EDGE_DP - EDGE_PILL_DP)
+        h.background = InsetDrawable(Ic.pill(activity, Color.argb(190, 26, 29, 38), 10f, HAIRLINE),
+            if (left) 0 else side, 0, if (left) side else 0, 0)
+        h.setPadding(if (left) 0 else side, 0, if (left) side else 0, 0)
         h.setOnClickListener { if (left) activity.setRailOpen(true) else activity.setPanelOpen(true) }
         if (left) activity.railEdgeHandle = h else activity.panelEdgeHandle = h
         return h
@@ -806,7 +824,9 @@ object StudioLayoutInjector {
             }
         })
         activity.seek = seek
-        bar.addView(seek, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        // TAP_DP tall (a wrap-content SeekBar is ~30dp): the track and thumb
+        // centre themselves vertically, the whole band scrubs
+        bar.addView(seek, LinearLayout.LayoutParams(0, UI.dp(activity, TAP_DP), 1f)
             .apply { setMargins(UI.dp(activity, 2), 0, UI.dp(activity, 2), 0) })
 
         val durationLabel = TextView(activity)
@@ -840,8 +860,10 @@ object StudioLayoutInjector {
         val hp = UI.dp(activity, if (glyphOnly) 8 else 14)
         recBtn.setPadding(hp, 0, hp, 0)
         recBtn.minWidth = UI.dp(activity, TAP_DP)
-        recBtn.background = Ic.pill(activity, Color.argb(240, 200, 34, 34), 18f, Color.argb(160, 255, 120, 120))
-        recBtn.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(activity, 36))
+        // drawn REC_PILL_DP tall, tappable across TAP_DP (updateRecordButton keeps the same inset)
+        recBtn.background = insetPill(activity,
+            Ic.pill(activity, Color.argb(240, 200, 34, 34), 18f, Color.argb(160, 255, 120, 120)), REC_PILL_DP, TAP_DP)
+        recBtn.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(activity, TAP_DP))
         recBtn.setOnClickListener { activity.recordButtonTap() }
         bar.addView(recBtn)
     }
@@ -881,8 +903,12 @@ object StudioLayoutInjector {
      * heavy internal padding, so in a 44–52dp bar they clipped and sat on a
      * different baseline than the icon buttons next to them.
      */
+    /**
+     * Text pill. [heightDp] is the drawn pill; [hitDp] (default: the same) is
+     * the view's height — pass TAP_DP to keep a 32dp look on a 44dp target.
+     */
     fun pillBtn(activity: EditorActivity, text: String, textColor: Int, fill: Int,
-                heightDp: Int = 32, onClick: () -> Unit): TextView {
+                heightDp: Int = 32, hitDp: Int = heightDp, onClick: () -> Unit): TextView {
         val t = TextView(activity)
         t.text = text
         t.textSize = 12f
@@ -897,11 +923,23 @@ object StudioLayoutInjector {
         g.cornerRadius = UI.dpf(activity, heightDp / 2f)
         g.setColor(fill)
         g.setStroke(UI.dp(activity, 1), HAIRLINE)
-        t.background = g
-        t.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(activity, heightDp))
+        t.background = insetPill(activity, g, heightDp, hitDp)
+        t.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(activity, maxOf(hitDp, heightDp)))
             .apply { setMargins(UI.dp(activity, 3), 0, UI.dp(activity, 3), 0) }
         t.setOnClickListener { onClick() }
         return t
+    }
+
+    /**
+     * A pill drawn [visualDp] tall inside a view that is [hitDp] tall: the
+     * chip keeps its compact look while the touch target spans the bar (the
+     * tab strip, the "+ Add" header button and the phone Export icon already
+     * work this way). Symmetric insets, so the text stays centred on the pill.
+     */
+    fun insetPill(ctx: android.content.Context, pill: Drawable, visualDp: Int, hitDp: Int): Drawable {
+        if (hitDp <= visualDp) return pill
+        val inset = UI.dp(ctx, (hitDp - visualDp) / 2)
+        return InsetDrawable(pill, 0, inset, 0, inset)
     }
 
     /** Tab strip highlight; called by EditorActivity.showTab. */
@@ -911,6 +949,6 @@ object StudioLayoutInjector {
         val pill = Ic.pill(activity, if (active) TAB_ACTIVE_BG else Color.TRANSPARENT, 8f,
             if (active) Color.argb(110, 255, 90, 44) else Color.TRANSPARENT)
         val inset = UI.dp(activity, 4)
-        t.background = android.graphics.drawable.InsetDrawable(pill, 0, inset, 0, inset)
+        t.background = InsetDrawable(pill, 0, inset, 0, inset)
     }
 }

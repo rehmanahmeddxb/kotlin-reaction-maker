@@ -41,8 +41,8 @@ Inside the canvas cell, `StageView` contain-fits the project aspect (16:9,
 9:16, 1:1) and centres it. Overlays in the cell are the empty-project prompt
 (4 equal-width choices: Camera / Video / Screen / Image), the opt-in stats
 HUD (bottom-start, default **off**), the Full-Canvas exit button and — in
-landscape only — the 28×72dp edge handles that re-open a collapsed rail or
-panel. The handles inset the stage viewport (`stage.setViewportInsets`) so
+landscape only — the 44×72dp edge handles (a 36dp pill drawn flush with the
+edge inside a 44dp touch target) that re-open a collapsed rail or panel. The handles inset the stage viewport (`stage.setViewportInsets`) so
 the picture is fitted *beside* them, never under them.
 
 ## 2. The budget rule (`core/ChromeBudget.kt`)
@@ -206,14 +206,15 @@ and became a Sources-header badge; the stats HUD is opt-in.
 
 | check | command | result |
 |---|---|---|
-| APK build (kotlinc + d8, offline toolchain) | `./build-apk.sh` | green (build #21) |
-| static integration guard, 100 needles | `python3 tools/validate-integration.py` | 100 / 0 |
+| APK build (kotlinc + d8, offline toolchain) | `./build-apk.sh` | green (build #26) |
+| static integration guard, 109 needles (incl. the touch-target geometry below) | `python3 tools/validate-integration.py` | 109 / 0 |
 | chrome budget, 7 devices × 3 aspects × panel/rail overrides × extras + pinned-Sources split | `bash tools/chrome-budget-test/run.sh` | 1884 / 0 |
 | fixed-bar fit: what each bar *contains* vs. the narrowest width of each tier (top bar idle + capturing, transport seek ≥ 96dp, rail/row without scrolling, tab strip at panel minimum, source row name ≥ 60dp, camera row) | `python3 tools/chrome-fit-check.py` | all green |
 | viewport fit | `bash tools/viewport-fit-test/run.sh` | 420 / 0 |
 | stage geometry | `bash tools/step2-geom-check.sh` | all green |
 | dex symbols the CI asserts (incl. `ChromeBudget`, `TimelineView`, `PropertiesPanel`, `EffectsPanel`) | `unzip -p artifacts/*.apk classes.dex \| strings` | all present; `ControlsPanel` 0 refs |
 | structural-hack grep (`translationX/Y`, `-UI.dp(`, `weight = 0.`, overlapping frames) in chrome code | grep | none (the only `translationY` is the snackbar's entrance animation) |
+| **on-device smoke, 4 tiers** (API 30 x86_64 emulator, GitHub Actions job `emulator-smoke`): live view-hierarchy dumps checked for off-screen / < 44dp / overlapping controls, a covered or collapsed canvas, missing bar controls; regression walk add text · select · hide · show · Mixer / Props / Effects · collapse · re-open · undo · redo · play · stop · aspect switch (= `onConfigurationChanged` re-layout) · live camera | `tools/emulator-smoke/smoke.sh` → `check_window.py` | runs in CI on every push; report in the job summary, screenshots in the `emulator-smoke` artifact — **not run in this sandbox** (no KVM), see below |
 
 Invariants the budget test asserts for every combination: rail + canvas +
 panel == usable width; canvas ≥ 45 % and ≥ 96dp; an open landscape panel is
@@ -224,17 +225,34 @@ function is pure.
 
 ### What was **not** verified — read this before calling it done
 
-* **No device or emulator run.** This sandbox has no adb, no emulator and no
-  KVM. Nothing in this document is a screenshot. The claims "no clipping /
-  no overlap / no off-screen control" rest on (a) the dp budget being
-  asserted for the device table above, (b) the per-bar fit arithmetic in
-  `chrome-fit-check.py` — which, when first run, found two real overflows on
-  a 360dp phone (an "Export" pill pushing ⋯ off the top bar while the REC
-  chip was up; a 77–91dp seek bar) that are fixed by the phone-portrait icon
-  Export and glyph REC pill — and (c) the layout being a single column of
-  fixed rows plus one flexible cell, i.e. there is no mechanism left that
-  *could* overlap. That is strong evidence, not proof; the text-width
-  estimates in (b) are ±10 %.
+* **No device or emulator run *from this sandbox*.** It has no adb, no
+  emulator and no KVM, and nothing in this document is a screenshot taken
+  here. The claims "no clipping / no overlap / no off-screen control" rest on
+  (a) the dp budget being asserted for the device table above, (b) the
+  per-bar fit arithmetic in `chrome-fit-check.py` — which, when first run,
+  found two real overflows on a 360dp phone (an "Export" pill pushing ⋯ off
+  the top bar while the REC chip was up; a 77–91dp seek bar) that are fixed
+  by the phone-portrait icon Export and glyph REC pill — and (c) the layout
+  being a single column of fixed rows plus one flexible cell, i.e. there is
+  no mechanism left that *could* overlap. That is strong evidence, not
+  proof; the text-width estimates in (b) are ±10 %.
+* **The device run now exists as a CI job** (`emulator-smoke` in
+  `.github/workflows/android.yml`, script in `tools/emulator-smoke/`). It
+  installs the signed APK on an API 30 x86_64 emulator, resizes the window
+  to a 360×800dp phone and an 800×1280dp tablet, creates a 9:16 and a 16:9
+  project through the real Home UI (the editor pins its orientation to the
+  canvas, so that yields all four tiers), and after every step asserts from
+  the `uiautomator` dump exactly the §31 questions a static check cannot
+  answer: every clickable node on screen and ≥ 44dp (the 40dp strip items
+  and the 24dp in-row play/pause shortcut are listed as such), no two
+  clickable nodes overlapping, the canvas cell ≥ 96dp with no chrome over
+  it, the tier's bar controls present, the process alive. Its report is
+  written to the job summary; screenshots and window dumps are uploaded.
+  **Its first result was not visible when this was written** — the sandbox
+  can push but cannot read job logs or artifacts — so read the latest
+  `emulator-smoke` job before treating the eight "YES (static)" rows as
+  device-confirmed; if it is red, the report names the tier, the step and
+  the node.
 * **Regression list not executed on hardware.** Add video / image / camera /
   text, select / hide / mute / pause / lock / solo / loop, fit / fill, move /
   resize / rotate, wheel, advanced sheet, undo / redo, play / record / stop /
@@ -280,9 +298,10 @@ build + tests + reading, not on hardware (see §7).
 | 15 | Status / nav bars, gesture area, cutout, edge-to-edge handled? | **YES (static)** | inset listener → column padding; Full Canvas immersive; exit button offset by cutout |
 | 16 | Structural hacks removed (percent weights, negative margins, translations, overlapping frames, invisible touch-intercepting views, duplicated UI)? | **YES** | grep clean; `ControlsPanel` deleted; one injector |
 | 17 | `onConfigurationChanged` rebuild path preserved with no state loss? | **YES** | `relayoutChrome()`; tri-state chrome flags + tab + selection + progress card + screen-light survive; engine untouched; a pinned-Sources tablet rotating to portrait gets its Sources tab back and keeps the user's last tab |
-| 18 | Touch targets ~44–48dp without overlaps? | **YES** | `TAP_DP = 44` everywhere in chrome; tabs full 40dp strip height; mixer toggles 40dp; dock 44dp; Props button rows 40dp at a 44dp pitch; header "+ Add" hit area 40dp; the REC glyph pill has `minWidth = 44dp` |
+| 18 | Touch targets ~44–48dp without overlaps? | **YES** | `TAP_DP = 44` is the hit box of every bar control; the compact-looking pieces draw a smaller pill *inside* a 44dp view (`insetPill`): top-bar aspect / REC / Save / Export chips 32dp-on-44, transport REC pill 36-on-44, transport seek band 44, edge handles 44 wide (36 pill), Props button rows 40-on-44, snackbar action and progress Cancel ≥ 44; tab strip items 40dp, Sources action row / mixer M·S·monitor 40dp and the clip row's status-line play/pause 24dp band are the documented exceptions (each verb also has a full-size target on the wheel or in Props); dock eye / mute / drag 44dp; the emulator job measures all of this from the live hierarchy |
 
 **Verdict:** no answer is NO. Eight of the eighteen are "YES (static)" or
-depend on the static evidence in §7; they should be re-answered from a
-device before this is called shipped. Nothing here is a guess about code
+depend on the static evidence in §7; the `emulator-smoke` CI job now
+re-asks those eight from a real window on every push — its latest run, not
+this document, is the device answer. Nothing here is a guess about code
 that was not read: every row points at the function that implements it.
