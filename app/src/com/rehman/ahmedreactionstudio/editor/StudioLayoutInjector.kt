@@ -115,14 +115,17 @@ object StudioLayoutInjector {
             val leftLp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0.08f)
             middleRow.addView(leftToolbar, leftLp)
 
+            // (icon resource, content description, tap action) — a Triple, not
+            // Pair: the tap action is the third component and Kotlin's Pair
+            // only takes two arguments.
             val tools = listOf(
-                Pair(R.drawable.ic_add, "Add") { activity.pickMedia(true) },
-                Pair(R.drawable.ic_camera, "Camera") { activity.addLiveCamera() },
-                Pair(R.drawable.ic_video, "Video") { activity.pickMedia(true) },
-                Pair(R.drawable.ic_image, "Image") { activity.pickMedia(false) },
-                Pair(R.drawable.ic_text, "Text") { activity.addText() },
-                Pair(R.drawable.ic_undo, "Undo") { activity.doUndo() },
-                Pair(R.drawable.ic_redo, "Redo") { activity.doRedo() }
+                Triple(R.drawable.ic_add, "Add") { activity.pickMedia(true) },
+                Triple(R.drawable.ic_camera, "Camera") { activity.addLiveCamera() },
+                Triple(R.drawable.ic_video, "Video") { activity.pickMedia(true) },
+                Triple(R.drawable.ic_image, "Image") { activity.pickMedia(false) },
+                Triple(R.drawable.ic_text, "Text") { activity.addText() },
+                Triple(R.drawable.ic_undo, "Undo") { activity.doUndo() },
+                Triple(R.drawable.ic_redo, "Redo") { activity.doRedo() }
             )
             val scroller = ScrollView(activity)
             scroller.isVerticalScrollBarEnabled = false
@@ -345,7 +348,7 @@ object StudioLayoutInjector {
                 propertiesPanel.visibility = View.GONE
                 effectsPanel.visibility = View.GONE
                 view.visibility = View.VISIBLE
-                rightPanel.visibility = View.VISIBLE
+                contextPanel.visibility = View.VISIBLE
             }
 
 
@@ -357,7 +360,7 @@ object StudioLayoutInjector {
                     setPadding(UI.dp(activity, 4), 0, UI.dp(activity, 4), 0)
                     setOnClickListener { 
                         if (view == null) {
-                            rightPanel.visibility = View.GONE
+                            contextPanel.visibility = View.GONE
                         } else {
                             showPanel(view)
                         }
@@ -454,6 +457,8 @@ object StudioLayoutInjector {
             override fun onAddImage() { activity.pickMedia(false) }
             override fun onRemove() { activity.removeSelectedSource() }
             override fun onHide() { activity.selectedId?.let { activity.ctrl.toggleVisible(it) } }
+            override fun onMoveUp(id: String) { activity.ctrl.moveZ(id, "up") }
+            override fun onMoveDown(id: String) { activity.ctrl.moveZ(id, "down") }
             override fun onProperties() { 
                 propertiesPanel.visibility = View.VISIBLE
                 sourcesPanel.visibility = View.GONE
