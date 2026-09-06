@@ -13,8 +13,8 @@ import com.rehman.ahmedreactionstudio.util.UI
 
 /**
  * OBS-style Controls dock that sits under [SourcesPanel] on the right rail.
- * Start Recording / Pause / Stop / Save / Flashlight — same chrome as Sources
- * so the two boxes read as one column.
+ * Start Recording / Pause / Stop / Save / Flashlight / Export — same chrome
+ * as Sources so the two boxes read as one column.
  */
 class ControlsPanel(context: Context) : LinearLayout(context) {
 
@@ -24,6 +24,7 @@ class ControlsPanel(context: Context) : LinearLayout(context) {
         fun onStop()
         fun onSave()
         fun onFlashlight()
+        fun onExport()
     }
 
     var listener: Listener? = null
@@ -33,6 +34,7 @@ class ControlsPanel(context: Context) : LinearLayout(context) {
     private val stopBtn: Button
     private val saveBtn: Button
     private val flashBtn: Button
+    private val exportBtn: Button
 
     init {
         orientation = VERTICAL
@@ -96,7 +98,14 @@ class ControlsPanel(context: Context) : LinearLayout(context) {
         row2.addView(flashBtn, LinearLayout.LayoutParams(0, UI.dp(context, 48), 1f).apply {
             marginStart = UI.dp(context, 4)
         })
-        addView(row2, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
+        addView(row2, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
+            bottomMargin = UI.dp(context, 6)
+        })
+
+        exportBtn = actionBtn("Export", accent = false)
+        exportBtn.contentDescription = "Export the composition"
+        exportBtn.setOnClickListener { listener?.onExport() }
+        addView(exportBtn, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, UI.dp(context, 48)))
     }
 
     fun bind(recording: Boolean, playing: Boolean, flashOn: Boolean, recReady: Boolean) {
@@ -120,6 +129,9 @@ class ControlsPanel(context: Context) : LinearLayout(context) {
         flashBtn.text = if (flashOn) "Flash on" else "Flash"
         flashBtn.background = pill(if (flashOn) Color.rgb(180, 120, 20) else Color.rgb(30, 34, 48))
         flashBtn.setTextColor(if (flashOn) Color.rgb(255, 230, 140) else Color.WHITE)
+
+        exportBtn.isEnabled = !recording
+        exportBtn.alpha = if (recording) 0.5f else 1f
     }
 
     private fun actionBtn(label: String, accent: Boolean, danger: Boolean = false): Button {

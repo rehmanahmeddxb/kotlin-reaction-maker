@@ -114,6 +114,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
     private lateinit var dock: SourceDock
     private var sourcesPanel: SourcesPanel? = null
     private var controlsPanel: ControlsPanel? = null
+    private var mixerPanel: MixerPanel? = null
     override lateinit var ctrl: SourceController
     private lateinit var rootFrame: FrameLayout
     private lateinit var studioBtn: IconBtn
@@ -392,8 +393,9 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
         // ===== experiment left/right settings panels =====
         val mixerPanelView = MixerPanel(this)
+        mixerPanel = mixerPanelView
         root.addView(mixerPanelView, FrameLayout.LayoutParams(
-            UI.dp(this, 260), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START or Gravity.CENTER_VERTICAL))
+            UI.dp(this, 260), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START))
 
         // Right rail: Sources stretched to fill remaining height, Controls box under it.
         val rightCol = LinearLayout(this)
@@ -437,11 +439,18 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             override fun onStop() { controlsStopTap() }
             override fun onSave() { saveNow() }
             override fun onFlashlight() { controlsFlashTap() }
+            override fun onExport() { quickExport() }
         }
         mixerPanelView.listener = object : MixerPanel.Listener {
-            override fun onMute(id: String) { selectedId?.let { ctrl.toggleMuted(it) } }
-            override fun onSolo(id: String) { selectedId?.let { ctrl.toggleSolo(it) } }
-            override fun onMasterVolume(v: Float) { selectedId?.let { ctrl.setVolume(it, v) } }
+            override fun onSelect(id: String) { select(id) }
+            override fun onMute(id: String) { ctrl.toggleMuted(id) }
+            override fun onSolo(id: String) { ctrl.toggleSolo(id) }
+            override fun onVolume(id: String, v: Float) {
+                val l = proj?.layerById(id) ?: return
+                pushUndoLight()
+                if (engineReady()) engine.setVolume(l, v) else l.volume = v
+                markDirty()
+            }
         }
 
         // empty-state prompt
@@ -575,7 +584,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
 
         stage.contentDescription = "Composition canvas. Tap a source to select it."
         // buildSnackBar(root)  // removed for experiment
-        // buildProgOverlay(root)  // removed for experiment
+        buildProgOverlay(root)
 
         setContentView(root)
         stage.post { syncPreviewTarget() }
@@ -2585,6 +2594,7 @@ class EditorActivity : Activity(), StageView.Host, RadialMenus.Host {
             liveCam?.isTorchLitForBack() == true || screenLight
         val playing = engineReady() && engine.anyPlaying()
         controlsPanel?.bind(recording, playing, flashOn, hasLive && hasClip)
+        mixerPanel?.bind(p?.layers ?: emptyList(), selectedId)
     }
 
     private fun removeSelectedSource() {
