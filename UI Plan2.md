@@ -5,6 +5,13 @@
 **Status:** active — this is the single source of truth for editor UI work
 **Scope:** UI/UX wiring and consolidation only. Media pipelines are not in scope (see Rule 2).
 
+> **2026-09-08 — direction update.** The editor's navigation is now the
+> **floating sidebar studio over a 100%-screen canvas** (user-approved): the
+> radial wheel is retired and every control floats over the canvas so the full
+> composition stays visible while recording. The durable rules in §2 still
+> apply; the surface map in §1 and the radial-era backlog entries are
+> superseded by `docs/SIDEBAR_STUDIO_PLAN.md` (§8 is the implementation report).
+
 > **Why this was rewritten.** The old plan was written before the OBS-style
 > source architecture, the Step 5 editor rebuild and the radial-ring
 > consolidation landed. It told the agent to "audit the controls" and "create a
