@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reaction Studio — Frontend Carbon Copy</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,400,0,0&family=Roboto:wght@400;500;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/studio.css">
+</head>
+<body>
+<!-- ============ DEMO HARNESS (not part of the app) ============ -->
+<div id="harness">
+  <div class="brand">REACTION STUDIO<small>frontend carbon copy</small></div>
+  <button class="htab" data-view="splash">Splash</button>
+  <button class="htab on" data-view="studio">Studio</button>
+  <button class="htab" data-view="fullcanvas">Full Canvas</button>
+  <button class="htab" data-view="immersive">Immersive</button>
+  <div class="hsep"></div>
+  <button class="htab" data-dlg="dlg-startup">Format</button>
+  <button class="htab" data-dlg="dlg-mixer">Mixer</button>
+  <button class="htab" data-dlg="dlg-export">Export</button>
+  <button class="htab" data-dlg="dlg-progress">Exporting</button>
+  <button class="htab" data-dlg="dlg-props">Props</button>
+  <button class="htab" data-dlg="dlg-text">Text</button>
+  <button class="htab" data-dlg="dlg-rename">Rename</button>
+  <button class="htab" data-dlg="dlg-diag">Diag</button>
+  <button class="htab" data-dlg="dlg-d9">Save≠Exp</button>
+  <div class="hsep"></div>
+  <label class="hchk"><input type="checkbox" id="hk-sample" checked> Sample layers</label>
+  <label class="hchk"><input type="checkbox" id="hk-hud"> HUD</label>
+  <label class="hchk"><input type="checkbox" id="hk-light"> Screen light</label>
+  <button class="htab" id="hk-toast">Toast</button>
+</div>
+
+<!-- ============ APP (carbon copy of MainActivity shell) ============ -->
+<div id="app">
+  <!-- TOP STRIP -->
+  <div class="topstrip">
+    <button class="iconbtn hamb open" id="btn-hamb" title="Toggle sidebar"><span class="ms">menu</span></button>
+    <div style="width:6px"></div>
+    <button class="proj-title" id="btn-title" title="Rename project"><span id="proj-name">Ahmed Reaction Studio</span><span class="ms">edit</span></button>
+    <div style="width:8px"></div>
+    <button class="aspect-chip" id="btn-aspect" title="Cycle aspect ratio"><span class="ms">aspect_ratio</span><span id="aspect-lbl">16:9</span></button>
+    <div style="width:6px"></div>
+    <button class="iconbtn" id="btn-undo" disabled><span class="ms">undo</span></button>
+    <button class="iconbtn" id="btn-redo" disabled><span class="ms">redo</span></button>
+    <div style="width:4px"></div>
+    <button class="savebtn dirty" id="btn-save"><span class="dot"></span><span class="ms">save</span><span id="save-lbl">Save Draft</span></button>
+    <div style="width:6px"></div>
+    <button class="exportbtn" id="btn-export"><span class="ms">movie</span>Export MP4</button>
+    <div style="width:2px"></div>
+    <button class="iconbtn" id="btn-fc" title="Full Screen Canvas"><span class="ms" id="fc-ic">fullscreen</span></button>
+    <div class="overflow-wrap">
+      <button class="iconbtn" id="btn-overflow"><span class="ms">more_vert</span></button>
+      <div class="dropdown" id="overflow-menu" style="display:none">
+        <button id="m-fc"><span class="ms">fullscreen</span><span>Full Screen Canvas</span></button>
+        <button class="amber" id="m-guide"><span class="ms">help_outline</span><span>Why Save vs Export?</span></button>
+        <button id="m-hud"><span class="ms">info</span><span>Show Stats Overlay</span></button>
+        <button class="dim" id="m-diag"><span class="ms">settings</span><span>Studio Settings &amp; Diagnostics</span></button>
+      </div>
+    </div>
+  </div>
+
+  <div class="workspace">
+    <!-- SIDEBAR -->
+    <aside class="sidebar" id="sidebar">
+      <!-- §1 SOURCES -->
+      <button class="sec-head open" data-sec="sources"><span class="ms">folder</span><span class="lbl">SOURCES</span><span class="badge" id="bd-sources">3</span><span class="ms chev">keyboard_arrow_down</span></button>
+      <div class="sec-div"></div>
+      <div class="sec-body open" id="sec-sources">
+        <div id="layer-list"></div>
+        <div class="mini-div"></div>
+        <button class="sub-head" data-sub="sub-add"><span class="ms">add_circle</span><span class="lbl">Add Source</span><span class="ms chev">keyboard_arrow_right</span></button>
+        <div class="submenu" id="sub-add">
+          <button class="act" data-toast="Added Video Clip #4"><span class="ms">file_open</span><span>Pick Video from Device</span></button>
+          <button class="act" data-add="video"><span class="ms">movie</span><span>Sample Video Clip</span></button>
+          <button class="act" data-toast="Added Sticker Overlay"><span class="ms">add_photo_alternate</span><span>Pick Image from Device</span></button>
+          <button class="act" data-add="image"><span class="ms">image</span><span>Sample Image Sticker</span></button>
+          <button class="act" data-add="frontcam"><span class="ms">camera_front</span><span>Add Front Camera</span></button>
+          <button class="act" data-add="backcam"><span class="ms">photo_camera</span><span>Add Back Camera</span></button>
+          <button class="act" data-add="screen"><span class="ms">screen_share</span><span>Screen Record</span></button>
+          <button class="act" data-dlg="dlg-text"><span class="ms">text_fields</span><span>Text Overlay</span></button>
+        </div>
+        <button class="act danger" id="act-remove"><span class="ms">delete_outline</span><span>Remove Selected</span></button>
+        <button class="act" id="act-dup"><span class="ms">content_copy</span><span>Duplicate Selected</span></button>
+      </div>
+      <!-- §2 SOURCE CONTROLS -->
+      <button class="sec-head" data-sec="controls"><span class="ms">tune</span><span class="lbl">SOURCE CONTROLS</span><span class="badge" id="bd-controls">Front Came</span><span class="ms chev">keyboard_arrow_right</span></button>
+      <div class="sec-div"></div>
+      <div class="sec-body" id="sec-controls"></div>
+      <!-- §3 AUDIO -->
+      <button class="sec-head" data-sec="audio"><span class="ms">volume_up</span><span class="lbl">AUDIO</span><span class="ms chev">keyboard_arrow_right</span></button>
+      <div class="sec-div"></div>
+      <div class="sec-body" id="sec-audio">
+        <button class="act" data-dlg="dlg-mixer"><span class="ms">equalizer</span><span>Mixer Panel…</span></button>
+        <button class="sub-head" data-sub="sub-mic"><span class="ms">mic</span><span class="lbl" id="mic-lbl">Mic Gain (100%)</span><span class="ms chev">keyboard_arrow_right</span></button>
+        <div class="submenu" id="sub-mic">
+          <button class="act" id="mic-plus"><span class="ms">add</span><span>+10% Gain</span></button>
+          <button class="act" id="mic-minus"><span class="ms">remove</span><span>−10% Gain</span></button>
+          <button class="act" id="mic-reset"><span class="ms">restart_alt</span><span>Reset 100%</span></button>
+        </div>
+        <div id="persource-wrap">
+          <button class="sub-head" data-sub="sub-persrc"><span class="ms">headphones</span><span class="lbl" id="persrc-lbl">Front Camera Audio</span><span class="ms chev">keyboard_arrow_right</span></button>
+          <div class="submenu" id="sub-persrc">
+            <button class="act" id="ps-volup"><span class="ms">volume_up</span><span>Volume +10%</span></button>
+            <button class="act" id="ps-voldn"><span class="ms">volume_down</span><span>Volume −10%</span></button>
+            <button class="act" id="ps-mute"><span class="ms">volume_up</span><span>Mute Layer</span></button>
+            <button class="act" id="ps-solo"><span class="ms">stars</span><span>Solo Track</span></button>
+          </div>
+        </div>
+      </div>
+      <!-- §4 RECORD -->
+      <button class="sec-head open" data-sec="record"><span class="ms">fiber_manual_record</span><span class="lbl">RECORD &amp; TRANSPORT</span><span class="badge rec" id="bd-rec" style="display:none">REC</span><span class="ms chev">keyboard_arrow_down</span></button>
+      <div class="sec-div"></div>
+      <div class="sec-body open" id="sec-record">
+        <button class="act danger" id="act-record"><span class="ms">fiber_manual_record</span><span>Start Recording</span></button>
+        <button class="act" id="act-play"><span class="ms">play_arrow</span><span>Play</span></button>
+        <button class="act" id="act-stop"><span class="ms">stop</span><span>Stop</span></button>
+        <button class="act" data-add="frontcam"><span class="ms">camera_front</span><span>Add Live Camera Take (Front)</span></button>
+        <button class="act" data-add="screen"><span class="ms">screen_share</span><span>Screen Capture Source</span></button>
+        <button class="act" id="act-snap"><span class="ms">photo_camera</span><span>Snapshot Frame</span></button>
+        <button class="act" id="act-restart"><span class="ms">replay</span><span>Restart Timeline</span></button>
+        <button class="sub-head" data-sub="sub-light"><span class="ms">lightbulb</span><span class="lbl" id="light-lbl">Light (Off)</span><span class="ms chev">keyboard_arrow_right</span></button>
+        <div class="submenu" id="sub-light">
+          <button class="act light active" data-light="Off"><span class="ms">flash_off</span><span>Turn Off Light</span></button>
+          <button class="act light" data-light="Front Torch"><span class="ms">flash_on</span><span>Front Torch</span></button>
+          <button class="act light" data-light="Back Torch"><span class="ms">flash_on</span><span>Back Torch</span></button>
+          <button class="act light" data-light="Both Torches"><span class="ms">highlight</span><span>Both Torches</span></button>
+          <button class="act light" data-light="Screen Light"><span class="ms">wb_sunny</span><span>Screen Light (Softbox)</span></button>
+        </div>
+      </div>
+      <!-- §5 CANVAS -->
+      <button class="sec-head" data-sec="canvas"><span class="ms">aspect_ratio</span><span class="lbl">CANVAS</span><span class="badge" id="bd-canvas">16:9</span><span class="ms chev">keyboard_arrow_right</span></button>
+      <div class="sec-div"></div>
+      <div class="sec-body" id="sec-canvas">
+        <button class="sub-head" data-sub="sub-aspect"><span class="ms">crop_original</span><span class="lbl" id="aspect-sub">Aspect Ratio (16:9 Landscape)</span><span class="ms chev">keyboard_arrow_right</span></button>
+        <div class="submenu" id="sub-aspect">
+          <button class="act ar active" data-ar="16:9"><span class="ms">laptop</span><span>16:9 Landscape (YouTube)</span></button>
+          <button class="act ar" data-ar="9:16"><span class="ms">smartphone</span><span>9:16 Portrait (TikTok/Shorts)</span></button>
+          <button class="act ar" data-ar="1:1"><span class="ms">crop_square</span><span>1:1 Square (Instagram)</span></button>
+          <button class="act" data-dlg="dlg-startup"><span class="ms">screen_rotation</span><span>Format &amp; Auto-Rotate Dialog…</span></button>
+        </div>
+        <button class="sub-head" data-sub="sub-bg"><span class="ms">palette</span><span class="lbl" id="bg-sub">Background (Dark)</span><span class="ms chev">keyboard_arrow_right</span></button>
+        <div class="submenu" id="sub-bg"></div>
+        <button class="act" id="act-fc"><span class="ms">fullscreen</span><span>Full Canvas Mode</span></button>
+        <button class="act" id="act-fitall"><span class="ms">center_focus_strong</span><span>Fit All Sources</span></button>
+        <button class="act" id="act-tobg"><span class="ms">layers</span><span>Selection → Background</span></button>
+      </div>
+      <!-- §6 EXPORT -->
+      <button class="sec-head" data-sec="export"><span class="ms">file_upload</span><span class="lbl">EXPORT</span><span class="ms chev">keyboard_arrow_right</span></button>
+      <div class="sec-div"></div>
+      <div class="sec-body" id="sec-export">
+        <button class="act" id="act-quickexp"><span class="ms">bolt</span><span>Quick Export (720p30 MP4)</span></button>
+        <button class="act" data-dlg="dlg-export"><span class="ms">settings</span><span>Export Settings…</span></button>
+      </div>
+      <!-- §7 PROJECT -->
+      <button class="sec-head" data-sec="project"><span class="ms">snippet_folder</span><span class="lbl">PROJECT</span><span class="ms chev">keyboard_arrow_right</span></button>
+      <div class="sec-div"></div>
+      <div class="sec-body" id="sec-project">
+        <button class="act" data-dlg="dlg-rename"><span class="ms">edit</span><span>Rename Project…</span></button>
+        <button class="act" id="act-save"><span class="ms">save</span><span>Save Now</span></button>
+        <button class="act" id="act-snap2"><span class="ms">photo_camera</span><span>Snapshot Frame</span></button>
+        <button class="act" id="act-hud"><span class="ms">speed</span><span>Show Stats Overlay</span></button>
+        <button class="act" id="act-undo"><span class="ms">undo</span><span>Undo</span></button>
+        <button class="act" id="act-redo"><span class="ms">redo</span><span>Redo</span></button>
+        <button class="act" data-dlg="dlg-diag"><span class="ms">medical_services</span><span>Diagnostics</span></button>
+      </div>
+      <!-- §8 SETTINGS -->
+      <button class="sec-head" data-sec="settings"><span class="ms">settings</span><span class="lbl">SETTINGS</span><span class="ms chev">keyboard_arrow_right</span></button>
+      <div class="sec-div"></div>
+      <div class="sec-body" id="sec-settings">
+        <button class="act" data-dlg="dlg-export"><span class="ms">high_quality</span><span>Export Quality Settings…</span></button>
+        <button class="act" id="act-folder"><span class="ms">folder_special</span><span>Export Folder: Movies (default)</span></button>
+        <button class="act" data-dlg="dlg-diag"><span class="ms">info</span><span>About Ahmed Reaction Studio</span></button>
+      </div>
+    </aside>
+
+    <!-- STAGE -->
+    <div class="stage" id="stage">
+      <div class="canvas" id="canvas"></div>
+      <div class="qbar" id="qbar" style="display:none">
+        <button class="pri" id="q-autofill"><span class="ms">fit_screen</span>Auto Fill</button>
+        <div style="width:6px"></div>
+        <button class="out" id="q-fit"><span class="ms">aspect_ratio</span>Fit</button>
+        <div style="width:4px"></div>
+        <button class="out" id="q-center"><span class="ms">filter_center_focus</span>Center</button>
+        <div style="width:4px"></div>
+        <button class="ic" id="q-sw" title="Stretch to Canvas Width"><span class="ms">straighten</span></button>
+        <button class="ic" id="q-sh" title="Stretch to Canvas Height"><span class="ms">height</span></button>
+        <button class="ic amb" id="q-rot" title="Reset Angle 0°"><span class="ms">rotate_left</span></button>
+        <button class="ic red" id="q-del" title="Delete Selected Layer"><span class="ms">delete</span></button>
+      </div>
+      <button class="wpill" id="wpill"><span class="ms" id="wpill-ic">fullscreen</span><span id="wpill-tx">Full Canvas</span><span class="dv"></span><span class="eye" id="wpill-eye" title="Hide studio controls"><span class="ms">visibility_off</span></span></button>
+      <div class="recpill" id="recpill" style="display:none"><i></i><span id="recpill-tx">REC 00:00</span></div>
+      <div class="tl" id="tl">
+        <span class="ms pp" id="tl-pp">play_arrow</span>
+        <div style="width:10px"></div>
+        <span class="time" id="tl-time">00:00 / 00:00</span>
+        <div style="width:12px"></div>
+        <input type="range" id="tl-seek" min="0" max="1000" value="0" disabled>
+        <span class="rdot" id="tl-rec" style="display:none"></span>
+      </div>
+      <div class="transport" id="transport">
+        <div class="rec" id="t-rec" style="display:none"><i></i><span id="t-rec-tx">REC 00:00</span></div>
+        <div class="pad">
+          <button class="tbtn pp" id="t-pp"><span class="ms">play_arrow</span></button>
+          <button class="tbtn st" id="t-stop"><span class="ms">stop</span></button>
+          <button class="tbtn rc" id="t-recbtn"><span class="ms">fiber_manual_record</span></button>
+        </div>
+      </div>
+      <div class="hud" id="hud" style="display:none">
+        <h5>STUDIO ENGINE HUD</h5>
+        <div id="hud-l1">FPS: 60 · Res: 1920x1080</div>
+        <div>FrameTime: 16.4ms · Decoder: HW MediaCodec + OES</div>
+        <div id="hud-l3">Layers: 3 active · Latency: 12ms</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="screenlight"></div>
+
+  <!-- D1 STARTUP FORMAT -->
+  <div class="scrim" id="dlg-startup"><div class="dlg">
+    <h2><span class="ms">aspect_ratio</span><span>Select Project Canvas Format<small>Screen will automatically rotate to match</small></span></h2>
+    <button class="optcard on" data-ar="16:9"><span class="tile"><span class="ms">stay_current_landscape</span></span><span class="tt"><b>16:9 Widescreen (Landscape)</b><span>Auto-rotates to Landscape 🔄 • YouTube, Gaming, PC Streams</span></span><span class="res">1920 × 1080</span></button>
+    <button class="optcard" data-ar="9:16"><span class="tile"><span class="ms">stay_current_portrait</span></span><span class="tt"><b>9:16 Vertical (Portrait)</b><span>Auto-rotates to Portrait 📱 • Shorts, Reels, TikTok</span></span><span class="res">1080 × 1920</span></button>
+    <button class="optcard" data-ar="1:1"><span class="tile"><span class="ms">crop_square</span></span><span class="tt"><b>1:1 Square Format</b><span>Standard square • Instagram feed, Posts</span></span><span class="res">1080 × 1080</span></button>
+    <div class="dactions"><button class="btn" data-close>Start Project</button></div>
+  </div></div>
+
+  <!-- D2 MIXER -->
+  <div class="scrim" id="dlg-mixer"><div class="dlg">
+    <h2><span class="ms">equalizer</span>Studio Audio Mixer</h2>
+    <div class="rowline" id="mix-master-lbl">Master Volume: 100%</div>
+    <input type="range" id="mix-master" min="0" max="100" value="100">
+    <div class="rowline" id="mix-mic-lbl">Microphone Gain: 100%</div>
+    <input type="range" id="mix-mic" min="0" max="200" value="100" style="accent-color:var(--amber)">
+    <div class="mini-div" style="margin:8px 0"></div>
+    <div class="grp" style="margin-top:0"><b style="color:var(--t2);font-size:11px">Track Channels</b></div>
+    <div id="mix-tracks"></div>
+    <div class="dactions"><button class="tbtn2" data-close>Close</button></div>
+  </div></div>
+
+  <!-- D3 EXPORT -->
+  <div class="scrim" id="dlg-export"><div class="dlg">
+    <h2><span class="ms">file_upload</span>Export Video</h2>
+    <div class="grp">Resolution Preset</div>
+    <div class="chips" id="ch-res"><button class="chip on">720p (HD)</button><button class="chip">1080p (FHD)</button><button class="chip">4K (UHD)</button></div>
+    <div class="grp">Framerate</div>
+    <div class="chips" id="ch-fps"><button class="chip">24 fps</button><button class="chip on">30 fps</button><button class="chip">60 fps</button></div>
+    <div class="grp">Video Codec</div>
+    <div class="chips" id="ch-codec"><button class="chip on">H.264 / AVC</button><button class="chip">H.265 / HEVC</button></div>
+    <div class="grp">Destination</div>
+    <div class="destrow"><span class="ms">folder</span><b id="dest-lbl">Movies (default)</b><button id="btn-folder2">Choose Folder…</button></div>
+    <div class="dactions"><button class="tbtn2 mut" data-close>Cancel</button><button class="btn" id="btn-startexp">Start Export</button></div>
+  </div></div>
+
+  <!-- D4 PROGRESS -->
+  <div class="scrim" id="dlg-progress"><div class="dlg">
+    <h2 id="exp-title">Rendering Video…</h2>
+    <div id="exp-busy" class="center">
+      <div class="pbar"><i id="exp-bar"></i></div>
+      <div style="font-size:13px" id="exp-pct">Encoding frames: 0%</div>
+      <div style="font-size:11px;color:var(--muted)">Compositing layers → H.264 → MP4…</div>
+    </div>
+    <div id="exp-done" class="center" style="display:none">
+      <span class="ms big-ic" style="color:var(--green)">check_circle</span>
+      <div style="font-weight:700;margin:8px 0 4px">Video successfully generated!</div>
+      <div style="font-size:11px;color:var(--muted)" id="exp-path">Movies/Reaction_Studio_720p30.mp4</div>
+    </div>
+    <div id="exp-fail" class="center" style="display:none">
+      <span class="ms big-ic" style="color:var(--red);font-size:44px!important">error_outline</span>
+      <div style="font-size:13px;margin:10px 0 4px" id="exp-err">Export failed.</div>
+      <div style="font-size:11px;color:var(--muted)">No file was created. Nothing was reported as exported.</div>
+    </div>
+    <div class="dactions"><button class="btn green" id="exp-ok" data-close style="display:none">Done</button>
+    <button class="btn red" id="exp-close" data-close style="display:none">Close</button></div>
+  </div></div>
+
+  <!-- D5 LAYER PROPS -->
+  <div class="scrim" id="dlg-props"><div class="dlg">
+    <h2>Layer Properties</h2>
+    <div class="flabel">Layer Name</div><input class="tfield" id="pp-name" value="Front Camera">
+    <div class="rowline" id="pp-op-lbl">Opacity: 100%</div><input type="range" id="pp-op" min="0" max="100" value="100">
+    <div class="rowline" id="pp-vol-lbl">Volume: 100%</div><input type="range" id="pp-vol" min="0" max="100" value="100" style="accent-color:var(--purple)">
+    <div class="rowline">Playback Speed: <span id="pp-spd-lbl">1.0x</span></div>
+    <div class="chips" id="ch-spd"><button class="chip">0.5x</button><button class="chip on">1.0x</button><button class="chip">1.5x</button><button class="chip">2.0x</button></div>
+    <div class="dactions"><button class="tbtn2 mut" data-close>Cancel</button><button class="btn" data-close id="pp-save">Save</button></div>
+  </div></div>
+
+  <!-- D6 TEXT -->
+  <div class="scrim" id="dlg-text"><div class="dlg">
+    <h2>Text Overlay Editor</h2>
+    <div class="flabel">Text Content</div><input class="tfield" id="tx-content" value="😱 UNBELIEVABLE TWIST!">
+    <div class="rowline" id="tx-size-lbl">Font Size: 26sp</div>
+    <input type="range" id="tx-size" min="16" max="42" value="26">
+    <div class="grp">Text Color</div>
+    <div class="dots" id="tx-dots"></div>
+    <div class="switchrow"><b>Drop Shadow</b><button class="switch on" id="tx-shadow"></button></div>
+    <div class="dactions"><button class="tbtn2 mut" data-close>Cancel</button><button class="btn" id="tx-apply">Apply Text</button></div>
+  </div></div>
+
+  <!-- D7 RENAME -->
+  <div class="scrim" id="dlg-rename"><div class="dlg">
+    <h2>Rename Project</h2>
+    <div class="flabel">Project Title</div><input class="tfield" id="rn-field" value="Ahmed Reaction Studio">
+    <div class="dactions"><button class="tbtn2 mut" data-close>Cancel</button><button class="btn" id="rn-ok">Rename</button></div>
+  </div></div>
+
+  <!-- D8 DIAG -->
+  <div class="scrim" id="dlg-diag"><div class="dlg diagsec">
+    <h2><span class="ms">medical_services</span>Diagnostics &amp; Codecs</h2>
+    <h4>Hardware Video Decoders</h4><p>• c2.android.avc.decoder (HW H.264)<br>• OMX.qcom.video.decoder.avc<br>• c2.android.hevc.decoder (HW H.265)</p>
+    <h4>Camera Subsystem</h4><p>• Camera2 API Level: FULL<br>• Lens Facing: FRONT &amp; BACK available<br>• Torch Controller: Hardware LED + Screen Light fallback</p>
+    <h4>Compositor &amp; Rendering</h4><p>• Pipeline: EGL14 + GLES 2.0/3.0 PBO offscreen<br>• Canvas Compositor: Deterministic Preview == Export<br>• Audio Clock: HAL Monotonic Sample PTS</p>
+    <div class="dactions"><button class="tbtn2" data-close>Close</button></div>
+  </div></div>
+
+  <!-- D9 SAVE vs EXPORT -->
+  <div class="scrim" id="dlg-d9"><div class="d9">
+    <div class="dh"><span class="tile"><span class="ms">help_outline</span></span>
+      <span class="tt"><b>Save vs. Export</b><span>Why Studio has two different options</span></span>
+      <button class="x" data-close><span class="ms">close</span></button></div>
+    <div class="card a"><div class="ch"><span class="ms">save</span>1. SAVE DRAFT (Project)</div>
+      <ul><li>Saves your editing session: timeline, layers, PiP coordinates, sticker text, audio levels.</li>
+      <li>Instant saving inside the app database.</li><li>Allows you to close the app and resume editing later.</li>
+      <li>Not a playable video file.</li></ul></div>
+    <div class="card c"><div class="ch"><span class="ms">movie</span>2. EXPORT MP4 (Final Video)</div>
+      <ul><li>Renders and encodes everything into a real .MP4 video file on your device storage.</li>
+      <li>Saved directly to your Movies / Gallery album.</li>
+      <li>Ready to upload to YouTube, TikTok, Instagram, or WhatsApp.</li>
+      <li>Cannot be re-edited layer-by-layer once rendered.</li></ul></div>
+    <div class="dactions2">
+      <button class="o" id="d9-save"><span class="ms">save</span>Save Draft</button>
+      <button class="f" id="d9-exp"><span class="ms">movie</span>Export MP4</button>
+    </div>
+  </div></div>
+
+  <!-- SPLASH -->
+  <div id="splash"><div class="col">
+    <div class="mark"><span class="a">A</span><span class="m">M</span><span class="s">S</span></div>
+    <h1>AMS</h1><p>Create. React. Record.</p>
+  </div></div>
+  <div id="toasts"></div>
+</div>
+<script src="js/studio.js"></script>
+</body>
+</html>
