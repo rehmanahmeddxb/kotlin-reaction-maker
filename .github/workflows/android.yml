@@ -117,18 +117,32 @@ jobs:
           #
           # NOTE: these are dex symbol names — renaming a class here without
           # updating this list is what makes this step fail. Keep them in sync
-          # with the real types. (RadialWheelView/makePetal were the pre-nesting
-          # names; the wheel is now RadialMenuView with addPetal. buildTabBar/
-          # updateSourceStrip were the pre-redesign chrome; the workspace chrome
-          # is now StudioLayoutInjector with the Sources/Mixer panel pair.)
+          # with the real types. (The pre-2026-09-08 list guarded RadialMenuView/
+          # RadialMenus and the Sources/Mixer panel pair; the radial wheel and
+          # tab panels are retired — the workspace chrome is now the full-bleed
+          # sidebar studio: StudioLayoutInjector + StudioSection row kit +
+          # the per-section renderers in EditorActivity.)
           features = {
-              # the radial menu must ship, and it must be the NESTED one:
-              # Level/submenu are what make petals open sub-petals rather than
-              # just firing an action and closing
-              'RadialMenuView': 'radial menu view',
-              'addPetal': 'radial petal bloom',
-              'RadialMenus': 'the menu tree (sources/add/controls/mixing/...)',
-              'submenu': 'nested sub-petals',
+              # Full-bleed canvas: the stage is contain-fit into the SAFE AREA
+              # only — chrome floats over it and never shrinks it
+              'setViewportInsets': 'four-side viewport API (StageView)',
+              'applyViewportInsets': 'system-insets-only canvas',
+              # Sidebar chrome: row kit, fit ladder, single-row timeline pill
+              'StudioLayoutInjector': 'Studio workspace chrome injector',
+              'StudioSection': 'sidebar section (header + collapsible body)',
+              'actRow': 'sidebar labelled action row kit',
+              'fitTopStrip': 'top-strip no-crop fit ladder',
+              'buildTimeline': 'single-row timeline pill (transport + RECORD)',
+              # The sidebar's dynamic section renderers
+              'refreshSourceSection': 'SOURCE section renderer',
+              'refreshAudioSection': 'AUDIO section renderer',
+              'rebuildRecordSection': 'RECORD section renderer',
+              'rebuildCanvasSection': 'CANVAS section renderer',
+              'rebuildExportSection': 'EXPORT section renderer',
+              # The LAYERS row engine + the one safe delete path
+              'SourceDock': 'layer rows (drag-to-reorder Z)',
+              'rebindDock': 'dock callback binding',
+              'deleteSourceSafely': 'single delete path (camera + decoder teardown)',
               # the camera must be usable as a LIVE canvas source, not only as
               # a separate fullscreen recorder
               'LiveCamera': 'live camera source',
@@ -149,17 +163,8 @@ jobs:
               'Resampler': 'sample-rate conversion',
               'MicThread': 'independent microphone capture',
               'AudioThread': 'sample-count audio encoding',
-              # Redesigned Studio workspace (PR #31): the injected chrome plus
-              # the panels it hosts must ship, not the stubbed pre-redesign
-              # editor methods.
-              'StudioLayoutInjector': 'Studio workspace chrome injector',
-              'bindPanels': 'panel listener binding',
-              'buildTransport': 'transport bar builder',
-              'SourcesPanel': 'source list panel',
-              'MixerPanel': 'audio mixer panel',
+              # Studio workspace wiring that must ship
               'setFullCanvas': 'full canvas mode',
-              'relayoutChrome': 'orientation re-layout delegation',
-              'refreshContextBar': 'unified source actions',
               'placeNewPip': 'deterministic PiP placement',
               'hitTest': 'topmost-first source selection',
               'TorchController': 'Step 4 hardware flashlight',
@@ -167,7 +172,7 @@ jobs:
           for sym, what in features.items():
               assert sym.encode() in dex, f'FEATURE MISSING FROM APK: {sym} ({what})'
           print('dex contains all activities, screen capture service, '
-                'the nested radial menu and the live camera source')
+                'the full-bleed sidebar studio and the live camera source')
           PY
 
       - name: Speed check (build timing + APK stats)
