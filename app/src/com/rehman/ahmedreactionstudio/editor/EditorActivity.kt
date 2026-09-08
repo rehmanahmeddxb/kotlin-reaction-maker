@@ -648,12 +648,14 @@ class EditorActivity : Activity(), StageView.Host {
             if (l.visible) "Hide ${l.name}" else "Show ${l.name}", UI.FG) {
             ctrl.toggleVisible(l.id); showHideFeedback(l)
         }
-        if (l.isClip()) {
+        if (l.isVideoLike()) {
             val m = ctrl.effectiveMuted(l)
             add(if (m) R.drawable.ic_volume_off else R.drawable.ic_volume,
                 if (m) "Unmute ${l.name}" else "Mute ${l.name}", if (m) UI.DANGER else UI.FG) {
                 ctrl.toggleMuted(l.id)
             }
+        }
+        if (l.isClip()) {
             add(if (l.playing) R.drawable.ic_pause else R.drawable.ic_play,
                 if (l.playing) "Pause ${l.name}" else "Play ${l.name}", UI.ACCENT2) {
                 toggleSourcePlay(l)
@@ -841,6 +843,9 @@ class EditorActivity : Activity(), StageView.Host {
                 if (l.loop) "Loop: on" else "Loop: off", active = l.loop) {
                 ctrl.toggleLoop(l.id)
             }
+        }
+        if (l.isVideoLike()) {
+            if (!l.isClip()) StudioLayoutInjector.subLabel(this, body, "Audio")
             StudioLayoutInjector.actRow(this, body,
                 if (ctrl.effectiveMuted(l)) R.drawable.ic_volume_off else R.drawable.ic_volume,
                 if (ctrl.effectiveMuted(l)) "Unmute" else "Mute",
@@ -959,18 +964,18 @@ class EditorActivity : Activity(), StageView.Host {
     private fun refreshAudioSection() {
         if (!this::audioHost.isInitialized) return
         val p = proj ?: return
-        val clips = p.layers.filter { it.isClip() }
-        val key = clips.joinToString(",") { it.id } + "v" + sourceVersion
+        val mixable = p.layers.filter { it.isVideoLike() }
+        val key = mixable.joinToString(",") { it.id } + "v" + sourceVersion
         if (key == audioRenderedKey) return
         audioRenderedKey = key
         val host = audioHost
         host.removeAllViews()
-        if (clips.isEmpty()) {
+        if (mixable.isEmpty()) {
             StudioLayoutInjector.noteRow(this, host,
-                "No video audio yet. The camera mic is mixed in while you record.")
+                "No video or camera sources yet. Add one to control its audio here.")
             return
         }
-        for (l in clips.asReversed()) addAudioStrip(host, l)
+        for (l in mixable.asReversed()) addAudioStrip(host, l)
     }
 
     private fun addAudioStrip(host: LinearLayout, l: Layer) {
@@ -1275,9 +1280,9 @@ class EditorActivity : Activity(), StageView.Host {
             if (sel != null) Ic.typeIcon(sel.type) else R.drawable.ic_layers, UI.ACCENT2))
         sec["source"]?.badge?.text = sel?.name?.ifBlank { null } ?: "—"
         refreshSourceSection()
-        val clips = p.layers.count { it.isClip() }
+        val mixable = p.layers.count { it.isVideoLike() }
         sec["audio"]?.badge?.text =
-            if (clips == 0) "mic only" else "$clips channel${if (clips == 1) "" else "s"}"
+            if (mixable == 0) "no sources" else "$mixable channel${if (mixable == 1) "" else "s"}"
         refreshAudioSection()
         rebuildRecordSection()
         rebuildCanvasSection()

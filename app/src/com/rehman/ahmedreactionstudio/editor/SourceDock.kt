@@ -89,8 +89,8 @@ class SourceDock(
         eye.setOnClickListener { onQuickToggle(l, "vis") }
         row.addView(eye)
 
-        // --- mute (only meaningful for video-like sources) ---
-        if (l.isClip()) {
+        // --- mute (meaningful for every source that carries audio: clips AND live camera) ---
+        if (l.isVideoLike()) {
             val mute = IconBtn(act)
             mute.layoutParams = IconBtn.sized(act, 44)
             val effMuted = l.muted || mutedBySolo(l)
@@ -175,9 +175,11 @@ class SourceDock(
         val bits = ArrayList<String>()
         if (!l.visible) bits.add("HIDDEN")
         if (l.isLive()) bits.add("LIVE CAMERA ON CANVAS")
-        if (l.isClip()) {
+        if (l.isVideoLike()) {
             if (mutedBySolo(l) && !l.muted) bits.add("MUTED BY SOLO")
             else if (l.muted) bits.add("MUTED")
+        }
+        if (l.isClip()) {
             if (!l.playing) bits.add("PAUSED")
         }
         if (l.locked) bits.add("LOCKED")
