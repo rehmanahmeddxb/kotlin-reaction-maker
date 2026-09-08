@@ -589,18 +589,18 @@ object StudioLayoutInjector {
         subLabel(a, layers.body, "Add source")
         a.addHost = LinearLayout(a)
         a.addHost.orientation = LinearLayout.VERTICAL
-        a.addHost.addView(actRow(a, a.addHost, R.drawable.ic_camera, "Camera (live)",
-            "on the canvas — frame it, then record") { a.addCameraLive() })
-        a.addHost.addView(actRow(a, a.addHost, R.drawable.ic_camera, "Camera take",
-            "fullscreen recorder → PiP clip") { a.openCamera() })
-        a.addHost.addView(actRow(a, a.addHost, R.drawable.ic_video, "Video file",
-            "from your phone") { a.addVideo() })
-        a.addHost.addView(actRow(a, a.addHost, R.drawable.ic_image, "Image",
-            "from your phone") { a.addImage() })
-        a.addHost.addView(actRow(a, a.addHost, R.drawable.ic_screen, "Screen record",
-            "mirrors this phone") { a.addScreen() })
-        a.addHost.addView(actRow(a, a.addHost, R.drawable.ic_text, "Text",
-            "overlay caption") { a.addTextSource() })
+        actRow(a, a.addHost, R.drawable.ic_camera, "Camera (live)",
+            "on the canvas — frame it, then record") { a.addCameraLive() }
+        actRow(a, a.addHost, R.drawable.ic_camera, "Camera take",
+            "fullscreen recorder → PiP clip") { a.openCamera() }
+        actRow(a, a.addHost, R.drawable.ic_video, "Video file",
+            "from your phone") { a.addVideo() }
+        actRow(a, a.addHost, R.drawable.ic_image, "Image",
+            "from your phone") { a.addImage() }
+        actRow(a, a.addHost, R.drawable.ic_screen, "Screen record",
+            "mirrors this phone") { a.addScreen() }
+        actRow(a, a.addHost, R.drawable.ic_text, "Text",
+            "overlay caption") { a.addTextSource() }
         layers.body.addView(a.addHost)
         divider(a, layers.body)
         a.layersActionsHost = LinearLayout(a)
@@ -647,17 +647,17 @@ object StudioLayoutInjector {
             openOf("project", true))
         a.projectHost = LinearLayout(a)
         a.projectHost.orientation = LinearLayout.VERTICAL
-        a.projectHost.addView(actRow(a, a.projectHost, R.drawable.ic_edit, "Rename project") {
+        actRow(a, a.projectHost, R.drawable.ic_edit, "Rename project") {
             a.renameProject()
-        })
-        a.projectHost.addView(actRow(a, a.projectHost, R.drawable.ic_check, "Save now") {
+        }
+        actRow(a, a.projectHost, R.drawable.ic_check, "Save now") {
             a.saveNow()
-        })
-        a.projectHost.addView(actRow(a, a.projectHost, R.drawable.ic_info, "Studio diagnostics") {
+        }
+        actRow(a, a.projectHost, R.drawable.ic_info, "Studio diagnostics") {
             a.openDiagnostics()
-        })
-        a.projectHost.addView(actRow(a, a.projectHost, R.drawable.ic_back, "Close project",
-            danger = true) { a.closeProject() })
+        }
+        actRow(a, a.projectHost, R.drawable.ic_back, "Close project",
+            danger = true) { a.closeProject() }
         project.body.addView(a.projectHost)
 
         a.sec.clear()
@@ -727,7 +727,12 @@ object StudioLayoutInjector {
 
     // ================= sidebar row kit (used by the activity too) =================
 
-    /** A 44dp (52dp with sub-line) labelled action row — the sidebar's unit. */
+    /**
+     * A 44dp (52dp with sub-line) labelled action row — the sidebar's unit.
+     * NOTE: attaches itself to [parent]. Callers must NOT wrap this in
+     * `addView(...)` — doing so crashes with "The specified child already
+     * has a parent".
+     */
     fun actRow(a: EditorActivity, parent: LinearLayout, icon: Int, label: String,
                sub: String? = null, active: Boolean = false, danger: Boolean = false,
                enabled: Boolean = true, badge: String? = null, badgeColor: Int? = null,
