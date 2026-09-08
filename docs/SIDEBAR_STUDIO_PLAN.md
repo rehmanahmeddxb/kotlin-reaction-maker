@@ -246,9 +246,11 @@ Layer type accents (sidebar rows + canvas badges): front cam `#FFA02C` · back c
 
 ## 5. What stays untouched (Rule 2 — pipeline-safe)
 
-- `StageView` canvas gestures (drag / corner+edge resize / rotation knob / snap
-  guides / selection chrome) — the mockup intentionally omits gestures; they're
-  already built and correct.
+- `StageView` canvas gestures (drag / **Rule 9 free stretch** / rotation knob / snap
+  guides / selection chrome) — the mockup intentionally omits gestures. Locked
+  contract: **edge handle = stretch that side only (L/R/T/B, other sides stay
+  put)**; **corner handle = stretch the whole frame freely (W+H independent,
+  opposite corner stays)**. No aspect lock on any source type.
 - `PreviewEngine` clocks, `Compositor`, `MediaKit`, `AudioMixer`, export/recording
   pipelines, `TorchController` capability model.
 - `SourceController` verb surface — the sidebar calls the **same verbs** the ring did;

@@ -59,8 +59,9 @@ export-guard `Add a video…before exporting` · `Export complete! Video saved.`
   Back restores too); HUD via ⋮/Project for diagnostics.
 
 ## Gestures & test tags
-Tap select · backdrop-tap deselect · drag move (locked=no-op) · corner resize (anchor opposite,
-min 8%, clamp) · edge 1-D stretch · knob rotate (X×0.9°) · dbl-tap text edit.
+Tap select · backdrop-tap deselect · drag move (locked=no-op) · corner resize (**free whole-frame
+stretch, no aspect lock**, anchor opposite, min 8%, clamp) · edge 1-D stretch (**that side only,
+all 4 dirs, other sides stay**) · knob rotate (X×0.9°) · dbl-tap text edit.
 Tags: `sidebar_container hamburger_button aspect_ratio_chip undo_button redo_button
 save_project_button export_mp4_button full_canvas_button overflow_menu_button section_* stage_canvas
 canvas_quick_action_bar auto_fill_button fit_frame_button center_button stage_full_canvas_toggle

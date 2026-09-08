@@ -216,8 +216,9 @@ Video 80% centered cyan; Sticker 25% green; Screen 90% purple; Text lower-third 
 - **Floating Transport S9** (bottom-right, above timeline): REC `mm:ss` pill (red ring, while recording) +
   dark pill: 48 dp cyan ▶/⏸, 48 dp white ⏹, 54 dp red ⏺ (idle = red-20% w/ red ring; recording = solid
   red, white ring, 26 dp ⏹ icon, pulsing 1→1.15×).
-- Gestures: tap select · tap backdrop deselect · drag move · corner/edge resize · knob rotate ·
-  double-tap text = edit · pinch listed (transform detector present).
+- Gestures: tap select · tap backdrop deselect · drag move · **edge = stretch that side only
+  (all 4 dirs)** · **corner = free whole-frame stretch (opposite stays, no aspect lock)** ·
+  knob rotate · double-tap text = edit · pinch listed (transform detector present).
 
 ---
 

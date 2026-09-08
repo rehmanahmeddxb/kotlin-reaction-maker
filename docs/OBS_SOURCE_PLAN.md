@@ -167,7 +167,7 @@ Set as canvas background · Duplicate · Delete.
 | Tap | select source |
 | **Double tap** | **Hide / Show that source** (new) |
 | Drag | move (snap guides, clamped on canvas) |
-| 8 handles | resize (media keeps aspect) |
+| 8 handles | **free box stretch** — edge = that side only (all 4 dirs, opposite stays); corner = whole frame (W+H independent, opposite corner anchored). No aspect lock. Fit/Fill still governs picture-in-box. |
 | Knob / two-finger twist | rotate |
 | Pinch | scale + rotate around fingers |
 | Tap empty | deselect |
