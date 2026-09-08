@@ -35,7 +35,9 @@ framework APIs (`android.app`, `android.view`, `Camera2`, `MediaCodec`,
 - 16:9 / 9:16 / 1:1 canvases (16:9 default) with normalized geometry,
   independent phone orientation and an aspect picker.
 - Canvas gestures: tap select, **double-tap text to edit**, drag with snap,
-  8-handle resize, rotate knob, pinch scale+rotate.
+  8-handle resize (**edges stretch that side only in all 4 directions; corners
+  free-stretch the whole frame; the opposite side/corner stays put — no aspect
+  lock**), rotate knob, pinch scale+rotate.
 - Import **video in any decodable container (MP4, AVI, WebM, MKV, 3GP, MOV)**
   and images; text overlays. Un-decodable files are reported, not crashed on.
 - Camera2 fullscreen capture: front/back switch, **hardware flash on any lens

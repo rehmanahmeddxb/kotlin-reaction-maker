@@ -147,6 +147,25 @@ A green build is not a completed task.
 No panel, sheet, ring or bar may squeeze the canvas below a usable size. Chrome
 is measured and capped (`ViewportFit` + `capPanelHeight`); keep it that way.
 
+**Rule 9 — Source boxes stretch freely; the opposite side stays put.**
+This is a frequent, required edit — not an edge case. The 8 handles resize the
+**box**. Fit/Fill still decides how the picture sits *inside* that box
+(crop vs letterbox). There is **no aspect lock** on any handle, for any
+source type (camera, video, image, screen, text).
+
+| Handle | What moves | What stays anchored |
+|---|---|---|
+| **Left** | left edge only (width) | right, top, bottom |
+| **Right** | right edge only (width) | left, top, bottom |
+| **Top** | top edge only (height) | left, right, bottom |
+| **Bottom** | bottom edge only (height) | left, right, top |
+| **Any corner** | the **whole frame** (width **and** height independently) | the opposite corner |
+
+All four edge directions must work the same way. A corner must never secretly
+keep aspect (that is the old, revoked rule). Default PiP *placement* may still
+start at the source aspect; after that the user owns the box. Locked sources
+have no handles. Min size and canvas clamp still apply.
+
 ---
 
 ## 3. The Studio spine
@@ -243,6 +262,7 @@ that adds/moves it.
 | V30 | Snapshot frame | Transport overflow | ring-only (undiscoverable) | — |
 | V31 | Seek / restart / ±10 s | Transport row + ±10 s buttons | ring Restart/−10 s | — |
 | V32 | Loop | Audio sheet row (audio semantics) | advanced sheet | one home, consistent with V01/V02 |
+| V33 | Box stretch | Canvas 8 handles (`StageView.resizeTo`) | any “keep aspect on corner” shortcut | **Rule 9.** Edges = that side only, all 4 dirs. Corners = free whole-frame stretch. Opposite side/corner stays. |
 
 ### 4.1 Naming dictionary (use these words, exactly)
 
@@ -302,6 +322,7 @@ Ordered. Do P0 completely before touching P1.
 - [x] **T-07** — (already fixed at HEAD, verified by T-01) Fix the **dock drag scroll-offset math** and add auto-scroll while dragging near the edges (`SourceDock.handleTouch`).
 - [x] **T-08** — (already fixed at HEAD, verified by T-01) Aspect chip: replace the blind cycle with a picker, and push an undo snapshot on change. A tap must never silently rotate the device.
 - [x] **T-09** — (already fixed at HEAD, verified by T-01) Enlarge resize handles to ≥24 dp touch slop; add visible snap guides, a haptic tick, and a **Reset transform** action.
+- [x] **T-09b** — **Free one-side stretch (Rule 9 / V33).** Edge handles stretch **only the grabbed side** in all 4 directions (L/R/T/B); the other three sides stay put. Corner handles stretch the **whole frame** freely (width and height independently, no aspect lock); the opposite corner stays put. Applies to every source type. Fit/Fill is unchanged (picture-in-box, not box-on-canvas).
 - [x] **T-10** — (already fixed at HEAD, verified by T-01) Move project-thumbnail decoding off the UI thread (async + cache + placeholder) in `HomeActivity.ProjectsAdapter`.
 - [x] **T-11** — (already scrollable at HEAD; this pass fixed the editor entry point, which opened Diagnostics while announcing "Project settings") Make Diagnostics scrollable and reachable from the editor overflow only; move the HUD toggle out of the dead-end state (tapping the HUD hides it with no way back).
 
@@ -437,7 +458,7 @@ panels, no unreachable button, dock/sheet never pushes the canvas away.
 | Concern | File |
 |---|---|
 | Editor chrome, bottom bar, sheets, quick bar, transport, full canvas | `editor/EditorActivity.kt` |
-| Canvas rendering, selection frame, handles, gestures | `editor/StageView.kt` |
+| Canvas rendering, selection frame, handles, **Rule 9 free stretch** | `editor/StageView.kt` |
 | Dock rows, eye/mute, drag reorder | `editor/SourceDock.kt` |
 | Ring widget, paging, keep-open petals | `editor/RadialWheel.kt` |
 | Ring contents (the verb inventory) | `editor/RadialMenus.kt` |
@@ -458,9 +479,45 @@ panels, no unreachable button, dock/sheet never pushes the canvas away.
 
 Append every task report here. Do not delete completed entries.
 
+**Status 2026-09-08:** Rule 9 / V33 / T-09b locked — source boxes stretch
+freely. Edge = that side only (all 4 dirs). Corner = whole-frame free stretch.
+Opposite side stays. No aspect lock.
+
 **Status 2026-09-05:** all 36 backlog tasks are code-complete, built and
 statically verified. **None is device-verified** — per Rule 7 that is the one
 remaining gate before this plan can be called finished. See §9.
+
+### T-09b — Free one-side stretch (Rule 9)
+
+Root cause:
+Corner handles averaged both axes to keep media aspect (`StageView.resizeTo`),
+so a corner drag could not freely stretch the frame. Edge stretch already
+moved only the grabbed side, but the plan documents still said “media keeps
+aspect”, so the required one-side stretch was not the locked contract.
+
+Implementation:
+Removed the media aspect-lock on corners. `resizeTo` now: edge → only the
+grabbed axis changes (L/R width, T/B height), other three sides stay;
+corner → width and height follow the finger independently, opposite corner
+stays. Same path for every source type. Fit/Fill unchanged.
+
+Files changed:
+- `editor/StageView.kt`, `core/Model.kt`
+- `UI Plan2.md` (Rule 9, V33, T-09b), `docs/OBS_SOURCE_PLAN.md`,
+  `docs/SIDEBAR_STUDIO_PLAN.md`, `frontend ref/blueprints/03` + `05`,
+  `kotlin android reaction.md`, `README.md`
+
+Behaviour before → after:
+Corner on camera/video/image = uniform scale (could not squash) → free
+whole-frame stretch. Edge (already one-axis) unchanged, now the written rule.
+
+Build: PENDING (code-only; compile with `./build-apk.sh` before device check)
+Device test: PENDING — verify L/R/T/B each move only that side; each corner
+changes W+H; opposite stays; camera + video + image + text.
+Regression check (§8): PENDING
+Notes / follow-ups:
+Pinch still uniform-scales (two-finger zoom, not a handle). Reset transform
+(T-09) restores size/rotation.
 
 ### T-01 — Re-verify the verb inventory against HEAD
 

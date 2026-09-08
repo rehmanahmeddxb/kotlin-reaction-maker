@@ -107,7 +107,9 @@ export), `PreviewEngine` (monitoring) and `LiveCamera`:
 
 * **`StageView.drawChrome`** — one accent for every type: 1 dp dark contrast
   underlay + crisp 2.5 dp accent stroke drawn in the layer's rotated frame
-  (follows position/size/scale/rotation exactly), 4 corner + 4 edge handles,
+  (follows position/size/scale/rotation exactly), 4 corner + 4 edge handles
+  (edges stretch that side only in all 4 dirs; corners free-stretch the whole
+  frame; opposite side/corner stays — UI Plan2 Rule 9),
   rotation knob above the top edge, name/type pill. Unselected: subtle neutral
   hairline. Locked: dashed neutral frame, no handles (distinct state). Hidden:
   no frame at all. Selection is never colour-only (handles + pill + contextual

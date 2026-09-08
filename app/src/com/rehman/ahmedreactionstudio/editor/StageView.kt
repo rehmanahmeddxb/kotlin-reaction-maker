@@ -623,12 +623,14 @@ class StageView @JvmOverloads constructor(
     }
 
     /**
-     * True handle dragging: the grabbed corner/edge follows the finger while the
-     * OPPOSITE side stays anchored, in the layer's own rotated frame.
+     * True handle dragging (UI Plan2 Rule 9): the grabbed corner/edge follows
+     * the finger while the OPPOSITE side stays anchored, in the layer's own
+     * rotated frame. No aspect lock — every source type stretches freely.
      *
-     * CORNER handles scale the whole box proportionally, so a camera PiP can
-     * never be squashed. EDGE handles stretch ONLY that side — width or height
-     * changes independently, so dragging a side handle distorts just that axis.
+     * EDGE (all 4 dirs): stretch ONLY that side. Left/right change width;
+     * top/bottom change height. The other three sides do not move.
+     * CORNER: stretch the whole frame (width AND height independently).
+     * The opposite corner stays put.
      */
     private fun resizeTo(l: Layer, x: Float, y: Float) {
         val startWpx = (startWN * cw).coerceAtLeast(1f)
@@ -638,7 +640,7 @@ class StageView @JvmOverloads constructor(
         val ang = Math.toRadians(l.rotDeg.toDouble())
         val ca = cos(ang).toFloat(); val sa = sin(ang).toFloat()
 
-        // anchor = the side opposite the grabbed handle
+        // anchor = the side / corner opposite the grabbed handle
         val axLocal = -hsx * startWpx / 2f
         val ayLocal = -hsy * startHpx / 2f
         val ax = cx0 + axLocal * ca - ayLocal * sa
@@ -651,16 +653,10 @@ class StageView @JvmOverloads constructor(
         val py = dx * sn + dy * cn
 
         val minPx = UI.dpf(context, 24f)
+        // hsx==0 → vertical edge: keep start width. hsy==0 → horizontal edge:
+        // keep start height. Both set → corner: both axes follow the finger.
         var newW = if (hsx != 0f) abs(px).coerceAtLeast(minPx) else startWpx
         var newH = if (hsy != 0f) abs(py).coerceAtLeast(minPx) else startHpx
-        // Corner handles (both axes) keep a media layer's aspect ratio; edge
-        // handles (one axis) stretch only that side, so width/height move
-        // independently and the box can be freely distorted along an edge.
-        if (!l.isText() && hsx != 0f && hsy != 0f) {
-            val k = (newW / startWpx + newH / startHpx) / 2f
-            newW = startWpx * k
-            newH = startHpx * k
-        }
         newW = newW.coerceIn(minPx, cw * MAX_BOX_N)
         newH = newH.coerceIn(minPx, ch * MAX_BOX_N)
 

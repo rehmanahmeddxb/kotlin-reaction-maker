@@ -95,9 +95,10 @@ class Layer(
     fun isClip(): Boolean = isVideoLike() && !isLive()
 
     /**
-     * Text layers resize freely; media layers never change aspect ratio.
-     * (A helper rather than `type == LayerType.TEXT` because inside a View
-     * subclass the simple name `LayerType` resolves to `View.LayerType`.)
+     * Helper rather than `type == LayerType.TEXT` because inside a View
+     * subclass the simple name `LayerType` resolves to `View.LayerType`.
+     * Box stretch is free for every type (UI Plan2 Rule 9): edges move one
+     * side, corners stretch the whole frame, opposite side stays put.
      */
     fun isText(): Boolean = type == LayerType.TEXT
 

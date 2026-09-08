@@ -46,9 +46,11 @@ when layer center within 8px.
 - Border 2dp radius 2: cyan, **amber if locked**. Label pill top-start (radius 0/6/0/6, cyan or amber
   bg): `🔒? TYPE • name[:14]` 9sp Bold black, pad h5/v2.
 - Unlocked: center **move** 44dp (black-75% circle, cyan ring, ✥ 16dp cyan) · **4 corner dots** 15dp
-  cyan + 2dp black ring on 44dp targets, offset ±8dp (each anchors opposite corner; min size 8%,
-  no flip, clamped to canvas) · **4 edge pills** white + black ring on 36dp targets, offset 6dp
-  (L/R: 6×18 stretch-W; T/B: 18×6 stretch-H) · **rotation knob** above top-center (−40dp, 44dp target):
+  cyan + 2dp black ring on 44dp targets, offset ±8dp (**free whole-frame stretch**: W **and** H
+  independently, **no aspect lock**; each anchors the opposite corner; min size 8%, no flip,
+  clamped to canvas) · **4 edge pills** white + black ring on 36dp targets, offset 6dp
+  (L/R: 6×18 stretch-W **only that side**; T/B: 18×6 stretch-H **only that side**; the other
+  three sides stay put — all 4 directions) · **rotation knob** above top-center (−40dp, 44dp target):
   `n°` badge 9sp Bold amber (black-85% radius 4, amber ring) + 16dp amber dot + black ring
   (drag-X ×0.9°).
 - Locked: center 44dp black-75% circle amber ring + 🔒 18dp amber (no handles).
