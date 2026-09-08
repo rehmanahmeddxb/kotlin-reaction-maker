@@ -2473,6 +2473,7 @@ class EditorActivity : Activity(), StageView.Host {
                     "torcherror" -> UI.toast(this,
                         liveCam?.torchLastError()?.takeIf { it.isNotBlank() }
                             ?: "Hardware torch unavailable")
+                    "torchpending" -> refreshAll()
                     "recording" -> { recChip.text = "● STOP CAMERA TAKE"; recChip.contentDescription = "Stop the camera take"; recChip.visibility = if (fullCanvas) View.GONE else View.VISIBLE }
                     "live" -> { cameraFallbackShown = false; refreshAll() }
                 }

@@ -374,9 +374,12 @@ class LiveCamera(
     }
 
     private fun setTorchPending(front: Boolean, pending: Boolean) {
-        synchronized(this) {
+        val changed = synchronized(this) {
+            val old = if (front) torchPendingFront else torchPendingBack
             if (front) torchPendingFront = pending else torchPendingBack = pending
+            old != pending
         }
+        if (changed) onState("torchpending")
     }
 
     private fun scheduleTorchRetry() {
