@@ -150,7 +150,7 @@ app's two hottest verbs).
   border, 16 dp shadow, bg = canvas colour. Insets: 10 dp sides / 10 dp top / **64 dp
   bottom** (room for the timeline) — **0 in immersive**.
 - **Quick bar** (on selection, top-center): icon-only pills — 👁 hide · 🔇 mute ·
-  ⏯ pause/resume · 🔒 lock · ⤢ fit/fill · 🗑 delete. Camera layers append ⏺ take + 🔄
+  ⏯ pause/resume · 🔒 lock · ⤢ fit/fill/stretch · 🗑 delete. Camera layers append ⏺ take + 🔄
   facing (the T-21 camera toolbar). Max content ≈ 260 px → fits any phone stage.
 - **Workspace pill** (top-right): `⛶ Full Canvas | 👁` → compacts to icons below
   520 px stage; in Full Canvas = `Exit | 👁`; immersive = eye + exit glyphs only.

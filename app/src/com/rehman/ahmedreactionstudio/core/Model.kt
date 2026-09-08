@@ -40,10 +40,13 @@ enum class LayerType(val label: String) {
  * (freeze is separate from master playback, per spec section 14).
  *
  * OBS-style source controls (see docs/OBS_SOURCE_PLAN.md):
- *  - fit   : "fill" = COVER (frame fills its box, edges cropped) or
- *            "fit"  = CONTAIN (whole frame visible, letterboxed in the box).
- *            The "camera cuts out on canvas" bug was a world where only COVER
- *            existed; fit is now a first-class per-source control.
+ *  - fit   : "fill" = COVER (frame fills its box, edges cropped),
+ *            "fit"  = CONTAIN (whole frame visible, letterboxed in the box),
+ *            "stretch" = the picture IS the box — drawn exactly into it,
+ *            squashed when the aspects differ. This is what a handle drag
+ *            switches to (see StageView.resizeTo): Fit and Fill both keep the
+ *            source aspect, so without it dragging a side would only move dead
+ *            letterbox space and look like nothing happened.
  *  - loop  : video wraps at its end, or holds its last frame (then auto-pauses)
  *  - solo  : audio solo — while any source is soloed, every NON-soloed source
  *            is effectively muted (computed state, nothing is overwritten)
@@ -138,6 +141,26 @@ class Layer(
         const val FIT_FILL = "fill"
         /** CONTAIN: whole frame visible, letterboxed inside the box (never cuts). */
         const val FIT_FIT = "fit"
+        /**
+         * STRETCH: the picture is drawn EXACTLY into the box, squashed when
+         * the aspects differ (no letterbox, no crop). Entered automatically
+         * by a handle drag that changes the box aspect (a side always does;
+         * a corner does when the drag is not uniform), so the picture follows
+         * the finger instead of sitting aspect-locked inside a moving box.
+         * Tap the Fit control to cycle back to Fit/Fill.
+         */
+        const val FIT_STRETCH = "stretch"
+
+        /** The Fit control cycles Fit → Fill → Stretch → Fit. */
+        fun nextFit(current: String): String = when (current) {
+            FIT_FIT -> FIT_FILL
+            FIT_FILL -> FIT_STRETCH
+            else -> FIT_FIT
+        }
+
+        /** True for the three known modes (anything else renders as COVER). */
+        fun isKnownFit(fit: String): Boolean =
+            fit == FIT_FIT || fit == FIT_FILL || fit == FIT_STRETCH
 
         /** camera facing, mirroring CameraCharacteristics.LENS_FACING_* values */
         const val FACING_BACK = 1
@@ -149,6 +172,8 @@ class Layer(
             // users complained about being cropped, so they default to the
             // never-cut CONTAIN mode; everything else keeps the old COVER look.
             val defaultFit = if (t == LayerType.CAMERA) FIT_FIT else FIT_FILL
+            val storedFit = o.optString("fit", defaultFit)
+            val safeFit = if (isKnownFit(storedFit)) storedFit else defaultFit
             val l = Layer(
                 id = o.optString("id", UUID.randomUUID().toString()),
                 type = t,
@@ -163,7 +188,7 @@ class Layer(
                 muted = o.optBoolean("muted", false),
                 solo = o.optBoolean("solo", false),
                 loop = o.optBoolean("loop", false),
-                fit = o.optString("fit", defaultFit),
+                fit = safeFit,
                 volume = o.optDouble("volume", 1.0).toFloat(), opacity = o.optDouble("opacity", 1.0).toFloat(),
                 playing = o.optBoolean("playing", true), pausedMediaMs = o.optLong("pausedMediaMs"),
                 speed = o.optDouble("speed", 1.0).toFloat(),
@@ -248,7 +273,8 @@ class Project(
  *   - fit = fill (COVER)  -> frame fills the box; a canvas-aspect box is
  *     full-bleed, a different-aspect frame is cropped at the edges
  *   - fit = fit (CONTAIN) -> whole frame visible, letterboxed in the box
- * A box with the source aspect shows the whole frame in either mode.
+ *   - fit = stretch       -> the picture IS the box (squashed on mismatch)
+ * A box with the source aspect shows the whole frame in every mode.
  */
 object LayerFit {
 
@@ -261,9 +287,11 @@ object LayerFit {
      * The frame the compositor actually DRAWS for an effW×effH source inside a
      * boxW×boxH box, honouring the fit mode (pure pixel math, no Android
      * types so the JVM geometry check in tools/ can exercise it):
-     *  - fill  (COVER):  scaled UP to cover; the overflow is clipped to the box
+     *  - fill  (COVER):   scaled UP to cover; the overflow is clipped to the box
      *  - fit   (CONTAIN): scaled DOWN to show everything, letterboxed inside
-     * Both modes return exactly the box when box aspect == source aspect.
+     *  - stretch:         the box itself — the picture fills it exactly,
+     *            squashed when the aspects differ (no letterbox, no crop)
+     * All modes return exactly the box when box aspect == source aspect.
      * Returns (0, 0) when either side is degenerate (nothing is drawn).
      *
      * This is THE formula: the renderer uses it for the drawBitmap destination
@@ -272,6 +300,7 @@ object LayerFit {
      */
     fun drawnFrame(boxW: Float, boxH: Float, effW: Int, effH: Int, fit: String): Pair<Float, Float> {
         if (effW <= 0 || effH <= 0 || boxW <= 0f || boxH <= 0f) return Pair(0f, 0f)
+        if (fit == Layer.FIT_STRETCH) return Pair(boxW, boxH)
         val s = if (fit == Layer.FIT_FIT) minOf(boxW / effW, boxH / effH)
                 else maxOf(boxW / effW, boxH / effH)
         return Pair(effW * s, effH * s)

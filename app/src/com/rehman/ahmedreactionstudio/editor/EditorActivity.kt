@@ -624,7 +624,7 @@ class EditorActivity : Activity(), StageView.Host {
 
     /**
      * One icon per verb, for the selected source only:
-     * hide · mute · pause · lock · fit/fill · (camera: take · switch) · more · delete.
+     * hide · mute · pause · lock · fit/fill/stretch · (camera: take · switch) · more · delete.
      * Everything else lives in the sidebar's SOURCE section — one tap away.
      */
     private fun refreshQuickBar() {
@@ -665,8 +665,14 @@ class EditorActivity : Activity(), StageView.Host {
             ctrl.toggleLocked(l.id)
         }
         if (!l.isText()) {
-            add(if (l.fit == Layer.FIT_FIT) R.drawable.ic_fill else R.drawable.ic_fit,
-                if (l.fit == Layer.FIT_FIT) "Fill: crop to box" else "Fit: whole frame", UI.FG) {
+            // the Fit control cycles Fit → Fill → Stretch → Fit; the quick
+            // bar shows the ACTION (the next mode), like hide/mute/lock do
+            val (fitIcon, fitDesc) = when (l.fit) {
+                Layer.FIT_FIT -> Pair(R.drawable.ic_fill, "Fill: crop to box")
+                Layer.FIT_FILL -> Pair(R.drawable.ic_aspect, "Stretch: fill the box exactly")
+                else -> Pair(R.drawable.ic_fit, "Fit: whole frame")
+            }
+            add(fitIcon, fitDesc, UI.FG) {
                 ctrl.toggleFit(l.id)
             }
         }
@@ -798,12 +804,25 @@ class EditorActivity : Activity(), StageView.Host {
         }
         if (!l.isText()) {
             // Naming standard (used in every surface): Fit = whole frame,
-            // Fill = crop to box. Never "Fill" for background promotion.
-            StudioLayoutInjector.actRow(this, body,
-                if (l.fit == Layer.FIT_FIT) R.drawable.ic_fill else R.drawable.ic_fit,
-                if (l.fit == Layer.FIT_FIT) "Fit: whole frame" else "Fill: crop to box",
-                active = l.fit == Layer.FIT_FIT) {
+            // Fill = crop to box, Stretch = picture fills the box exactly.
+            // Never "Fill" for background promotion.
+            val (fitIcon, fitLabel, fitNext) = when (l.fit) {
+                Layer.FIT_FIT -> Triple(R.drawable.ic_fit, "Fit: whole frame",
+                    "tap for Fill: crop to box")
+                Layer.FIT_FILL -> Triple(R.drawable.ic_fill, "Fill: crop to box",
+                    "tap for Stretch: fill box")
+                else -> Triple(R.drawable.ic_aspect, "Stretch: fill box",
+                    "tap for Fit: whole frame")
+            }
+            StudioLayoutInjector.actRow(this, body, fitIcon, fitLabel, fitNext,
+                active = l.fit != Layer.FIT_FILL) {
                 ctrl.toggleFit(l.id)
+            }
+            if (l.fit == Layer.FIT_STRETCH) {
+                StudioLayoutInjector.noteRow(this, body,
+                    "Stretched — the picture fills the box exactly, so it can " +
+                    "look squashed. A handle drag stretched it; tap the row " +
+                    "above for Fit or Fill to restore the aspect.")
             }
         }
         body.addView(sliderRow("Opacity  ${(l.opacity * 100).toInt()}%",

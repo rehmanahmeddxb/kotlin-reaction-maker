@@ -368,7 +368,7 @@ Resize contract (locked — UI Plan2 Rule 9):
 
 - **Edge handles (all 4 directions):** stretch **only that side**. Left/right change width; top/bottom change height. The other three sides stay put.
 - **Corner handles:** stretch the **whole frame** (width and height independently, no aspect lock). The opposite corner stays anchored.
-- Applies to every source type. Fit/Fill is picture-in-box, not a handle lock.
+- Applies to every source type. The PICTURE stretches, not just the box: a drag that leaves the source aspect flips to Stretch (picture == box); the Fit control cycles Fit → Fill → Stretch.
 
 ## 7.3 Touch ergonomics
 

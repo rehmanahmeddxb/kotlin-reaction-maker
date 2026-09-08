@@ -55,12 +55,17 @@ class SourceController(
     fun toggleSolo(id: String?) = withLayer(id) { it.solo = !it.solo }
     fun toggleLoop(id: String?) = withLayer(id) { it.loop = !it.loop }
 
-    /** Flip between COVER (fill) and CONTAIN (fit). */
-    fun toggleFit(id: String?) = withLayer(id) {
-        it.fit = if (it.fit == Layer.FIT_FIT) Layer.FIT_FILL else Layer.FIT_FIT
-    }
+    /**
+     * Cycle the picture-in-box mode: Fit → Fill → Stretch → Fit.
+     * Stretch (picture == box, squashed on mismatch) is also entered
+     * automatically by a handle drag that changes the box aspect, so this is
+     * the way back to an aspect-kept mode after a free stretch.
+     */
+    fun toggleFit(id: String?) = withLayer(id) { it.fit = Layer.nextFit(it.fit) }
 
-    fun setFit(id: String?, fit: String) = withLayer(id) { it.fit = fit }
+    fun setFit(id: String?, fit: String) = withLayer(id) {
+        it.fit = if (Layer.isKnownFit(fit)) fit else Layer.FIT_FILL
+    }
     fun setOpacity(id: String?, v: Float) = withLayer(id) { it.opacity = v.coerceIn(0f, 1f) }
     fun setVolume(id: String?, v: Float) = withLayer(id) { it.volume = v.coerceIn(0f, 1f) }
     fun setName(id: String?, name: String) = withLayer(id) { it.name = name }

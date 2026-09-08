@@ -181,7 +181,10 @@ class SourceDock(
             if (!l.playing) bits.add("PAUSED")
         }
         if (l.locked) bits.add("LOCKED")
-        if (l.fit == Layer.FIT_FIT && !l.isText()) bits.add("FIT")
+        if (!l.isText()) {
+            if (l.fit == Layer.FIT_FIT) bits.add("FIT")
+            else if (l.fit == Layer.FIT_STRETCH) bits.add("STRETCH")
+        }
         if (bits.isEmpty()) {
             return if (l.isLive()) "Live camera · framing on the canvas"
             else if (l.isClip()) "Visible · Sound on · Playing"
