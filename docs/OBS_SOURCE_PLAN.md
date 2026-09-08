@@ -59,7 +59,7 @@ Source
 ├── muted            ← per-source audio switch
 ├── solo             ← audio-solo (see §5)
 ├── loop             ← video: wrap at end, or hold last frame
-├── fit              ← "fill" (cover-crop) | "fit" (whole frame, letterboxed)   ★ camera-cut fix
+├── fit              ← "fill" (cover-crop) | "fit" (whole frame, letterboxed) | "stretch" (picture == box)   ★ camera-cut fix
 ├── volume, opacity, speed
 ├── playing, pausedMediaMs   ← source pause (independent of everything)
 ├── transform (cx, cy, wN, hN, rotDeg — normalized)
@@ -91,9 +91,15 @@ Two deliberate enhancements over the original idea:
 ## 3. Fit mode — the camera-cut fix, made a first-class control
 
 ```
-fit = "fill"   →  COVER:  frame fills the box, edges cropped
-fit = "fit"    →  CONTAIN: whole frame visible, letterboxed inside the box
+fit = "fill"    →  COVER:   frame fills the box, edges cropped
+fit = "fit"     →  CONTAIN: whole frame visible, letterboxed inside the box
+fit = "stretch" →  picture IS the box (squashed when aspects differ)
 ```
+
+Stretch is what a handle drag flips to when the dragged box leaves the source
+aspect — Fit and Fill both keep the aspect, so without it a side drag would only
+move dead letterbox space and look like nothing happened. The Fit control cycles
+Fit → Fill → Stretch → Fit, so aspect is one tap away again.
 
 Defaults on add:
 
@@ -167,7 +173,7 @@ Set as canvas background · Duplicate · Delete.
 | Tap | select source |
 | **Double tap** | **Hide / Show that source** (new) |
 | Drag | move (snap guides, clamped on canvas) |
-| 8 handles | **free box stretch** — edge = that side only (all 4 dirs, opposite stays); corner = whole frame (W+H independent, opposite corner anchored). No aspect lock. Fit/Fill still governs picture-in-box. |
+| 8 handles | **free picture stretch** — edge = that side only (all 4 dirs, opposite stays); corner = whole frame (W+H independent, opposite corner anchored). No aspect lock. A drag that leaves the source aspect flips to Stretch so the picture follows the finger; uniform corners keep Fit/Fill. |
 | Knob / two-finger twist | rotate |
 | Pinch | scale + rotate around fingers |
 | Tap empty | deselect |

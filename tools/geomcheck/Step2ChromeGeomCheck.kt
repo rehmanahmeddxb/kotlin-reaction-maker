@@ -77,6 +77,26 @@ fun main() {
             abs(vw - 1080f) < eps && vh < 1920f - 1f)
     }
 
+    // --- STRETCH: the picture IS the box, whatever the aspects — this is the
+    //     mode a handle drag flips to, so the dragged edge/corner visibly
+    //     stretches the picture instead of moving dead letterbox space.
+    run {
+        val (dw, dh) = LayerFit.drawnFrame(1920f, 1080f, 1080, 1920, Layer.FIT_STRETCH)
+        check("stretch portrait camera on 16:9 box: drawn frame == box exactly",
+            dw == 1920f && dh == 1080f)
+        val (vw, vh) = chromeSize(1920f, 1080f, 1080, 1920, 0, Layer.FIT_STRETCH)
+        check("stretch portrait camera on 16:9 box: chrome == box (no dead space)",
+            vw == 1920f && vh == 1080f)
+        val (sw, sh) = chromeSize(500f, 900f, 1920, 1080, 0, Layer.FIT_STRETCH)
+        check("stretch landscape video in a tall box: chrome == box (squashed, not cropped)",
+            sw == 500f && sh == 900f)
+        // Fit and Fill still keep the source aspect — stretch is the only
+        // mode that distorts.
+        val (fw, fh) = LayerFit.drawnFrame(1920f, 1080f, 1080, 1920, Layer.FIT_FIT)
+        check("fit keeps the source aspect (why side drags need stretch to be visible)",
+            abs(fw / fh - 1080f / 1920f) < 0.01f && fw < 1920f - 1f)
+    }
+
     // --- Aspect-matched PiP (the default placement of every added overlay):
     //     box aspect == source aspect -> chrome == box, so the border and the
     //     8 handles sit exactly where they did before Step 2.
@@ -139,6 +159,22 @@ fun main() {
         val (fw, fh) = LayerFit.drawnFrame(1920f, 1080f, 0, 0, Layer.FIT_FIT)
         check("degenerate source size yields (0,0) -> chromeRect falls back to the box",
             fw == 0f && fh == 0f)
+        val (sw, sh) = LayerFit.drawnFrame(1920f, 1080f, 0, 0, Layer.FIT_STRETCH)
+        check("degenerate source size in stretch also yields (0,0)",
+            sw == 0f && sh == 0f)
+    }
+
+    // --- The Fit control cycles Fit → Fill → Stretch → Fit (the way back to
+    //     an aspect-kept mode after a handle drag auto-stretched the layer).
+    run {
+        check("fit cycle: fit → fill",
+            Layer.nextFit(Layer.FIT_FIT) == Layer.FIT_FILL)
+        check("fit cycle: fill → stretch",
+            Layer.nextFit(Layer.FIT_FILL) == Layer.FIT_STRETCH)
+        check("fit cycle: stretch → fit",
+            Layer.nextFit(Layer.FIT_STRETCH) == Layer.FIT_FIT)
+        check("fit cycle: unknown values recover to fit",
+            Layer.nextFit("bogus") == Layer.FIT_FIT && !Layer.isKnownFit("bogus"))
     }
 
     if (failures > 0) {

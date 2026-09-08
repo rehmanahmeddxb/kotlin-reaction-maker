@@ -59,7 +59,7 @@ Everything in this section was verified by reading `HEAD` (single squashed commi
 | Sub-petal navigation (ring → folder → ring) | `RadialWheel.kt` + `item(..., keepOpen)` | old plan §27 — **done** |
 | Deleted rings: Controls / Dock / Mixing — verbs folded into transport, Layers sheet, Audio sheet | comment block above `RadialMenus.root()` | — |
 | Live camera **composited on the canvas** (no modal required) | `editor/LiveCamera.kt` + `PreviewEngine` | old plan §9 / §18 — **done** |
-| Per-source Fit (contain) vs Fill (cover); camera defaults to Fit | `Model.FIT_FIT / FIT_FILL`, `core/LayerFit.kt` | old plan §5 — **done** |
+| Per-source Fit (contain) vs Fill (cover) vs Stretch (picture == box); camera defaults to Fit | `Model.FIT_FIT / FIT_FILL / FIT_STRETCH`, `core/Model.kt` | old plan §5 — **done** |
 | Floating quick control bar for the selected source | `EditorActivity.refreshQuickBar()` | 👁 hide · 🔇 mute · ⏯ pause · 🔒 lock · fit · ◉ ring · ⋮ advanced |
 | Source dock mini-mixer with eye/mute + drag Z-reorder | `editor/SourceDock.kt` | — |
 | Full Canvas focus mode (hide all chrome) | `EditorActivity.setFullCanvas(on)` | old plan §22 — **done** |
@@ -147,11 +147,15 @@ A green build is not a completed task.
 No panel, sheet, ring or bar may squeeze the canvas below a usable size. Chrome
 is measured and capped (`ViewportFit` + `capPanelHeight`); keep it that way.
 
-**Rule 9 — Source boxes stretch freely; the opposite side stays put.**
+**Rule 9 — Source pictures stretch freely; the opposite side stays put.**
 This is a frequent, required edit — not an edge case. The 8 handles resize the
-**box**. Fit/Fill still decides how the picture sits *inside* that box
-(crop vs letterbox). There is **no aspect lock** on any handle, for any
-source type (camera, video, image, screen, text).
+**picture**, not just an invisible box around it. Fit/Fill both keep the source
+aspect, so a handle drag that changes the box aspect flips the layer to
+**Stretch** (picture == box, squashed on mismatch) — otherwise dragging a side
+would only move dead letterbox space and look like nothing happened. The Fit
+control cycles Fit → Fill → Stretch → Fit, so aspect is one tap away again.
+There is **no aspect lock** on any handle, for any source type (camera, video,
+image, screen, text).
 
 | Handle | What moves | What stays anchored |
 |---|---|---|
@@ -162,9 +166,12 @@ source type (camera, video, image, screen, text).
 | **Any corner** | the **whole frame** (width **and** height independently) | the opposite corner |
 
 All four edge directions must work the same way. A corner must never secretly
-keep aspect (that is the old, revoked rule). Default PiP *placement* may still
-start at the source aspect; after that the user owns the box. Locked sources
-have no handles. Min size and canvas clamp still apply.
+keep aspect (that is the old, revoked rule). A uniform corner drag keeps the
+aspect and keeps the Fit/Fill mode; any drag that leaves the source aspect
+stretches the picture. Default PiP *placement* may still start at the source
+aspect; after that the user owns the frame. Locked sources have no handles.
+Min size and canvas clamp still apply. One undo step restores the whole
+gesture (box AND fit mode).
 
 ---
 
@@ -238,7 +245,7 @@ that adds/moves it.
 | V06 | Undo / redo | Top bar only | all rings | — |
 | V07 | Source volume | Audio sheet slider (**one** slider) | channel ±10 % petals, advanced slider | — |
 | V08 | Master output gain | Audio sheet header | — | `CompositionRecorder.masterGain` exists but has **no UI**; recording-only today — see T-14 before exposing it |
-| V09 | Fit / Fill | Quick bar ⤢ | source ring, advanced sheet, Canvas "fit all" | labels: **Fill** = crop-to-cover, **Fit** = whole frame |
+| V09 | Fit / Fill / Stretch | Quick bar ⤢ | source ring, advanced sheet, Canvas "fit all" | labels: **Fill** = crop-to-cover, **Fit** = whole frame, **Stretch** = picture fills the box exactly. Cycles Fit → Fill → Stretch. |
 | V10 | Z-order | Dock drag handle + Layers sheet Front/Back | Arrange ring, ring raise/lower | keep drag + 2 buttons |
 | V11 | Position / anchors | Layers sheet 3×3 grid | Arrange ring, advanced anchors | one grid, one label set |
 | V12 | Set as canvas background | Layers sheet, **one** button named "Set as background" | Arrange "Fill canvas", Canvas "Selection as background" | two names for one verb today |
@@ -262,7 +269,7 @@ that adds/moves it.
 | V30 | Snapshot frame | Transport overflow | ring-only (undiscoverable) | — |
 | V31 | Seek / restart / ±10 s | Transport row + ±10 s buttons | ring Restart/−10 s | — |
 | V32 | Loop | Audio sheet row (audio semantics) | advanced sheet | one home, consistent with V01/V02 |
-| V33 | Box stretch | Canvas 8 handles (`StageView.resizeTo`) | any “keep aspect on corner” shortcut | **Rule 9.** Edges = that side only, all 4 dirs. Corners = free whole-frame stretch. Opposite side/corner stays. |
+| V33 | Picture stretch | Canvas 8 handles (`StageView.resizeTo`) | any “keep aspect on corner” shortcut | **Rule 9.** Edges = that side only, all 4 dirs. Corners = free whole-frame stretch. Opposite side/corner stays. A drag that leaves the source aspect flips to Stretch so the picture follows the finger. |
 
 ### 4.1 Naming dictionary (use these words, exactly)
 
@@ -271,6 +278,7 @@ that adds/moves it.
 | Layers | Dock, Sources (when referring to the list) |
 | Fill | Fill canvas, Fill box (Fill = crop-to-cover, always) |
 | Fit | Whole frame, Fit all (Fit = letterbox the whole frame) |
+| Stretch | Squash, Distort (Stretch = picture fills the box exactly) |
 | Set as background | Fill canvas, Selection as background, Promote |
 | Screen light | Screen ON, BRIGHT, Screen flash |
 | Rename source / Rename project | bare "Rename" |
@@ -322,7 +330,7 @@ Ordered. Do P0 completely before touching P1.
 - [x] **T-07** — (already fixed at HEAD, verified by T-01) Fix the **dock drag scroll-offset math** and add auto-scroll while dragging near the edges (`SourceDock.handleTouch`).
 - [x] **T-08** — (already fixed at HEAD, verified by T-01) Aspect chip: replace the blind cycle with a picker, and push an undo snapshot on change. A tap must never silently rotate the device.
 - [x] **T-09** — (already fixed at HEAD, verified by T-01) Enlarge resize handles to ≥24 dp touch slop; add visible snap guides, a haptic tick, and a **Reset transform** action.
-- [x] **T-09b** — **Free one-side stretch (Rule 9 / V33).** Edge handles stretch **only the grabbed side** in all 4 directions (L/R/T/B); the other three sides stay put. Corner handles stretch the **whole frame** freely (width and height independently, no aspect lock); the opposite corner stays put. Applies to every source type. Fit/Fill is unchanged (picture-in-box, not box-on-canvas).
+- [x] **T-09b** — **Free picture stretch (Rule 9 / V33).** Edge handles stretch **only the grabbed side** in all 4 directions (L/R/T/B); the other three sides stay put. Corner handles stretch the **whole frame** freely (width and height independently, no aspect lock); the opposite corner stays put. Applies to every source type. A drag that leaves the source aspect flips the layer to **Stretch** so the picture follows the finger (Fit/Fill alone would only move dead letterbox space); the Fit control cycles back in one tap.
 - [x] **T-10** — (already fixed at HEAD, verified by T-01) Move project-thumbnail decoding off the UI thread (async + cache + placeholder) in `HomeActivity.ProjectsAdapter`.
 - [x] **T-11** — (already scrollable at HEAD; this pass fixed the editor entry point, which opened Diagnostics while announcing "Project settings") Make Diagnostics scrollable and reachable from the editor overflow only; move the HUD toggle out of the dead-end state (tapping the HUD hides it with no way back).
 
@@ -479,9 +487,10 @@ panels, no unreachable button, dock/sheet never pushes the canvas away.
 
 Append every task report here. Do not delete completed entries.
 
-**Status 2026-09-08:** Rule 9 / V33 / T-09b locked — source boxes stretch
+**Status 2026-09-08:** Rule 9 / V33 / T-09b locked — source pictures stretch
 freely. Edge = that side only (all 4 dirs). Corner = whole-frame free stretch.
-Opposite side stays. No aspect lock.
+Opposite side stays. No aspect lock. A drag that leaves the source aspect flips
+to Stretch (picture == box); the Fit control cycles Fit → Fill → Stretch.
 
 **Status 2026-09-05:** all 36 backlog tasks are code-complete, built and
 statically verified. **None is device-verified** — per Rule 7 that is the one
@@ -518,6 +527,48 @@ Regression check (§8): PENDING
 Notes / follow-ups:
 Pinch still uniform-scales (two-finger zoom, not a handle). Reset transform
 (T-09) restores size/rotation.
+
+### T-09b follow-up — the picture follows the finger (Stretch)
+
+Root cause:
+T-09b freed the BOX but left the picture aspect-locked inside it: Fit letterboxes
+and Fill crops, so dragging a side on a Fit layer (the camera default) only moved
+dead space and looked like nothing happened. Handles also sit on the visible
+picture while the math was box math, so the first step on a letterboxed layer
+jumped. And the gesture undo snapshot was pushed AFTER the first move event, so
+undo restored "one step in" instead of the finger-down state.
+
+Implementation:
+New `stretch` fit mode — the picture is drawn exactly into the box
+(`LayerFit.drawnFrame` returns the box; renderer, chrome, export and recording
+all read the same formula, so preview == export still holds). `StageView.resizeTo`
+now (1) collapses a letterboxed box onto its picture on the first step (concentric,
+nothing on screen moves) and (2) flips a media layer to Stretch when the dragged
+box leaves the source aspect (>2 %; a uniform corner keeps Fit/Fill, text never
+flips). The Fit control cycles Fit → Fill → Stretch → Fit (quick bar + SOURCE
+section + dock STRETCH chip). Gesture undo now snapshots the finger-down state
+(box AND fit), so one undo step restores the whole drag.
+
+Files changed:
+- `core/Model.kt` (`FIT_STRETCH`, `nextFit`, `drawnFrame`), `core/Sources.kt`
+  (`toggleFit` cycles), `core/Compositor.kt` (comments),
+  `editor/StageView.kt` (`resizeTo`, `collapseLetterbox`, `touchMoved`),
+  `editor/EditorActivity.kt` (quick bar + SOURCE section),
+  `editor/SourceDock.kt` (STRETCH chip), `tools/geomcheck/Step2ChromeGeomCheck.kt`
+- `UI Plan2.md` (Rule 9, V09, V33, T-09b), `docs/OBS_SOURCE_PLAN.md`,
+  `docs/SIDEBAR_STUDIO_PLAN.md`, `kotlin android reaction.md`
+
+Behaviour before → after:
+Side drag on a Fit camera = box moves, picture sits still (looks broken) → the
+dragged edge stretches the picture, opposite side anchored. Corner = box-only
+free stretch → whole-frame picture stretch. Fit/Fill one tap away; undo restores
+box + mode together.
+
+Build: PENDING (code-only; compile with `./build-apk.sh` before device check)
+Device test: PENDING — side drag visibly stretches camera/video/image; uniform
+corner keeps aspect + mode; non-uniform corner stretches; Fit control cycles all
+three; one undo restores pre-drag box + mode; export matches preview.
+Regression check (§8): PENDING
 
 ### T-01 — Re-verify the verb inventory against HEAD
 

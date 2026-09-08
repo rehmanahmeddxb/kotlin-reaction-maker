@@ -41,8 +41,9 @@ object Compositor {
     /**
      * The EXACT on-canvas bounds of what this layer visually occupies, in the
      * pixel space of a W×H composition:
-     *  - COVER (`fill`) and text: the layer box — the drawn frame is clipped
-     *    to it, so what you SEE ends at the box edge, not at the frame edge
+     *  - COVER (`fill`), STRETCH (`stretch`) and text: the layer box — the
+     *    drawn frame is clipped to it (cover) or IS it (stretch), so what you
+     *    SEE ends at the box edge, not at the frame edge
      *  - CONTAIN (`fit`): the letterboxed drawn frame — the picture, not the
      *    dead space around it
      * When no frame exists yet (no bitmap) it degrades to the box so the layer
@@ -133,11 +134,16 @@ object Compositor {
                 val (effW, effH) = if (l.srcW > 0) effectiveSize(l.srcW, l.srcH, l.srcRotation)
                 else Pair(b.width, b.height)
                 // Per-source fit mode (OBS plan §3):
-                //  FILL = COVER  — the frame fills its box (full-bleed mains,
-                //                  edges cropped when aspects differ)
+                //  FILL = COVER   — the frame fills its box (full-bleed mains,
+                //                   edges cropped when aspects differ)
                 //  FIT  = CONTAIN — the WHOLE frame is visible inside the box,
-                //                  letterboxed; this is what stops camera takes
-                //                  being "cut out" on a different-aspect canvas.
+                //                   letterboxed; this is what stops camera takes
+                //                   being "cut out" on a different-aspect canvas.
+                //  STRETCH        — the picture IS the box (squashed on
+                //                   mismatch); entered by a handle drag that
+                //                   changes the box aspect, so the picture
+                //                   follows the finger instead of sitting
+                //                   aspect-locked inside a moving box.
                 // The size math is LayerFit.drawnFrame — THE formula, shared
                 // with Compositor.chromeRect, so the editor's selection border
                 // surrounds exactly this rect.

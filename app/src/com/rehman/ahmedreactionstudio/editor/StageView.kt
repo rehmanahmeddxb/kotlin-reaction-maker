@@ -129,6 +129,17 @@ class StageView @JvmOverloads constructor(
     private var startLayerId: String? = null
     private var startCx = 0f; private var startCy = 0f
     private var startWN = 0f; private var startHN = 0f; private var startRot = 0f
+    /**
+     * True pre-gesture state for the undo snapshot. The gesture math reference
+     * ([startCx]…) can move during the gesture — a letterboxed FIT box is
+     * collapsed onto its picture on the first resize step — but undo must
+     * restore what was on screen when the finger went DOWN (box AND fit mode).
+     */
+    private var undoCx = 0f; private var undoCy = 0f
+    private var undoWN = 0f; private var undoHN = 0f; private var undoRot = 0f
+    private var undoFit = Layer.FIT_FILL
+    /** resize box→picture normalization done for the current gesture */
+    private var resizePrimed = false
     private var hsx = 0f; private var hsy = 0f          // grabbed handle (-1..1 per axis)
     private var startDist = 0f
     private var startAngle = 0f
@@ -479,6 +490,8 @@ class StageView @JvmOverloads constructor(
                     startCx = l.cx; startCy = l.cy
                     startWN = l.wN; startHN = l.hN
                     startRot = l.rotDeg
+                    // the undo base stays the finger-DOWN state from
+                    // startGesture: move-then-pinch is a single undo step.
                 }
                 return true
             }
@@ -495,12 +508,12 @@ class StageView @JvmOverloads constructor(
                             l.cy = startCy + ny(y - downY)
                             snapMove(l)
                             LayerFit.clampInside(l)
-                            if (hypot(x - downX, y - downY) > UI.dpf(context, 3f)) touchMoved()
+                            if (hypot(x - downX, y - downY) > UI.dpf(context, 3f)) touchMoved(l)
                         }
                     }
-                    Mode.PINCH -> if (e.pointerCount >= 2) { pinchMove(l, e); touchMoved() }
-                    Mode.CORNER, Mode.EDGE -> { resizeTo(l, x, y); touchMoved() }
-                    Mode.ROTATE -> { rotateTo(l, x, y); touchMoved() }
+                    Mode.PINCH -> if (e.pointerCount >= 2) { pinchMove(l, e); touchMoved(l) }
+                    Mode.CORNER, Mode.EDGE -> { resizeTo(l, x, y); touchMoved(l) }
+                    Mode.ROTATE -> { rotateTo(l, x, y); touchMoved(l) }
                     else -> { }
                 }
                 invalidate()
@@ -582,7 +595,16 @@ class StageView @JvmOverloads constructor(
         pendingLongPress = null
     }
 
+    /** remember the finger-DOWN state so one undo step restores the gesture */
+    private fun captureUndoBase(l: Layer) {
+        undoCx = l.cx; undoCy = l.cy
+        undoWN = l.wN; undoHN = l.hN
+        undoRot = l.rotDeg; undoFit = l.fit
+    }
+
     private fun startGesture(l: Layer, m: String) {
+        captureUndoBase(l)
+        resizePrimed = false
         mode = when (m) {
             "MOVE" -> Mode.MOVE
             "ROT" -> Mode.ROTATE
@@ -615,9 +637,31 @@ class StageView @JvmOverloads constructor(
         startRot = l.rotDeg
     }
 
-    /** one undo snapshot per gesture, taken on the first real movement */
-    private fun touchMoved() {
-        if (!undoPushed) { undoPushed = true; host?.onChanged() }
+    /**
+     * One undo snapshot per gesture, taken on the first real movement — of the
+     * finger-DOWN state, not the already-moved one. The mutation for this move
+     * event is already applied when this runs, so the pre-gesture values are
+     * briefly restored, snapshotted through [Host.onChanged], then re-applied.
+     * Without the swap, undo would restore "one move event in" — invisible for
+     * a 2 px drag, but a stuck box + fit mode after a stretch resize (whose
+     * first step collapses a letterboxed box onto its picture AND flips the
+     * fit mode). Only this layer can have changed mid-gesture, so restoring
+     * its six fields is a complete pre-gesture state.
+     */
+    private fun touchMoved(l: Layer) {
+        if (!undoPushed) {
+            undoPushed = true
+            val cx = l.cx; val cy = l.cy
+            val wn = l.wN; val hn = l.hN
+            val rot = l.rotDeg; val fit = l.fit
+            l.cx = undoCx; l.cy = undoCy
+            l.wN = undoWN; l.hN = undoHN
+            l.rotDeg = undoRot; l.fit = undoFit
+            host?.onChanged()
+            l.cx = cx; l.cy = cy
+            l.wN = wn; l.hN = hn
+            l.rotDeg = rot; l.fit = fit
+        }
         moved = true
         host?.onTransform()
     }
@@ -625,14 +669,36 @@ class StageView @JvmOverloads constructor(
     /**
      * True handle dragging (UI Plan2 Rule 9): the grabbed corner/edge follows
      * the finger while the OPPOSITE side stays anchored, in the layer's own
-     * rotated frame. No aspect lock — every source type stretches freely.
+     * rotated frame — and the PICTURE follows the box, not just the box the
+     * finger. No aspect lock — every source type stretches freely.
      *
      * EDGE (all 4 dirs): stretch ONLY that side. Left/right change width;
      * top/bottom change height. The other three sides do not move.
      * CORNER: stretch the whole frame (width AND height independently).
      * The opposite corner stays put.
+     *
+     * Two things make the picture (not just the box) obey the finger:
+     *
+     * 1. Letterbox collapse. Handles sit on the VISIBLE picture
+     *    ([Compositor.chromeRect]) but the math below is box math. On a
+     *    letterboxed FIT layer the box is bigger than the picture, so the
+     *    first step shrinks the (invisible) dead space away: box := picture.
+     *    The chrome is concentric with the box, so nothing on screen moves —
+     *    the border, the handles and the picture are pixel-identical — and
+     *    from then on picture edge == box edge == finger.
+     * 2. Auto-stretch. Fit and Fill both keep the source aspect, so a wider
+     *    box alone would only widen dead space (Fit) or re-crop (Fill) —
+     *    dragging a side would look like nothing happened. When the new box
+     *    aspect leaves the source aspect (>2 %), the layer flips to STRETCH
+     *    (picture == box, squashed on mismatch). A uniform corner drag keeps
+     *    the aspect and keeps the mode. Text has no picture-in-box mode and
+     *    never flips. The Fit control cycles back to Fit/Fill at any time.
      */
     private fun resizeTo(l: Layer, x: Float, y: Float) {
+        if (!resizePrimed) {
+            resizePrimed = true
+            collapseLetterbox(l)
+        }
         val startWpx = (startWN * cw).coerceAtLeast(1f)
         val startHpx = (startHN * ch).coerceAtLeast(1f)
         val cx0 = startCx * cw
@@ -668,6 +734,46 @@ class StageView @JvmOverloads constructor(
         l.hN = newH / ch
         l.cx = (ax + mxLocal * ca - myLocal * sa) / cw
         l.cy = (ay + mxLocal * sa + myLocal * ca) / ch
+
+        // the picture follows the box: leave Fit/Fill for Stretch once the
+        // dragged box no longer matches the source aspect (a side always
+        // does; a uniform corner never does). Tap jitter on a handle must
+        // not flip the mode, so either axis has to move >0.5 % first.
+        if (!l.isText() && l.fit != Layer.FIT_STRETCH) {
+            val (effW, effH) = LayerFit.effective(l.srcW, l.srcH, l.srcRotation)
+            if (effW > 0 && effH > 0 && newW > 0f && newH > 0f) {
+                val dragged = abs(newW / startWpx - 1f) > 0.005f ||
+                        abs(newH / startHpx - 1f) > 0.005f
+                if (dragged) {
+                    val boxAspect = newW / newH
+                    val srcAspect = effW.toFloat() / effH
+                    if (abs(boxAspect / srcAspect - 1f) > 0.02f) l.fit = Layer.FIT_STRETCH
+                }
+            }
+        }
+    }
+
+    /**
+     * First resize step on a letterboxed FIT layer: shrink the box onto the
+     * visible picture (same centre — the chrome is concentric with the box)
+     * and re-base the gesture math onto it. COVER/STRETCH/text layers already
+     * have chrome == box, and a layer with no decoded frame yet falls back to
+     * the box too, so all of those are a no-op here.
+     */
+    private fun collapseLetterbox(l: Layer) {
+        if (l.isText()) return
+        val bmp = host?.bitmapOf(l) ?: return
+        val cr = RectF()
+        Compositor.chromeRect(l, bmp, cw, ch, cr)
+        val boxW = l.wN * cw
+        val boxH = l.hN * ch
+        if (abs(cr.width() - boxW) <= 0.5f && abs(cr.height() - boxH) <= 0.5f) return
+        l.wN = cr.width() / cw
+        l.hN = cr.height() / ch
+        l.cx = cr.centerX() / cw
+        l.cy = cr.centerY() / ch
+        startWN = l.wN; startHN = l.hN
+        startCx = l.cx; startCy = l.cy
     }
 
     private fun rotateTo(l: Layer, x: Float, y: Float) {
