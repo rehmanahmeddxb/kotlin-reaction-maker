@@ -30,33 +30,47 @@ object LayerModelTest {
         run {
             val layers = ArrayList<Layer>()
             val bg = layer("main"); LayerFit.fill(bg); layers.add(bg)
-            val a = layer("cam", 720, 1280); layers.add(a); LayerFit.placeNewPip(a, layers, cw, ch)
-            val b = layer("clip"); layers.add(b); LayerFit.placeNewPip(b, layers, cw, ch)
-            val c = layer("img", 1000, 1000); layers.add(c); LayerFit.placeNewPip(c, layers, cw, ch)
-            val d = layer("txt", 1280, 720); layers.add(d); LayerFit.placeNewPip(d, layers, cw, ch)
+
+            // The FIRST PiP is the spec's default reaction PiP: a 16:9 source
+            // lands at 45 % width (→ 45 % height, keeping 16:9), centred at
+            // (52.5 %, 62.5 %). All normalized, so identical at any resolution.
+            val a = layer("clip", 1280, 720); layers.add(a); LayerFit.placeNewPip(a, layers, cw, ch)
+            check("default reaction PiP width = 45 % of canvas width",
+                abs(a.wN - LayerFit.PIP_WIDTH_N) < 0.01f, "wN=${a.wN}")
+            check("default reaction PiP keeps 16:9 (height derived from aspect)",
+                abs((a.wN * cw) / (a.hN * ch) - 16f / 9f) < 0.01f, "hN=${a.hN}")
+            check("default reaction PiP centred at 52.5 % / 62.5 %",
+                abs(a.cx - LayerFit.PIP_CENTER_X_N) < 0.01f && abs(a.cy - LayerFit.PIP_CENTER_Y_N) < 0.01f,
+                "cx=${a.cx} cy=${a.cy}")
+            check("default reaction PiP fully inside the canvas",
+                a.cx - a.wN / 2 >= 0f && a.cx + a.wN / 2 <= 1f && a.cy - a.hN / 2 >= 0f && a.cy + a.hN / 2 <= 1f)
+
+            // Extra PiPs stagger across the corners and never stack.
+            val b = layer("cam", 720, 1280); layers.add(b); LayerFit.placeNewPip(b, layers, cw, ch)
+            val c = layer("clip2", 1280, 720); layers.add(c); LayerFit.placeNewPip(c, layers, cw, ch)
+            val d = layer("img", 1000, 1000); layers.add(d); LayerFit.placeNewPip(d, layers, cw, ch)
             val e = layer("fifth", 1280, 720); layers.add(e); LayerFit.placeNewPip(e, layers, cw, ch)
-            check("1st PiP → bottom-right", a.cx > 0.5f && a.cy > 0.5f, "cx=${a.cx} cy=${a.cy}")
-            check("2nd PiP → bottom-left (not on top of the 1st)", b.cx < 0.5f && b.cy > 0.5f && !overlaps(a, b), "cx=${b.cx} cy=${b.cy}")
-            check("3rd PiP → top-right", c.cx > 0.5f && c.cy < 0.5f && !overlaps(a, c) && !overlaps(b, c))
-            check("4th PiP → top-left", d.cx < 0.5f && d.cy < 0.5f && listOf(a, b, c).none { overlaps(it, d) })
-            check("5th PiP cascades off the last one (offset, not identical)",
-                (abs(e.cx - d.cx) > 0.02f || abs(e.cy - d.cy) > 0.02f), "e=(${e.cx},${e.cy}) d=(${d.cx},${d.cy})")
+            val all = listOf(a, b, c, d, e)
+            check("later PiPs never stack on an existing one",
+                all.indices.all { i -> all.indices.none { j -> i != j && overlaps(all[i], all[j]) } })
             check("every PiP keeps its source aspect",
-                listOf(a, b, c, d, e).all { l -> abs((l.wN * cw) / (l.hN * ch) - l.srcW.toFloat() / l.srcH) < 0.01f })
+                all.all { l -> abs((l.wN * cw) / (l.hN * ch) - l.srcW.toFloat() / l.srcH) < 0.01f })
             check("every PiP fully inside the canvas",
-                listOf(a, b, c, d).all { l -> l.cx - l.wN / 2 >= -0.001f && l.cx + l.wN / 2 <= 1.001f && l.cy - l.hN / 2 >= -0.001f && l.cy + l.hN / 2 <= 1.001f })
+                all.all { l -> l.cx - l.wN / 2 >= -0.001f && l.cx + l.wN / 2 <= 1.001f && l.cy - l.hN / 2 >= -0.001f && l.cy + l.hN / 2 <= 1.001f })
             // determinism: same input twice → same output
             val x1 = layer("x"); LayerFit.placeNewPip(x1, layers, cw, ch)
             val x2 = layer("x"); LayerFit.placeNewPip(x2, layers, cw, ch)
             check("placement is deterministic", x1.cx == x2.cx && x1.cy == x2.cy && x1.wN == x2.wN)
-            // the background does not count as "occupying" a corner
+            // the background does not count as "occupying" the default spot
             val only = ArrayList<Layer>(); val bg2 = layer("bg"); LayerFit.fill(bg2); only.add(bg2)
             val f = layer("first"); only.add(f); LayerFit.placeNewPip(f, only, cw, ch)
-            check("full-bleed background never blocks the first corner", f.cx > 0.5f && f.cy > 0.5f)
+            check("full-bleed background never blocks the default spot",
+                abs(f.cx - LayerFit.PIP_CENTER_X_N) < 0.01f && abs(f.cy - LayerFit.PIP_CENTER_Y_N) < 0.01f)
             // hidden PiPs do not block either
             val hid = ArrayList<Layer>(); val hl = layer("hidden"); hid.add(hl); LayerFit.pip(hl, cw, ch, "br"); hl.visible = false
             val g = layer("g"); hid.add(g); LayerFit.placeNewPip(g, hid, cw, ch)
-            check("hidden layers do not reserve a corner", g.cx > 0.5f && g.cy > 0.5f)
+            check("hidden layers do not reserve the default spot",
+                abs(g.cx - LayerFit.PIP_CENTER_X_N) < 0.01f && abs(g.cy - LayerFit.PIP_CENTER_Y_N) < 0.01f)
         }
 
         // ---------- hit testing ----------
