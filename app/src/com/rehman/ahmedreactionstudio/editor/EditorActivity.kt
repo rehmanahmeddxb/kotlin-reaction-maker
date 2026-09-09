@@ -1114,24 +1114,36 @@ class EditorActivity : Activity(), StageView.Host {
                 "Add a live camera to control its light.")
             return
         }
+        val frontPending = liveCam?.isTorchPendingForFront() == true
+        val backPending = liveCam?.isTorchPendingForBack() == true
         StudioLayoutInjector.actRow(this, body, R.drawable.ic_flash,
             if (isFrontTorchOn()) "Front flash: on" else "Front flash: off",
-            active = isFrontTorchOn(), badge = if (isFrontTorchOn()) "LED" else null,
-            enabled = hasFrontTorch(),
-            sub = if (hasFrontTorch()) null else "No front LED — use screen light") {
+            active = isFrontTorchOn(),
+            badge = if (isFrontTorchOn()) (if (hasFrontTorch()) "LED" else "SCREEN") else null,
+            enabled = hasFrontLight(),
+            sub = when {
+                frontPending -> "Waiting for camera LED — will light when free"
+                hasFrontTorch() -> null
+                else -> "No front LED — uses screen light"
+            }) {
             toggleFrontTorch()
         }
         StudioLayoutInjector.actRow(this, body, R.drawable.ic_flash,
             if (isBackTorchOn()) "Back flash: on" else "Back flash: off",
             active = isBackTorchOn(), badge = if (isBackTorchOn()) "LED" else null,
             enabled = hasBackTorch(),
-            sub = if (hasBackTorch()) null else "No rear LED on this device") {
+            sub = when {
+                backPending -> "Waiting for camera LED — will light when free"
+                hasBackTorch() -> null
+                else -> "No rear LED on this device"
+            }) {
             toggleBackTorch()
         }
-        if (hasFrontTorch() && hasBackTorch()) {
+        if (hasBackTorch() && hasFrontLight()) {
             StudioLayoutInjector.actRow(this, body, R.drawable.ic_flash,
                 if (isBothTorchOn()) "Both flashes: on" else "Both flashes: off",
-                active = isBothTorchOn()) {
+                active = isBothTorchOn(),
+                sub = if (hasFrontTorch()) null else "Front uses screen light + rear LED") {
                 toggleBothTorch()
             }
         }
@@ -2461,6 +2473,7 @@ class EditorActivity : Activity(), StageView.Host {
                     "torcherror" -> UI.toast(this,
                         liveCam?.torchLastError()?.takeIf { it.isNotBlank() }
                             ?: "Hardware torch unavailable")
+                    "torchpending" -> refreshAll()
                     "recording" -> { recChip.text = "● STOP CAMERA TAKE"; recChip.contentDescription = "Stop the camera take"; recChip.visibility = if (fullCanvas) View.GONE else View.VISIBLE }
                     "live" -> { cameraFallbackShown = false; refreshAll() }
                 }
@@ -2718,9 +2731,14 @@ class EditorActivity : Activity(), StageView.Host {
 
     fun hasFrontTorch(): Boolean = liveCam?.frontHasFlash == true
     fun hasBackTorch(): Boolean = liveCam?.backHasFlash == true
-    fun isFrontTorchOn(): Boolean = liveCam?.isTorchOnForFront() == true
-    fun isBackTorchOn(): Boolean = liveCam?.isTorchOnForBack() == true
-    fun isBothTorchOn(): Boolean = liveCam?.bothTorchesFullyOn() == true
+    /** Front side always has a light source: physical LED or the screen panel. */
+    private fun hasFrontLight(): Boolean = liveCam != null
+    private fun frontLightOn(): Boolean =
+        if (hasFrontTorch()) liveCam?.isTorchOnForFront() == true else screenLight
+    private fun backLightOn(): Boolean = liveCam?.isTorchOnForBack() == true
+    fun isFrontTorchOn(): Boolean = frontLightOn()
+    fun isBackTorchOn(): Boolean = backLightOn()
+    fun isBothTorchOn(): Boolean = frontLightOn() && backLightOn()
 
     fun toggleTorch(l: Layer) {
         val cam = liveCam
@@ -2747,7 +2765,10 @@ class EditorActivity : Activity(), StageView.Host {
         val cam = liveCam
         if (cam == null) { UI.toast(this, "Live camera not running"); return }
         if (!cam.hasFlashForFront()) {
-            UI.toast(this, "Front camera has no LED — use the screen light")
+            // No front LED on this phone: the honest front flash IS the screen
+            // light. Turn it on and let the user see the result immediately
+            // instead of a disabled row / "use screen light" toast.
+            toggleScreenLight()
             return
         }
         if (!cam.toggleFrontTorch() && !cam.isTorchOnForFront()) {
@@ -2770,22 +2791,47 @@ class EditorActivity : Activity(), StageView.Host {
                 ?: "Rear flash unavailable")
             return
         }
-        UI.toast(this, if (cam.isTorchOnForBack()) "Rear flash on (LED)" else "Rear flash off")
+        // A rear request that cannot be lit right now (camera busy) is shown as
+        // pending on the row; it is not an error, so don't show the old toast.
+        UI.toast(this,
+            if (cam.isTorchPendingForBack()) "Rear flash will light when the rear camera is available"
+            else if (cam.isTorchOnForBack()) "Rear flash on (LED)"
+            else "Rear flash off")
         refreshAll()
     }
     fun toggleBothTorch() {
         val cam = liveCam
         if (cam == null) { UI.toast(this, "Live camera not running"); return }
-        if (!cam.hasFlashForFront() && !cam.hasFlashForBack()) {
-            UI.toast(this, "This device has no camera flash — use the screen light")
+        if (!cam.hasFlashForBack()) {
+            UI.toast(this, "This device has no rear LED — use the screen light")
             return
         }
-        val turnOn = !cam.bothTorchesFullyOn()
-        if (turnOn && !cam.setBothTorches(true)) {
-            UI.toast(this, "No camera flash is available")
-            return
+        val turnOn = !isBothTorchOn()
+        if (turnOn) {
+            // Front: hardware LED when it exists, otherwise the screen light.
+            if (cam.hasFlashForFront()) {
+                if (!cam.setTorchFor(true, true) && !cam.isTorchOnForFront()) {
+                    UI.toast(this, cam.torchLastError().takeIf { it.isNotBlank() }
+                        ?: "Front flash unavailable")
+                    return
+                }
+            } else if (!screenLight) {
+                toggleScreenLight()
+            }
+            // Rear: the hardware LED.
+            if (!cam.setTorchFor(false, true) && !cam.isTorchOnForBack()) {
+                UI.toast(this, cam.torchLastError().takeIf { it.isNotBlank() }
+                    ?: "Rear flash unavailable")
+                return
+            }
+        } else {
+            if (cam.hasFlashForFront() && cam.isTorchOnForFront()) {
+                cam.setTorchFor(true, false)
+            } else if (screenLight) {
+                toggleScreenLight()
+            }
+            if (cam.isTorchOnForBack()) cam.setTorchFor(false, false)
         }
-        if (!turnOn) cam.setBothTorches(false)
         UI.toast(this, if (turnOn) "Both flashes on" else "Both flashes off")
         refreshAll()
     }

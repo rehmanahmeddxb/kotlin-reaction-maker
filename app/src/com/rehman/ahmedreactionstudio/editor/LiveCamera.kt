@@ -98,6 +98,16 @@ class LiveCamera(
     @Volatile private var torchViaRequest = false
     /** last torch failure reported to the UI ("" = none) */
     @Volatile private var lastTorchError = ""
+    /**
+     * A requested LED could not be switched on right now because the camera
+     * hardware/resource is busy (typically the other camera owns the service).
+     * The request stays remembered so it comes on as soon as this camera is
+     * active or the resource is available; this is not a user-facing error.
+     */
+    @Volatile private var torchPendingFront = false
+    @Volatile private var torchPendingBack = false
+    /** number of consecutive resource-busy retries already performed */
+    @Volatile private var torchRetries = 0
     /** hardware torch (LED) state of currently open camera; re-applied after every session rebuild */
     var torch: Boolean
         get() = if (isFront()) frontTorch else backTorch
@@ -180,6 +190,10 @@ class LiveCamera(
     /** "Both flashes" — the only mode that keeps the idle camera's LED on. */
     fun bothTorchesMode(): Boolean = bothTorches
 
+    /** True when the user asked for this side but the hardware is busy right now. */
+    fun isTorchPendingForFront(): Boolean = torchPendingFront
+    fun isTorchPendingForBack(): Boolean = torchPendingBack
+
     /**
      * Turn both LEDs on/off together. Both are driven with
      * `CameraManager.setTorchMode`, so this works even though only one camera
@@ -192,6 +206,11 @@ class LiveCamera(
         if (backHasFlash) { backTorch = on; changed = true }
         if (!changed) return false
         bothTorches = on
+        if (!on) {
+            torchPendingFront = false
+            torchPendingBack = false
+        }
+        torchRetries = 0
         handler?.post { applyTorch() }
         return true
     }
@@ -208,7 +227,11 @@ class LiveCamera(
     fun setTorch(on: Boolean): Boolean {
         if (on && !hasFlashUnit) return false
         if (isFront()) frontTorch = on else backTorch = on
-        if (!on) bothTorches = false
+        if (!on) {
+            bothTorches = false
+            if (isFront()) torchPendingFront = false else torchPendingBack = false
+        }
+        torchRetries = 0
         handler?.post { applyTorch() }
         return true
     }
@@ -219,7 +242,11 @@ class LiveCamera(
         val has = if (front) frontHasFlash else backHasFlash
         if (on && !has) return false
         if (front) frontTorch = on else backTorch = on
-        if (!on) bothTorches = false
+        if (!on) {
+            bothTorches = false
+            if (front) torchPendingFront = false else torchPendingBack = false
+        }
+        torchRetries = 0
         handler?.post { applyTorch() }
         return true
     }
@@ -235,7 +262,11 @@ class LiveCamera(
      * Why the last torch toggle failed ("" when it worked). Lets the UI say
      * "camera in use by another app" instead of a generic no-flash message.
      */
-    fun torchLastError(): String = if (torchCtl.lastFail == TorchController.Fail.NONE) "" else torchCtl.failureText()
+    fun torchLastError(): String = when {
+        torchCtl.lastFail == TorchController.Fail.NONE -> ""
+        torchPendingFront || torchPendingBack -> ""
+        else -> torchCtl.failureText()
+    }
 
     fun setMirror(m: Boolean) { mirror = m }
 
@@ -256,6 +287,9 @@ class LiveCamera(
         hasFlashUnit = if (isFront()) frontHasFlash else backHasFlash
     }
 
+    private val TORCH_RETRY_MS = 900L
+    private val TORCH_RETRY_LIMIT = 10
+
     /**
      * Apply the wanted torch state to the hardware. Runs on the camera thread.
      *
@@ -266,7 +300,11 @@ class LiveCamera(
      *    never left burning by accident;
      *  - if the framework refuses torch mode for the OPEN camera and that
      *    camera does report a flash unit, the LED is driven through
-     *    FLASH_MODE_TORCH on the live capture request instead.
+     *    FLASH_MODE_TORCH on the live capture request instead;
+     *  - a busy camera/resource is NOT a user-facing error. The requested
+     *    side stays remembered and is retried (and re-applied on the next
+     *    session rebuild / facing switch), so turning on front/back/both never
+     *    leaves the user with a "camera is in use" toast that did nothing.
      */
     private fun applyTorch() {
         // Both sides are driven from the user's intent: setTorchMode() works
@@ -274,40 +312,88 @@ class LiveCamera(
         // burning behind a front preview (and vice versa) — that is the whole
         // point of the Front / Back / Both ring. It is never a silent
         // carry-over: switchFacing() clears the side we are leaving.
-        applySide(isFront())
-        applySide(!isFront())
+        val frontPending = applySide(isFront())
+        val backPending = applySide(!isFront())
         repeatRequest()
-    }
-
-    /** Drive one side's LED; the active side may fall back to the request. */
-    private fun applySide(front: Boolean) {
-        val want = if (front) frontTorch else backTorch
-        val active = front == isFront()
-        if (!want) {
-            torchCtl.setTorch(front, false)
-            if (active) torchViaRequest = false
-            noteTorchError("")
-            return
-        }
-        val ok = torchCtl.setTorch(front, true)
-        val has = if (front) frontHasFlash else backHasFlash
-        // fall back to the capture-request torch only for the side we have a
-        // session for, and only when it really reports a flash unit
-        if (active) torchViaRequest = !ok && has
-        when {
-            ok -> noteTorchError("")
-            !ok && has && active -> noteTorchError("")
-            else -> {
-                noteTorchError(torchCtl.failureText())
-                // never claim a torch we could not actually switch on
-                if (front) frontTorch = false else backTorch = false
-            }
+        if (frontPending || backPending) {
+            if (torchRetries < TORCH_RETRY_LIMIT) scheduleTorchRetry()
+        } else {
+            torchRetries = 0
         }
     }
 
     /**
+     * Drive one side's LED; the active side may fall back to the request.
+     * @return true when the requested LED is "waiting" because the camera
+     *         resource is busy (kept wanted, not an error).
+     */
+    private fun applySide(front: Boolean): Boolean {
+        val want = if (front) frontTorch else backTorch
+        val active = front == isFront()
+        val has = if (front) frontHasFlash else backHasFlash
+        if (!want) {
+            torchCtl.setTorch(front, false)
+            if (active) torchViaRequest = false
+            setTorchPending(front, false)
+            noteTorchError("")
+            return false
+        }
+        val ok = torchCtl.setTorch(front, true)
+        val busy = torchCtl.lastFail == TorchController.Fail.CAMERA_IN_USE
+
+        if (active) {
+            // fall back to the capture-request torch only for the side we have
+            // a session for, and only when it really reports a flash unit.
+            torchViaRequest = !ok && has
+            setTorchPending(front, false)
+            noteTorchError("")
+            return false
+        }
+
+        if (ok) {
+            setTorchPending(front, false)
+            noteTorchError("")
+            return false
+        }
+
+        if (has && busy) {
+            // The idle side's LED cannot be switched on while the other camera
+            // owns the hardware; that is an OS resource conflict, not a device
+            // fault. Keep the user's request (so it lights when this side is
+            // selected) and quietly retry instead of showing a false error.
+            setTorchPending(front, true)
+            noteTorchError("")
+            return true
+        }
+
+        setTorchPending(front, false)
+        noteTorchError(torchCtl.failureText())
+        // never claim a torch we could not actually switch on
+        if (front) frontTorch = false else backTorch = false
+        return false
+    }
+
+    private fun setTorchPending(front: Boolean, pending: Boolean) {
+        val changed = synchronized(this) {
+            val old = if (front) torchPendingFront else torchPendingBack
+            if (front) torchPendingFront = pending else torchPendingBack = pending
+            old != pending
+        }
+        if (changed) onState("torchpending")
+    }
+
+    private fun scheduleTorchRetry() {
+        val h = handler ?: return
+        torchRetries++
+        h.postDelayed({
+            if (running) applyTorch()
+        }, TORCH_RETRY_MS)
+    }
+
+    /**
      * Report a torch failure once (not on every session rebuild) so the UI can
-     * say "camera in use by another app" instead of silently doing nothing.
+     * say what happened instead of silently doing nothing. Busy-camera retries
+     * never reach this method.
      */
     private fun noteTorchError(msg: String) {
         if (msg == lastTorchError) return
@@ -322,6 +408,9 @@ class LiveCamera(
         backTorch = false
         bothTorches = false
         torchViaRequest = false
+        torchPendingFront = false
+        torchPendingBack = false
+        torchRetries = 0
     }
 
     // ---------------- lifecycle ----------------
@@ -349,7 +438,7 @@ class LiveCamera(
         // off, so a rear LED can never burn behind a front preview.
         if (!bothTorches) {
             torchCtl.setTorch(wasFront, false)
-            if (wasFront) frontTorch = false else backTorch = false
+            if (wasFront) { frontTorch = false; torchPendingFront = false } else { backTorch = false; torchPendingBack = false }
         }
         val front = !wasFront
         facing = if (front) CameraCharacteristics.LENS_FACING_FRONT
