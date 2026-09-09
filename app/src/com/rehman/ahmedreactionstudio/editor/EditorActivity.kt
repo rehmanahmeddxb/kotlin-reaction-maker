@@ -85,6 +85,7 @@ class EditorActivity : Activity(), StageView.Host {
         const val PREF_EXP_MAXDIM = "exp_maxdim"
         const val PREF_EXP_FPS = "exp_fps"
         const val PREF_HAD_EXPORT = "had_export"
+        const val PREF_COACHED = "coached"
     }
 
     private fun editorPrefs() = getSharedPreferences(PREFS_EDITOR, MODE_PRIVATE)
@@ -247,6 +248,40 @@ class EditorActivity : Activity(), StageView.Host {
         refreshAll()
         updateName()
         engine.refreshFrames()
+        stage.post { showCoachIfNeeded() }
+    }
+
+    private fun showCoachIfNeeded() {
+        val prefs = editorPrefs()
+        if (prefs.getBoolean(PREF_COACHED, false)) return
+        if (proj?.layers?.isNotEmpty() == true) return
+        // first launch coach — 3-step onboarding
+        val steps = listOf(
+            "Welcome to Ahmed Reaction Studio — your canvas is 100% of the screen. All controls float over it." to "Tap ☰ to open the sidebar with 7 sections.",
+            "Layers shows every source. Add Camera (live) to put yourself on canvas, then frame it with drag & pinch." to "The quick bar above the canvas is your one-tap verbs.",
+            "Record needs a live camera + a video. Export saves to your phone. Long-press a source for more." to "You're set — add a source to begin!"
+        )
+        var idx = 0
+        fun showStep() {
+            if (idx >= steps.size) {
+                prefs.edit().putBoolean(PREF_COACHED, true).apply()
+                return
+            }
+            val (title, sub) = steps[idx]
+            AlertDialog.Builder(this)
+                .setTitle("Step ${idx + 1} of ${steps.size}")
+                .setMessage("$title\n\n$sub")
+                .setPositiveButton(if (idx == steps.size - 1) "Got it" else "Next") { _, _ ->
+                    idx++
+                    showStep()
+                }
+                .setNegativeButton("Skip") { _, _ ->
+                    prefs.edit().putBoolean(PREF_COACHED, true).apply()
+                }
+                .setCancelable(false)
+                .show()
+        }
+        showStep()
     }
 
     private fun applyOrientationFor(a: Aspect) {
@@ -641,7 +676,7 @@ class EditorActivity : Activity(), StageView.Host {
             b.setIcon(icon, tint, desc)
             b.setOnClickListener { onTap() }
             val lp = LinearLayout.LayoutParams(UI.dp(this, 40), UI.dp(this, 40))
-            lp.setMargins(UI.dp(this, 2), 0, UI.dp(this, 2), 0)
+            lp.setMargins(UI.dp(this, 3), 0, UI.dp(this, 3), 0)
             quickBar.addView(b, lp)
         }
         add(if (l.visible) R.drawable.ic_eye_off else R.drawable.ic_eye,
@@ -982,11 +1017,13 @@ class EditorActivity : Activity(), StageView.Host {
         val wrap = LinearLayout(this)
         wrap.orientation = LinearLayout.VERTICAL
         val act = this
-        wrap.setPadding(UI.dp(act, 8), UI.dp(act, 6), UI.dp(act, 8), UI.dp(act, 6))
+        wrap.setPadding(UI.dp(act, 10), UI.dp(act, 8), UI.dp(act, 10), UI.dp(act, 8))
         wrap.background = GradientDrawable().apply {
-            cornerRadius = UI.dpf(act, 10f)
-            setColor(Color.argb(40, 255, 255, 255))
+            cornerRadius = UI.dpf(act, 12f)
+            setColor(Color.argb(45, 255, 255, 255))
+            setStroke(UI.dp(act, 1), Color.argb(30, 255, 255, 255))
         }
+        wrap.elevation = UI.dpf(act, 1f)
         val head = LinearLayout(this)
         head.orientation = LinearLayout.HORIZONTAL
         head.gravity = Gravity.CENTER_VERTICAL
@@ -1202,23 +1239,34 @@ class EditorActivity : Activity(), StageView.Host {
         val row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
         row.gravity = Gravity.CENTER_VERTICAL
-        row.setPadding(UI.dp(this, 10), 0, UI.dp(this, 10), 0)
+        row.setPadding(UI.dp(this, 12), 0, UI.dp(this, 12), 0)
         row.isClickable = true
         row.isFocusable = true
         row.contentDescription = "Canvas background: $name"
+        row.background = if (active) GradientDrawable().apply {
+            cornerRadius = UI.dpf(this@EditorActivity, 12f)
+            setColor(Color.argb(50, 255, 90, 44))
+            setStroke(UI.dp(this@EditorActivity, 1), Color.argb(90, 255, 130, 80))
+        } else GradientDrawable().apply {
+            cornerRadius = UI.dpf(this@EditorActivity, 12f)
+            setColor(Color.TRANSPARENT)
+        }
         val dot = View(this)
         dot.background = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
             setColor(color)
-            setStroke(1, Color.argb(140, 255, 255, 255))
+            setStroke(UI.dp(this@EditorActivity, 1), Color.argb(160, 255, 255, 255))
         }
-        row.addView(dot, LinearLayout.LayoutParams(UI.dp(this, 16), UI.dp(this, 16)))
+        dot.elevation = UI.dpf(this, 1f)
+        row.addView(dot, LinearLayout.LayoutParams(UI.dp(this, 18), UI.dp(this, 18)))
         val lbl = TextView(this)
         lbl.text = name
         lbl.setTextColor(UI.FG)
         lbl.textSize = 13f
+        lbl.letterSpacing = -0.01f
+        lbl.typeface = Typeface.create("sans-serif", if (active) Typeface.BOLD else Typeface.NORMAL)
         val clp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        clp.marginStart = UI.dp(this, 10)
+        clp.marginStart = UI.dp(this, 12)
         lbl.layoutParams = clp
         row.addView(lbl)
         if (active) {
@@ -1227,6 +1275,12 @@ class EditorActivity : Activity(), StageView.Host {
             b.setTextColor(UI.ACCENT2)
             b.textSize = 10f
             b.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            b.letterSpacing = 0.06f
+            b.setPadding(UI.dp(this, 8), UI.dp(this, 2), UI.dp(this, 8), UI.dp(this, 2))
+            b.background = GradientDrawable().apply {
+                cornerRadius = UI.dpf(this@EditorActivity, 8f)
+                setColor(Color.argb(70, 255, 90, 44))
+            }
             row.addView(b, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT))
         }
@@ -1949,22 +2003,38 @@ class EditorActivity : Activity(), StageView.Host {
         val row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
         row.gravity = Gravity.CENTER_VERTICAL
-        row.setPadding(UI.dp(this, 14), UI.dp(this, 2), UI.dp(this, 14), UI.dp(this, 2))
-        val lb = UI.label(this, label, dim = true, size = 12f)
+        row.setPadding(UI.dp(this, 12), UI.dp(this, 6), UI.dp(this, 12), UI.dp(this, 6))
+        row.background = GradientDrawable().apply {
+            cornerRadius = UI.dpf(this@EditorActivity, 10f)
+            setColor(Color.argb(30, 255, 255, 255))
+        }
+        val lb = TextView(this)
+        lb.text = label
+        lb.setTextColor(UI.FG2)
+        lb.textSize = 11.5f
+        lb.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        lb.letterSpacing = 0.02f
+        lb.maxLines = 1
+        lb.ellipsize = android.text.TextUtils.TruncateAt.END
+        lb.layoutParams = LinearLayout.LayoutParams(UI.dp(this, 110), ViewGroup.LayoutParams.WRAP_CONTENT)
         row.addView(lb)
-        UI.margin(lb, 0, 0, 8, 0, this)
         val sb = SeekBar(this)
         sb.max = 100
         sb.progress = value
         sb.progressTintList = android.content.res.ColorStateList.valueOf(UI.ACCENT)
         sb.thumbTintList = android.content.res.ColorStateList.valueOf(UI.ACCENT2)
-        sb.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        sb.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+            marginStart = UI.dp(this@EditorActivity, 10)
+        }
         sb.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(s: SeekBar?, v: Int, u: Boolean) { if (u) on(v) }
             override fun onStartTrackingTouch(s: SeekBar?) { }
             override fun onStopTrackingTouch(s: SeekBar?) { }
         })
         row.addView(sb)
+        val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        lp.setMargins(0, UI.dp(this, 4), 0, UI.dp(this, 4))
+        row.layoutParams = lp
         return row
     }
 

@@ -277,18 +277,14 @@ class StageView @JvmOverloads constructor(
     }
 
     /**
-     * Selection frame. One accent colour for every source type (UI.ACCENT),
-     * drawn in the layer's own rotated frame so it follows position, size,
-     * scale and rotation exactly:
+     * Polished selection frame — aligned to studio tokens.
      *
-     *  - a 1dp dark contrast line under a crisp 2.5dp accent stroke (visible
-     *    on a white canvas AND on a dark one — selection is never colour-only:
-     *    it is also the handles and the label pill);
-     *  - four corner handles + four edge handles (filled accent, white rim)
-     *    and the rotation knob above the top edge;
-     *  - LOCKED: neutral grey, dashed, no handles (nothing can be dragged),
-     *    padlock in the label;
-     *  - hidden layers are never selected-drawn (see onDraw).
+     * - Accent: UI.ACCENT for live, UI.FG2 dashed for locked.
+     * - Contrast underlay 4.5dp black 150 alpha so frame reads on white canvas.
+     * - Handles: 5.5dp, corner squares, edge pills, white 1.2dp rim + shadow.
+     * - Rotation knob 18dp above top, line 1.5dp accent, dot white inner.
+     * - Label pill: 10dp radius, bg 215 alpha 18,20,26, edge accent 1dp,
+     *   text white 10sp Bold, LIVE prefix + name + LOCKED state, kept inside canvas.
      */
     private fun drawChrome(canvas: Canvas, l: Layer) {
         val r = RectF(chromeRectOf(l))
@@ -297,13 +293,13 @@ class StageView @JvmOverloads constructor(
         canvas.save()
         canvas.rotate(l.rotDeg, r.centerX(), r.centerY())
 
-        // 1. contrast underlay so the frame reads on light backgrounds
+        // 1. contrast underlay
         chrome.style = Paint.Style.STROKE
         chrome.pathEffect = null
         chrome.color = Color.argb(150, 0, 0, 0)
         chrome.strokeWidth = UI.dpf(context, if (locked) 3f else 4.5f)
         canvas.drawRect(r, chrome)
-        // 2. the accent frame itself
+        // 2. accent frame
         chrome.color = accent
         chrome.strokeWidth = UI.dpf(context, if (locked) 1.5f else 2.5f)
         if (locked) chrome.pathEffect = android.graphics.DashPathEffect(
@@ -317,7 +313,6 @@ class StageView @JvmOverloads constructor(
         }
         val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(120, 0, 0, 0) }
         if (!locked) {
-            // 3. handles: corners are squares, edges are small pills
             chromeFill.color = accent
             val rr = UI.dpf(context, 1.5f)
             for (i in 0..2) {
@@ -338,7 +333,6 @@ class StageView @JvmOverloads constructor(
                     canvas.drawRoundRect(tmpRect, rr, rr, borderPaint)
                 }
             }
-            // 4. rotation handle above top-centre
             val topY = r.top - UI.dpf(context, 18f)
             val cx = r.centerX()
             chrome.strokeWidth = UI.dpf(context, 1.5f)
@@ -352,20 +346,17 @@ class StageView @JvmOverloads constructor(
             canvas.drawCircle(cx, topY, h * 0.55f, chromeFill)
         }
 
-        // 5. label pill (type + name + state) above the frame: selection is
-        //    identified by text as well, never by the colour alone
-        val state = when {
-            locked -> "  🔒 LOCKED"
-            else -> ""
-        }
+        // label pill — text + LIVE + LOCKED, never color-only
+        val state = if (locked) "  LOCKED" else ""
         val label = (if (l.isLive()) "LIVE  " else "") + l.name.ifBlank { l.type.label } + state
-        val padH = UI.dpf(context, 8f)
-        val padV = UI.dpf(context, 3f)
+        val padH = UI.dpf(context, 10f)
+        val padV = UI.dpf(context, 4f)
         val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE; textSize = UI.dpf(context, 10f)
+            color = Color.WHITE; textSize = UI.dpf(context, 10.5f)
             typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+            letterSpacing = 0.02f
         }
-        val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(215, 18, 20, 26) }
+        val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(220, 18, 20, 26) }
         val edgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = accent; style = Paint.Style.STROKE; strokeWidth = UI.dpf(context, 1f)
         }
@@ -376,13 +367,15 @@ class StageView @JvmOverloads constructor(
         val cx = r.centerX()
         val bx = cx - bw / 2
         val knobTop = if (locked) r.top - UI.dpf(context, 6f) else r.top - UI.dpf(context, 18f) - h * 1.8f
-        var by = knobTop - bh
-        // keep the pill inside the canvas when the layer touches the top edge
-        if (by < UI.dpf(context, 2f)) by = r.top + UI.dpf(context, 6f)
-        val rr2 = UI.dpf(context, 10f)
+        var by = knobTop - bh - UI.dpf(context, 4f)
+        if (by < UI.dpf(context, 4f)) by = r.top + UI.dpf(context, 8f)
+        val rr2 = UI.dpf(context, 12f)
+        // shadow under pill
+        val shadowPill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(80, 0, 0, 0) }
+        canvas.drawRoundRect(bx, by + UI.dpf(context, 1f), bx + bw, by + bh + UI.dpf(context, 1f), rr2, rr2, shadowPill)
         canvas.drawRoundRect(bx, by, bx + bw, by + bh, rr2, rr2, bgPaint)
         canvas.drawRoundRect(bx, by, bx + bw, by + bh, rr2, rr2, edgePaint)
-        canvas.drawText(label, bx + padH, by + bh - padV - UI.dpf(context, 1f), textPaint)
+        canvas.drawText(label, bx + padH, by + bh - padV - UI.dpf(context, 1.5f), textPaint)
         canvas.restore()
     }
 

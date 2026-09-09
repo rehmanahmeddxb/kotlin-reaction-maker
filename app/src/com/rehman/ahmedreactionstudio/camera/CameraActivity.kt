@@ -160,74 +160,125 @@ class CameraActivity : Activity() {
         root.addView(flashView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT))
 
-        // ---------- top bar ----------
+        // ---------- top bar — 48dp, translucent, rounded bottom ----------
         val top = LinearLayout(this)
         top.orientation = LinearLayout.HORIZONTAL
         top.gravity = Gravity.CENTER_VERTICAL
-        top.setPadding(UI.dp(this, 10), UI.dp(this, 12), UI.dp(this, 10), UI.dp(this, 8))
-        top.setBackgroundColor(Color.argb(90, 0, 0, 0))
+        top.setPadding(UI.dp(this, 12), UI.dp(this, 10), UI.dp(this, 12), UI.dp(this, 10))
+        top.background = UI.bg(this, Color.argb(160, 18, 20, 27), 0f, Color.argb(40, 255, 255, 255))
+        // bottom-only radius via extra wrapper? Keep rect for simplicity, elevation
+        top.elevation = UI.dpf(this, UI.ELEV_LOW)
         root.addView(top, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP))
+            UI.dp(this, 48), Gravity.TOP))
 
-        val back = UI.chip(this, "Close")
+        val back = TextView(this)
+        back.text = "Close"
+        back.gravity = Gravity.CENTER
+        back.setTextColor(UI.FG)
+        back.textSize = 12f
+        back.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        back.setPadding(UI.dp(this, 12), 0, UI.dp(this, 12), 0)
+        back.background = UI.bg(this, UI.BG3, 18f, Color.argb(70, 255, 255, 255))
+        back.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(this, 36))
+        back.minHeight = UI.dp(this, 36)
         back.setCompoundDrawablesRelativeWithIntrinsicBounds(
             com.rehman.ahmedreactionstudio.editor.Ic.get(
                 this, com.rehman.ahmedreactionstudio.R.drawable.ic_back, UI.FG), null, null, null)
-        back.compoundDrawablePadding = UI.dp(this, 4)
+        back.compoundDrawablePadding = UI.dp(this, 6)
+        back.contentDescription = "Close camera"
         back.setOnClickListener { finish() }
         top.addView(back)
 
         val title = TextView(this)
         title.text = if (role == "main") "Record main canvas" else "Record PiP reaction"
         title.setTextColor(Color.WHITE)
-        title.textSize = 13f
+        title.textSize = 13.5f
+        title.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
         title.gravity = Gravity.CENTER
+        title.maxLines = 1
+        title.ellipsize = android.text.TextUtils.TruncateAt.END
+        title.letterSpacing = 0.01f
         val tlp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         tlp.gravity = Gravity.CENTER_VERTICAL
+        tlp.marginStart = UI.dp(this, 12)
+        tlp.marginEnd = UI.dp(this, 12)
         title.layoutParams = tlp
         top.addView(title)
 
-        statusLabel = UI.label(this, "", dim = false, size = 12f)
+        statusLabel = TextView(this)
         statusLabel.setTextColor(Color.WHITE)
+        statusLabel.textSize = 11.5f
         statusLabel.gravity = Gravity.END
+        statusLabel.maxLines = 1
+        statusLabel.ellipsize = android.text.TextUtils.TruncateAt.END
         val slp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         slp.gravity = Gravity.CENTER_VERTICAL
         statusLabel.layoutParams = slp
         top.addView(statusLabel)
 
-        // ---------- bottom control dock ----------
+        // ---------- bottom dock — rounded top, translucent ----------
         val bottom = LinearLayout(this)
         bottom.orientation = LinearLayout.VERTICAL
         bottom.gravity = Gravity.CENTER_HORIZONTAL
-        bottom.setPadding(UI.dp(this, 12), UI.dp(this, 14), UI.dp(this, 12), UI.dp(this, 20))
-        bottom.setBackgroundColor(Color.argb(120, 0, 0, 0))
+        bottom.setPadding(UI.dp(this, 16), UI.dp(this, 16), UI.dp(this, 16), UI.dp(this, 22))
+        val bottomBg = android.graphics.drawable.GradientDrawable()
+        bottomBg.cornerRadii = floatArrayOf(
+            UI.dpf(this, 20f), UI.dpf(this, 20f),
+            UI.dpf(this, 20f), UI.dpf(this, 20f),
+            0f, 0f, 0f, 0f)
+        bottomBg.setColor(Color.argb(190, 18, 20, 27))
+        bottomBg.setStroke(UI.dp(this, 1), Color.argb(50, 255, 255, 255))
+        bottom.background = bottomBg
+        bottom.elevation = UI.dpf(this, UI.ELEV_MED)
         root.addView(bottom, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
 
         timerLabel = TextView(this)
         timerLabel.text = "00:00"
         timerLabel.setTextColor(Color.WHITE)
-        timerLabel.textSize = 20f
+        timerLabel.textSize = 22f
         timerLabel.typeface = Typeface.create("monospace", Typeface.BOLD)
+        timerLabel.gravity = Gravity.CENTER
+        timerLabel.letterSpacing = 0.04f
         bottom.addView(timerLabel)
 
-        // zoom row
+        // zoom row — icon + slider + value, no emoji
         val zoomRow = LinearLayout(this)
         zoomRow.orientation = LinearLayout.HORIZONTAL
         zoomRow.gravity = Gravity.CENTER_VERTICAL
+        val zlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT)
+        zlp.topMargin = UI.dp(this, 10)
+        zlp.bottomMargin = UI.dp(this, 10)
+        zoomRow.layoutParams = zlp
         bottom.addView(zoomRow)
-        val zl = UI.label(this, "1×", dim = false, size = 12f)
+
+        val zoomIcon = android.widget.ImageView(this)
+        zoomIcon.setImageDrawable(
+            com.rehman.ahmedreactionstudio.editor.Ic.get(this,
+                com.rehman.ahmedreactionstudio.R.drawable.ic_fullscreen, Color.argb(200, 255, 255, 255)))
+        zoomIcon.layoutParams = LinearLayout.LayoutParams(UI.dp(this, 18), UI.dp(this, 18))
+        zoomRow.addView(zoomIcon)
+
+        val zl = TextView(this)
+        zl.text = "1.0×"
         zl.setTextColor(Color.WHITE)
+        zl.textSize = 12f
+        zl.typeface = Typeface.create("monospace", Typeface.BOLD)
+        zl.gravity = Gravity.CENTER
+        zl.setPadding(UI.dp(this, 10), 0, UI.dp(this, 8), 0)
+        zl.minWidth = UI.dp(this, 48)
         zoomRow.addView(zl)
+
         zoomSlider = SeekBar(this)
         zoomSlider.max = 100
         zoomSlider.progress = 0
         zoomSlider.progressTintList = android.content.res.ColorStateList.valueOf(Color.WHITE)
-        zoomSlider.thumbTintList = android.content.res.ColorStateList.valueOf(Color.WHITE)
+        zoomSlider.thumbTintList = android.content.res.ColorStateList.valueOf(UI.ACCENT2)
         zoomSlider.layoutParams = LinearLayout.LayoutParams(UI.dp(this, 200), ViewGroup.LayoutParams.WRAP_CONTENT)
+        zoomSlider.contentDescription = "Zoom"
         zoomRow.addView(zoomSlider)
-        val zh = UI.label(this, "🔍", dim = false, size = 13f)
-        zoomRow.addView(zh)
+
         zoomSlider.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(s: SeekBar?, v: Int, u: Boolean) {
                 zl.text = String.format("%.1f×", 1f + v / 100f * (maxZoom - 1f).coerceAtLeast(0f))
@@ -237,29 +288,53 @@ class CameraActivity : Activity() {
             override fun onStopTrackingTouch(s: SeekBar?) { }
         })
 
-        // button row (added exactly once)
+        // button row — switch + flash + record (centered)
         val row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
-        row.gravity = Gravity.CENTER
+        row.gravity = Gravity.CENTER_VERTICAL
+        val rowLp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT)
+        rowLp.topMargin = UI.dp(this, 4)
+        row.layoutParams = rowLp
         bottom.addView(row)
 
-        switchBtn = UI.chip(this, "Camera")
+        switchBtn = TextView(this)
+        switchBtn.text = "Flip"
+        switchBtn.gravity = Gravity.CENTER
+        switchBtn.setTextColor(UI.FG)
+        switchBtn.textSize = 12f
+        switchBtn.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        switchBtn.setPadding(UI.dp(this, 14), 0, UI.dp(this, 14), 0)
+        switchBtn.background = UI.bg(this, UI.BG3, 18f, Color.argb(70, 255, 255, 255))
+        switchBtn.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(this, 40))
+        switchBtn.minHeight = UI.dp(this, 40)
         switchBtn.setCompoundDrawablesRelativeWithIntrinsicBounds(
             com.rehman.ahmedreactionstudio.editor.Ic.get(
                 this, com.rehman.ahmedreactionstudio.R.drawable.ic_switch, UI.FG), null, null, null)
-        switchBtn.compoundDrawablePadding = UI.dp(this, 4)
+        switchBtn.compoundDrawablePadding = UI.dp(this, 6)
+        switchBtn.contentDescription = "Switch camera"
         switchBtn.setOnClickListener { toggleCamera() }
         row.addView(switchBtn)
         UI.margin(switchBtn, 0, 0, 10, 0, this)
 
-        torchBtn = UI.chip(this, "Flash")
+        torchBtn = TextView(this)
+        torchBtn.text = "Flash"
+        torchBtn.gravity = Gravity.CENTER
+        torchBtn.setTextColor(UI.FG)
+        torchBtn.textSize = 12f
+        torchBtn.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        torchBtn.setPadding(UI.dp(this, 14), 0, UI.dp(this, 14), 0)
+        torchBtn.background = UI.bg(this, UI.BG3, 18f, Color.argb(70, 255, 255, 255))
+        torchBtn.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(this, 40))
+        torchBtn.minHeight = UI.dp(this, 40)
         torchBtn.setCompoundDrawablesRelativeWithIntrinsicBounds(
             com.rehman.ahmedreactionstudio.editor.Ic.get(
                 this, com.rehman.ahmedreactionstudio.R.drawable.ic_flash, UI.FG), null, null, null)
-        torchBtn.compoundDrawablePadding = UI.dp(this, 4)
+        torchBtn.compoundDrawablePadding = UI.dp(this, 6)
+        torchBtn.contentDescription = "Toggle flash"
         torchBtn.setOnClickListener { toggleTorch() }
         row.addView(torchBtn)
-        UI.margin(torchBtn, 0, 0, 10, 0, this)
+        UI.margin(torchBtn, 0, 0, 16, 0, this)
 
         recordBtn = TextView(this)
         recordBtn.text = "●"
@@ -268,18 +343,24 @@ class CameraActivity : Activity() {
         recordBtn.textSize = 26f
         recordBtn.contentDescription = "Start recording"
         val rg = android.graphics.drawable.GradientDrawable()
-        rg.cornerRadius = UI.dpf(this, 34f)
+        rg.shape = android.graphics.drawable.GradientDrawable.OVAL
         rg.setColor(0xFFE53935.toInt())
+        rg.setStroke(UI.dp(this, 2), Color.argb(90, 255, 255, 255))
         recordBtn.background = rg
+        recordBtn.elevation = UI.dpf(this, UI.ELEV_LOW)
         recordBtn.tag = rg
-        recordBtn.layoutParams = LinearLayout.LayoutParams(UI.dp(this, 68), UI.dp(this, 68))
+        recordBtn.layoutParams = LinearLayout.LayoutParams(UI.dp(this, 72), UI.dp(this, 72))
         recordBtn.setOnClickListener { toggleRecord() }
         row.addView(recordBtn)
 
-        val hint = UI.label(this, "Tap the red button to record this camera", dim = false, size = 11f)
-        hint.setTextColor(Color.argb(200, 255, 255, 255))
+        val hint = TextView(this)
+        hint.text = "Tap the red button to record — this take becomes a clip on your canvas"
+        hint.setTextColor(Color.argb(180, 255, 255, 255))
+        hint.textSize = 11f
+        hint.gravity = Gravity.CENTER
+        hint.maxLines = 2
         val hlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        hlp.topMargin = UI.dp(this, 6)
+        hlp.topMargin = UI.dp(this, 12)
         hint.layoutParams = hlp
         bottom.addView(hint)
 
