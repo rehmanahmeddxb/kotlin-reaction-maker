@@ -278,6 +278,16 @@ class Project(
  */
 object LayerFit {
 
+    // ---- Source-transform spec defaults (all normalized, resolution-free) ----
+    /** Default reaction PiP width: 45 % of the canvas WIDTH. */
+    const val PIP_WIDTH_N = 0.45f
+    /** Height cap (fraction of canvas HEIGHT) so a very tall source still fits. */
+    private const val PIP_HEIGHT_N = 0.45f
+    /** Default reaction PiP centre X: 52.5 % (lower-right of centre). */
+    const val PIP_CENTER_X_N = 0.525f
+    /** Default reaction PiP centre Y: 62.5 %. */
+    const val PIP_CENTER_Y_N = 0.625f
+
     /** Source pixels as a decoded frame looks: rotation metadata applied. */
     fun effective(srcW: Int, srcH: Int, rotation: Int): Pair<Int, Int> =
         if ((rotation == 90 || rotation == 270) && srcW > 0 && srcH > 0) Pair(srcH, srcW)
@@ -360,14 +370,40 @@ object LayerFit {
     }
 
     /**
+     * DEFAULT reaction PiP (source-transform spec): width = 45 % of the canvas
+     * width, height derived from the source aspect ratio (a 16:9 source on a
+     * 16:9 canvas → 45 % × 45 %, a clean 16:9 box), centred at (52.5 %, 62.5 %)
+     * — lower-right of centre. A portrait source is height-capped so it still
+     * fits fully inside the canvas, undistorted, on add. Every value is a
+     * normalized fraction, so the layout is identical at 720p/1080p/1440p/4K.
+     */
+    fun reactionPip(l: Layer, canvasW: Int, canvasH: Int) {
+        val (ew, eh) = effective(l.srcW, l.srcH, l.srcRotation)
+        val w = if (ew > 0 && eh > 0) ew.toFloat() else canvasW.toFloat()
+        val h = if (ew > 0 && eh > 0) eh.toFloat() else canvasH.toFloat()
+        val s = minOf(PIP_WIDTH_N * canvasW / w, PIP_HEIGHT_N * canvasH / h)
+        l.wN = (w * s) / canvasW
+        l.hN = (h * s) / canvasH
+        l.cx = PIP_CENTER_X_N
+        l.cy = PIP_CENTER_Y_N
+        l.rotDeg = 0f
+        clampInside(l)
+    }
+
+    /**
      * Placement for a NEW PiP that never lands exactly on top of an existing
      * one: bottom-right → bottom-left → top-right → top-left, first corner whose
      * box does not overlap another (non-background, visible) layer wins; when
      * all four are taken it cascades 6 % up-left from the most recent layer.
      * Deterministic — same layer list, same result.
+     *
+     * The FIRST PiP (no sibling to avoid) uses the spec's [reactionPip]
+     * default instead of a corner, so a reaction camera lands at 45 % width
+     * centred at (52.5 %, 62.5 %).
      */
     fun placeNewPip(l: Layer, existing: List<Layer>, canvasW: Int, canvasH: Int) {
         val others = existing.filter { it.id != l.id && it.visible && !isFullBleed(it) }
+        if (others.isEmpty()) { reactionPip(l, canvasW, canvasH); return }
         fun overlaps(a: Layer, b: Layer): Boolean =
             kotlin.math.abs(a.cx - b.cx) < (a.wN + b.wN) / 2f * 0.9f &&
             kotlin.math.abs(a.cy - b.cy) < (a.hN + b.hN) / 2f * 0.9f
@@ -438,22 +474,5 @@ object LayerFit {
         val lo = half - size * (1f - keep)
         val hi = 1f - half + size * (1f - keep)
         return if (lo >= hi) 0.5f else v.coerceIn(lo, hi)
-    }
-}
-
-/** Builds a new layer already placed by [LayerFit]. */
-object LayerPresets {
-    /** main-canvas candidate: full bleed */
-    fun fullscreen(type: LayerType, name: String, relPath: String?, durMs: Long, sw: Int, sh: Int, rot: Int): Layer {
-        val l = Layer(type = type, name = name, relPath = relPath, durMs = durMs, srcW = sw, srcH = sh, srcRotation = rot)
-        LayerFit.fill(l)
-        return l
-    }
-
-    /** overlay candidate: source aspect ratio, pinned to the reaction-cam corner */
-    fun pipDefault(type: LayerType, name: String, relPath: String?, durMs: Long, sw: Int, sh: Int, rot: Int, canvasW: Int, canvasH: Int): Layer {
-        val l = Layer(type = type, name = name, relPath = relPath, durMs = durMs, srcW = sw, srcH = sh, srcRotation = rot)
-        LayerFit.pip(l, canvasW, canvasH)
-        return l
     }
 }
