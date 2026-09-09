@@ -23,43 +23,33 @@ import android.widget.SeekBar
 import android.widget.TextView
 import com.rehman.ahmedreactionstudio.R
 import com.rehman.ahmedreactionstudio.core.Aspect
-import com.rehman.ahmedreactionstudio.core.Project
 import com.rehman.ahmedreactionstudio.util.UI
 
 /**
- * Full-bleed canvas studio (docs/SIDEBAR_STUDIO_PLAN.md).
+ * Polished full-bleed canvas studio — every control floats over the canvas.
  *
- * The canvas owns 100 % of the screen: [EditorActivity.stage] is MATCH_PARENT
- * and contain-fits the whole safe area (the stage gets NO chrome insets —
- * [EditorActivity.applyViewportInsets] passes only the system-bar insets).
- * Every control floats ON TOP of the canvas as translucent chrome, so the
- * full composition stays visible while recording:
- *
- *   root
- *   ├── stage               100 % canvas — never shrunk by chrome
- *   ├── emptyOverlay        centred card, only while there are no sources
- *   ├── topBar              floating 48dp strip: panel · project · aspect ·
- *   │                       undo/redo · Save · Export · Full canvas · more
- *   ├── sidebar             floating left panel — seven labelled sections
- *   │                       (Layers · Source · Audio · Record · Canvas ·
- *   │                       Export · Project)
- *   ├── hiddenPill / recChip / statsHud   chip row under the strip
- *   ├── quickWrap → quickBar             floating selection controls
- *   ├── timelinePill        floating transport + RECORD:
- *   │                       play · time · seek · stop · record
- *   ├── fullExitBtn / snackBar / progOverlay
- *
- * Fit rules (plan §fit-ladder, no crops / no overlaps):
- *  - the top strip degrades in tiers as width shrinks (labelled → icon-only
- *    Save/Export → no aspect chip); the title box is the only flex element
- *    and ellipsises instead of clipping neighbours.
- *  - the timeline pill is a SINGLE row (transport and record together), so
- *    nothing can ever collide with it; the seek bar is its flex element.
- *  - the quick bar lives in a horizontal scroll view, so it never overflows.
+ * Design system alignment:
+ * - Top strip: 48dp, radius 16dp, BG2@94% + white 12% stroke, elevation 8dp.
+ *   Title is the ONLY flex element, ellipsises. Fit ladder: labelled → icon-only
+ *   Save/Export → no aspect chip (overflow).
+ * - Sidebar: 244dp L / 256dp P, BG + right radius 16dp, elevation 12dp, stroke 22% white.
+ *   Sections: header 44dp, radius 10dp, icon 18dp ACCENT2, title 11.5sp Bold caps 0.08 spacing,
+ *   badge 10.5sp FG2, chevron 12sp. Body padding 2/6/2/10.
+ *   Rows: 44dp (52dp with sub), radius 10dp, active = orange wash 70 + stroke 120 orange,
+ *   icon 18dp, label 13sp, sub 10.5sp 160 alpha, badge pill radius 8dp.
+ * - Timeline: single pill 56dp, radius 27dp, 242,27,30,38 + 60 white stroke, elevation 8dp.
+ *   Play 44dp white, time mono 12sp FG, seek flex 36dp floor, divider 1dp 70 white,
+ *   stop 40dp FG2, record pill ACCENT radius 20dp min 104dp height 40dp.
+ * - Quick bar: scrollable, background 235,27,30,38 radius 22dp stroke 60 white elevation 8dp.
+ * - Chip row: hidden pill BG2 radius 14dp 11sp Bold FG2 32dp, recChip 235,52,22,18 radius 14dp,
+ *   stats HUD mono 10.5sp OK on 190,12,14,18 radius 8dp.
+ * - Empty overlay: 320dp, 235,18,20,27 radius 20dp stroke 90 white elevation 10dp,
+ *   icon tile 72dp BG3 radius 24dp, title 16sp Bold, sub 12.5sp FG2, CTA accent pill 42dp.
+ * - Snack: 242,18,20,27 radius 14dp stroke 110 white elevation 8dp, margin bottom 80dp to avoid timeline.
+ * - Progress: dim 160 black, card 250,20,23,31 radius 16dp stroke 100 white elevation 12dp.
  */
 object StudioLayoutInjector {
 
-    /** One sidebar section: a header row that toggles a body. */
     class StudioSection(
         val id: String,
         val icon: ImageView,
@@ -69,8 +59,6 @@ object StudioLayoutInjector {
     ) {
         var open: Boolean = true
     }
-
-    // ================= snack bar / progress (kept here: chrome) =================
 
     private var snackBar: LinearLayout? = null
     private var snackMsg: TextView? = null
@@ -100,10 +88,10 @@ object StudioLayoutInjector {
         }
         bar.visibility = View.VISIBLE
         bar.alpha = 0f
-        bar.translationY = UI.dpf(a, 12f)
-        bar.animate().alpha(1f).translationY(0f).setDuration(200).start()
+        bar.translationY = UI.dpf(a, 14f)
+        bar.animate().alpha(1f).translationY(0f).setDuration(220).start()
         bar.contentDescription = msg
-        snackHandler.postDelayed(snackHide, 3500L)
+        snackHandler.postDelayed(snackHide, 3800L)
     }
 
     fun showProgress(a: EditorActivity, title: String, msg: String, determinate: Boolean,
@@ -116,6 +104,8 @@ object StudioLayoutInjector {
         progOnCancel = onCancel
         progCancel?.visibility = if (onCancel != null) View.VISIBLE else View.GONE
         progOverlay?.visibility = View.VISIBLE
+        progOverlay?.alpha = 0f
+        progOverlay?.animate()?.alpha(1f)?.setDuration(180)?.start()
     }
 
     fun updateProgress(a: EditorActivity, pct: Int, msg: String) {
@@ -124,18 +114,16 @@ object StudioLayoutInjector {
     }
 
     fun dismissProgress(a: EditorActivity) {
-        progOverlay?.visibility = View.GONE
+        progOverlay?.animate()?.alpha(0f)?.setDuration(150)?.withEndAction {
+            progOverlay?.visibility = View.GONE
+        }?.start()
         progOnCancel = null
     }
 
-    // ================= inject =================
-
     fun inject(activity: EditorActivity, root: FrameLayout) {
         root.removeAllViews()
-        val landscape = activity.resources.configuration.orientation ==
-            Configuration.ORIENTATION_LANDSCAPE
+        val landscape = activity.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
-        // ---- 1) the canvas: 100% of the screen, adaptive, behind everything ----
         val stage = StageView(activity)
         stage.host = activity
         activity.stage = stage
@@ -143,32 +131,28 @@ object StudioLayoutInjector {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         activity.applyViewportInsets()
 
-        // ---- 2) empty state (only while there are no sources) ----
         activity.emptyOverlay = buildEmptyOverlay(activity)
         root.addView(activity.emptyOverlay, FrameLayout.LayoutParams(
-            UI.dp(activity, 300), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
+            UI.dp(activity, 320), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
 
-        // ---- 3) floating top strip ----
         activity.topBar = buildTopStrip(activity)
         val stripLp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             UI.dp(activity, 48), Gravity.TOP or Gravity.START)
         stripLp.setMargins(UI.dp(activity, 10), UI.dp(activity, 8), UI.dp(activity, 10), 0)
         root.addView(activity.topBar, stripLp)
 
-        // ---- 4) floating sidebar (seven labelled sections) ----
         activity.sidebar = buildSidebar(activity)
         val sideLp = FrameLayout.LayoutParams(UI.dp(activity, if (landscape) 244 else 256),
             ViewGroup.LayoutParams.MATCH_PARENT, Gravity.TOP or Gravity.START)
         sideLp.topMargin = UI.dp(activity, 56)
         root.addView(activity.sidebar, sideLp)
 
-        // ---- 5) chip row under the strip: hidden (L) · recChip (C) · HUD (R) ----
         activity.hiddenPill = chip(activity, UI.BG2)
         activity.hiddenPill.text = "1 hidden"
         activity.hiddenPill.setOnClickListener { activity.showAllHidden() }
         val hpLp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START)
-        hpLp.setMargins(UI.dp(activity, 10), UI.dp(activity, 58), 0, 0)
+        hpLp.setMargins(UI.dp(activity, 12), UI.dp(activity, 60), 0, 0)
         root.addView(activity.hiddenPill, hpLp)
         activity.hiddenPill.visibility = View.GONE
 
@@ -178,7 +162,7 @@ object StudioLayoutInjector {
         activity.recChip.setOnClickListener { activity.recChipTap() }
         val rcLp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
-        rcLp.topMargin = UI.dp(activity, 58)
+        rcLp.topMargin = UI.dp(activity, 60)
         root.addView(activity.recChip, rcLp)
         activity.recChip.visibility = View.GONE
 
@@ -187,24 +171,26 @@ object StudioLayoutInjector {
         activity.statsHud.textSize = 10.5f
         activity.statsHud.typeface = Typeface.create("monospace", Typeface.NORMAL)
         activity.statsHud.gravity = Gravity.END
-        activity.statsHud.background = box(activity, Color.argb(190, 12, 14, 18), 8f,
+        activity.statsHud.background = box(activity, Color.argb(190, 12, 14, 18), 10f,
             Color.argb(70, 255, 255, 255))
-        activity.statsHud.setPadding(UI.dp(activity, 10), UI.dp(activity, 6),
-            UI.dp(activity, 10), UI.dp(activity, 6))
+        activity.statsHud.setPadding(UI.dp(activity, 12), UI.dp(activity, 7),
+            UI.dp(activity, 12), UI.dp(activity, 7))
+        activity.statsHud.elevation = UI.dpf(activity, 2f)
         val hudLp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END)
-        hudLp.setMargins(0, UI.dp(activity, 58), UI.dp(activity, 10), 0)
+        hudLp.setMargins(0, UI.dp(activity, 60), UI.dp(activity, 12), 0)
         root.addView(activity.statsHud, hudLp)
         activity.statsHud.visibility = View.GONE
 
-        // ---- 6) quick bar (floating, centred; scrollable so it never crops) ----
         val quickWrap = HorizontalScrollView(activity)
         quickWrap.isHorizontalScrollBarEnabled = false
+        quickWrap.overScrollMode = View.OVER_SCROLL_NEVER
         val quickBar = LinearLayout(activity)
         quickBar.orientation = LinearLayout.HORIZONTAL
         quickBar.gravity = Gravity.CENTER_VERTICAL
         quickBar.background = box(activity, Color.argb(235, 27, 30, 38), 22f,
             Color.argb(60, 255, 255, 255))
+        quickBar.elevation = UI.dpf(activity, UI.ELEV_MED)
         quickBar.setPadding(UI.dp(activity, 6), UI.dp(activity, 4), UI.dp(activity, 6), UI.dp(activity, 4))
         activity.quickWrap = quickWrap
         activity.quickBar = quickBar
@@ -212,40 +198,37 @@ object StudioLayoutInjector {
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         val qwLp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
-        qwLp.setMargins(UI.dp(activity, 6), UI.dp(activity, 94), UI.dp(activity, 6), 0)
+        qwLp.setMargins(UI.dp(activity, 8), UI.dp(activity, 96), UI.dp(activity, 8), 0)
         root.addView(quickWrap, qwLp)
         quickWrap.visibility = View.GONE
 
-        // ---- 7) timeline pill: play · time · seek · /dur · stop · RECORD ----
         activity.timelinePill = buildTimeline(activity)
         val tlLp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-            UI.dp(activity, 54), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
-        tlLp.setMargins(UI.dp(activity, 10), 0, UI.dp(activity, 10), UI.dp(activity, 12))
+            UI.dp(activity, 56), Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
+        tlLp.setMargins(UI.dp(activity, 12), 0, UI.dp(activity, 12), UI.dp(activity, 14))
         root.addView(activity.timelinePill, tlLp)
 
-        // ---- 8) full-canvas exit (hidden unless in Full Canvas mode) ----
         activity.fullExitBtn = TextView(activity)
         activity.fullExitBtn.text = "✕  Exit full canvas"
         activity.fullExitBtn.setTextColor(UI.FG)
-        activity.fullExitBtn.textSize = 12f
+        activity.fullExitBtn.textSize = 12.5f
         activity.fullExitBtn.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
         activity.fullExitBtn.gravity = Gravity.CENTER
         activity.fullExitBtn.includeFontPadding = false
-        activity.fullExitBtn.setPadding(UI.dp(activity, 14), 0, UI.dp(activity, 14), 0)
-        activity.fullExitBtn.background = box(activity, Color.argb(240, 38, 42, 52), 18f,
+        activity.fullExitBtn.setPadding(UI.dp(activity, 16), 0, UI.dp(activity, 16), 0)
+        activity.fullExitBtn.background = box(activity, Color.argb(240, 38, 42, 52), 20f,
             Color.argb(110, 255, 255, 255))
+        activity.fullExitBtn.elevation = UI.dpf(activity, UI.ELEV_MED)
         activity.fullExitBtn.setOnClickListener { activity.setFullCanvas(false) }
         val feLp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
-            UI.dp(activity, 36), Gravity.TOP or Gravity.END)
-        feLp.setMargins(0, UI.dp(activity, 10), UI.dp(activity, 10), 0)
+            UI.dp(activity, 38), Gravity.TOP or Gravity.END)
+        feLp.setMargins(0, UI.dp(activity, 12), UI.dp(activity, 12), 0)
         root.addView(activity.fullExitBtn, feLp)
         activity.fullExitBtn.visibility = View.GONE
 
-        // ---- 9) snack bar + progress overlay ----
         buildSnackBar(activity, root)
         buildProgOverlay(activity, root)
 
-        // ---- 10) window insets + chrome fit on every layout pass ----
         root.setOnApplyWindowInsetsListener { _, insets ->
             activity.applyWindowInsets(insets)
             insets
@@ -258,14 +241,11 @@ object StudioLayoutInjector {
         activity.chromeLayoutListener = listener
         root.viewTreeObserver.addOnGlobalLayoutListener(listener)
 
-        // ---- 11) sidebar default: open in landscape, closed in portrait ----
         val firstLayout = !activity.chromeLaidOut
         activity.chromeLaidOut = true
         setSidebarOpen(activity, activity.sidebarOpen || (firstLayout && landscape),
             animate = false)
     }
-
-    // ================= top strip =================
 
     private fun buildTopStrip(a: EditorActivity): LinearLayout {
         val strip = LinearLayout(a)
@@ -273,16 +253,15 @@ object StudioLayoutInjector {
         strip.gravity = Gravity.CENTER_VERTICAL
         strip.background = box(a, Color.argb(240, 27, 30, 38), 16f,
             Color.argb(60, 255, 255, 255))
+        strip.elevation = UI.dpf(a, UI.ELEV_MED)
         strip.setPadding(UI.dp(a, 10), 0, UI.dp(a, 10), 0)
 
-        // panel toggle (hamburger)
         val sidebarBtn = IconBtn(a)
         sidebarBtn.setIcon(R.drawable.ic_menu, UI.FG, "Toggle controls panel")
         sidebarBtn.setOnClickListener { a.toggleSidebar() }
         a.sidebarBtn = sidebarBtn
         strip.addView(sidebarBtn, LinearLayout.LayoutParams(UI.dp(a, 40), UI.dp(a, 40)))
 
-        // project title + meta (the ONLY flex element of the row)
         val titleBox = LinearLayout(a)
         titleBox.orientation = LinearLayout.VERTICAL
         titleBox.gravity = Gravity.CENTER_VERTICAL
@@ -294,8 +273,9 @@ object StudioLayoutInjector {
         title.tag = "name"
         title.text = a.proj?.name ?: ""
         title.setTextColor(UI.FG)
-        title.textSize = 12.5f
+        title.textSize = 13f
         title.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        title.letterSpacing = -0.01f
         title.maxLines = 1
         title.ellipsize = TextUtils.TruncateAt.END
         a.titleView = title
@@ -303,16 +283,16 @@ object StudioLayoutInjector {
         val meta = TextView(a)
         meta.tag = "meta"
         meta.setTextColor(UI.FG2)
-        meta.textSize = 9.5f
+        meta.textSize = 10f
+        meta.letterSpacing = 0.02f
         meta.maxLines = 1
         meta.ellipsize = TextUtils.TruncateAt.END
         a.metaView = meta
         titleBox.addView(meta)
         val tlp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        tlp.marginStart = UI.dp(a, 8)
+        tlp.marginStart = UI.dp(a, 10)
         strip.addView(titleBox, tlp)
 
-        // aspect chip
         val chip = TextView(a)
         chip.text = (a.proj?.aspect ?: Aspect.R169).code
         chip.setTextColor(UI.FG2)
@@ -320,16 +300,16 @@ object StudioLayoutInjector {
         chip.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
         chip.gravity = Gravity.CENTER
         chip.includeFontPadding = false
-        chip.setPadding(UI.dp(a, 10), 0, UI.dp(a, 10), 0)
+        chip.setPadding(UI.dp(a, 12), 0, UI.dp(a, 12), 0)
         chip.background = box(a, UI.BG3, 15f, Color.argb(50, 255, 255, 255))
         chip.contentDescription = "Canvas aspect ratio"
+        chip.minHeight = UI.dp(a, 30)
         chip.setOnClickListener { a.showAspectPicker() }
         a.aspectChip = chip
         val clp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(a, 30))
-        clp.setMargins(UI.dp(a, 4), 0, UI.dp(a, 2), 0)
+        clp.setMargins(UI.dp(a, 6), 0, UI.dp(a, 2), 0)
         strip.addView(chip, clp)
 
-        // undo / redo
         val undo = IconBtn(a)
         undo.setIcon(R.drawable.ic_undo, UI.FG2, "Undo")
         undo.setOnClickListener { a.doUndo() }
@@ -343,50 +323,52 @@ object StudioLayoutInjector {
         rlp.marginStart = UI.dp(a, 2)
         strip.addView(redo, rlp)
 
-        // save (state pill)
         val save = TextView(a)
         save.text = "Saved"
         save.setTextColor(UI.OK)
         save.textSize = 11.5f
         save.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        save.letterSpacing = 0.02f
         save.gravity = Gravity.CENTER
         save.includeFontPadding = false
-        save.setPadding(UI.dp(a, 10), 0, UI.dp(a, 10), 0)
+        save.setPadding(UI.dp(a, 12), 0, UI.dp(a, 12), 0)
         save.background = box(a, UI.BG3, 15f, Color.argb(50, 255, 255, 255))
         save.contentDescription = "Save project"
+        save.minHeight = UI.dp(a, 30)
         save.setOnClickListener { a.saveNow() }
         a.savePill = save
         val slp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(a, 30))
-        slp.setMargins(UI.dp(a, 6), 0, 0, 0)
+        slp.setMargins(UI.dp(a, 8), 0, 0, 0)
         strip.addView(save, slp)
 
-        // export (accent pill)
         val export = TextView(a)
         export.text = "Export"
-        export.setTextColor(Color.rgb(14, 14, 16))
+        export.setTextColor(UI.ACCENT_FG)
         export.textSize = 11.5f
         export.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        export.letterSpacing = 0.02f
         export.gravity = Gravity.CENTER
         export.includeFontPadding = false
-        export.setPadding(UI.dp(a, 12), 0, UI.dp(a, 12), 0)
+        export.setPadding(UI.dp(a, 14), 0, UI.dp(a, 14), 0)
         export.background = box(a, UI.ACCENT, 15f, Color.argb(120, 255, 200, 160))
+        export.elevation = UI.dpf(a, 2f)
         export.contentDescription = "Quick export with saved settings"
+        export.minHeight = UI.dp(a, 30)
         export.setOnClickListener { a.quickExport() }
         a.exportPill = export
         val elp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(a, 30))
-        elp.setMargins(UI.dp(a, 6), 0, 0, 0)
+        elp.setMargins(UI.dp(a, 8), 0, 0, 0)
         strip.addView(export, elp)
 
-        // full canvas + overflow
         val fc = IconBtn(a)
         fc.setIcon(R.drawable.ic_fullscreen, UI.FG, "Full screen canvas")
         fc.setOnClickListener { a.enterFullCanvas() }
         a.fullCanvasBtn = fc
         val fclp = LinearLayout.LayoutParams(UI.dp(a, 36), UI.dp(a, 36))
-        fclp.marginStart = UI.dp(a, 4)
+        fclp.marginStart = UI.dp(a, 6)
         strip.addView(fc, fclp)
         val more = IconBtn(a)
-        more.setIcon(R.drawable.ic_more, UI.FG2, "More")
+        more.setIcon(R.drawable.ic_more, UI.FG2, "More options")
         more.setOnClickListener { showOverflowMenu(a) }
         a.overflowBtn = more
         val mlp = LinearLayout.LayoutParams(UI.dp(a, 36), UI.dp(a, 36))
@@ -398,12 +380,12 @@ object StudioLayoutInjector {
     private fun showOverflowMenu(a: EditorActivity) {
         val hud = a.isStatsHudOn()
         AlertDialog.Builder(a)
-            .setTitle("More")
+            .setTitle("Studio")
             .setItems(arrayOf(
                 "Canvas aspect…",
                 if (hud) "Hide stats overlay" else "Show stats overlay",
                 "Full screen canvas",
-                "Studio diagnostics"
+                "Diagnostics"
             )) { _, w ->
                 when (w) {
                     0 -> a.showAspectPicker()
@@ -415,12 +397,6 @@ object StudioLayoutInjector {
             .show()
     }
 
-    /**
-     * Top-strip fit ladder (no crops): tier 0 = labelled Save/Export + aspect
-     * chip; tier 1 = icon-only Save/Export; tier 2 = no aspect chip (it stays
-     * one tap away in the overflow menu). The title box absorbs the rest and
-     * ellipsises.
-     */
     fun fitTopStrip(a: EditorActivity) {
         if (!a.chromeInitialized()) return
         val strip = a.topBar
@@ -437,26 +413,31 @@ object StudioLayoutInjector {
         if (tier == 0) {
             a.exportPill.text = "Export"
             a.exportPill.setCompoundDrawablesRelative(null, null, null, null)
+            a.savePill.text = if (a.savePill.text.toString() == "●" || a.savePill.text.toString() == "✓") "Saved" else a.savePill.text
         } else {
             a.exportPill.text = " "
             a.exportPill.setCompoundDrawablesRelativeWithIntrinsicBounds(
                 Ic.get(a, R.drawable.ic_export, Color.rgb(14, 14, 16)), null, null, null)
+            // save pill icon-only when tier 1
+            if (tier == 1) {
+                val isDirty = a.savePill.text.toString().contains("Save") || a.savePill.text.toString() == "●"
+                a.savePill.text = if (isDirty) "●" else "✓"
+            }
         }
         a.aspectChip.visibility = if (tier == 2) View.GONE else View.VISIBLE
     }
-
-    // ================= timeline pill =================
 
     private fun buildTimeline(a: EditorActivity): LinearLayout {
         val tl = LinearLayout(a)
         tl.orientation = LinearLayout.HORIZONTAL
         tl.gravity = Gravity.CENTER_VERTICAL
-        tl.background = box(a, Color.argb(242, 27, 30, 38), 27f,
+        tl.background = box(a, Color.argb(242, 27, 30, 38), 28f,
             Color.argb(60, 255, 255, 255))
-        tl.setPadding(UI.dp(a, 10), 0, UI.dp(a, 10), 0)
+        tl.elevation = UI.dpf(a, UI.ELEV_MED)
+        tl.setPadding(UI.dp(a, 12), 0, UI.dp(a, 12), 0)
 
         val play = IconBtn(a)
-        play.setIcon(R.drawable.ic_play, Color.WHITE, "Play")
+        play.setIcon(R.drawable.ic_play, Color.WHITE, "Play timeline")
         play.setOnClickListener { a.togglePlay() }
         a.playBtn = play
         tl.addView(play, LinearLayout.LayoutParams(UI.dp(a, 44), UI.dp(a, 44)))
@@ -464,10 +445,12 @@ object StudioLayoutInjector {
         val time = TextView(a)
         time.text = "0:00"
         time.setTextColor(UI.FG)
-        time.textSize = 12f
-        time.typeface = Typeface.create("monospace", Typeface.NORMAL)
+        time.textSize = 12.5f
+        time.typeface = Typeface.create("monospace", Typeface.BOLD)
+        time.letterSpacing = 0.02f
         time.gravity = Gravity.CENTER_VERTICAL
         time.setPadding(UI.dp(a, 8), 0, 0, 0)
+        time.minWidth = UI.dp(a, 48)
         a.timeLabel = time
         tl.addView(time, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -490,9 +473,9 @@ object StudioLayoutInjector {
             }
         })
         a.seek = seek
-        seek.minimumWidth = UI.dp(a, 36)
+        seek.minimumWidth = UI.dp(a, 40)
         val sep = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        sep.setMargins(UI.dp(a, 2), 0, UI.dp(a, 6), 0)
+        sep.setMargins(UI.dp(a, 4), 0, UI.dp(a, 8), 0)
         tl.addView(seek, sep)
 
         val dur = TextView(a)
@@ -500,14 +483,15 @@ object StudioLayoutInjector {
         dur.setTextColor(UI.FG2)
         dur.textSize = 12f
         dur.typeface = Typeface.create("monospace", Typeface.NORMAL)
+        dur.letterSpacing = 0.02f
         a.durationLabel = dur
         tl.addView(dur, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT))
 
         val vdiv = View(a)
         vdiv.setBackgroundColor(Color.argb(70, 255, 255, 255))
-        tl.addView(vdiv, LinearLayout.LayoutParams(UI.dp(a, 1), UI.dp(a, 26)).apply {
-            setMargins(UI.dp(a, 8), 0, UI.dp(a, 8), 0)
+        tl.addView(vdiv, LinearLayout.LayoutParams(UI.dp(a, 1), UI.dp(a, 28)).apply {
+            setMargins(UI.dp(a, 10), 0, UI.dp(a, 10), 0)
         })
 
         val stop = IconBtn(a)
@@ -518,35 +502,31 @@ object StudioLayoutInjector {
 
         val rec = TextView(a)
         rec.text = "●  RECORD"
-        rec.setTextColor(Color.rgb(14, 14, 16))
+        rec.setTextColor(UI.ACCENT_FG)
         rec.textSize = 11.5f
         rec.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
         rec.letterSpacing = 0.04f
         rec.gravity = Gravity.CENTER
         rec.includeFontPadding = false
-        rec.setPadding(UI.dp(a, 14), 0, UI.dp(a, 14), 0)
+        rec.setPadding(UI.dp(a, 16), 0, UI.dp(a, 16), 0)
         rec.background = box(a, UI.ACCENT, 20f, Color.argb(140, 255, 200, 160))
-        rec.contentDescription = "Record"
+        rec.elevation = UI.dpf(a, 2f)
+        rec.contentDescription = "Record reaction"
+        rec.minHeight = UI.dp(a, 40)
         rec.setOnClickListener { a.recordButtonTap() }
         a.recordBtn = rec
         val rlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(a, 40))
-        rlp.marginStart = UI.dp(a, 8)
-        rec.minimumWidth = UI.dp(a, 104)
+        rlp.marginStart = UI.dp(a, 10)
+        rec.minimumWidth = UI.dp(a, 108)
         tl.addView(rec, rlp)
         return tl
     }
 
-    /**
-     * The timeline is one row — transport AND record — so it can never collide
-     * with anything. Width: 86 % (max 760dp) in landscape, 94 % in portrait;
-     * the seek bar is its only flex element and shrinks first.
-     */
     fun layoutTimeline(a: EditorActivity) {
         if (!a.chromeInitialized()) return
         val rootW = a.rootFrame.width
         if (rootW <= 0) return
-        val landscape = a.resources.configuration.orientation ==
-            Configuration.ORIENTATION_LANDSCAPE
+        val landscape = a.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         val w = if (landscape) minOf((rootW * 0.86f).toInt(), UI.dp(a, 760))
         else (rootW * 0.94f).toInt()
         val lp = a.timelinePill.layoutParams as? FrameLayout.LayoutParams ?: return
@@ -556,30 +536,30 @@ object StudioLayoutInjector {
         }
     }
 
-    // ================= sidebar =================
-
     private fun buildSidebar(a: EditorActivity): LinearLayout {
         val bar = LinearLayout(a)
         bar.orientation = LinearLayout.VERTICAL
-        bar.background = roundedRight(a, UI.BG, 14f)
-        bar.elevation = UI.dpf(a, 12f)
+        bar.background = roundedRight(a, UI.BG, 16f)
+        bar.elevation = UI.dpf(a, UI.ELEV_HIGH)
 
         val scroll = ScrollView(a)
-        scroll.isVerticalScrollBarEnabled = true
+        scroll.isVerticalScrollBarEnabled = false
         scroll.setOverScrollMode(View.OVER_SCROLL_NEVER)
+        scroll.clipToPadding = false
+        scroll.setPadding(0, 0, 0, UI.dp(a, 12))
         a.panelScroll = scroll
         bar.addView(scroll, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         val content = LinearLayout(a)
         content.orientation = LinearLayout.VERTICAL
-        content.setPadding(UI.dp(a, 8), UI.dp(a, 6), UI.dp(a, 8), UI.dp(a, 14))
+        content.setBackgroundColor(Color.TRANSPARENT)
+        content.setPadding(UI.dp(a, 8), UI.dp(a, 8), UI.dp(a, 8), UI.dp(a, 16))
         a.panelContent = content
         scroll.addView(content, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
         fun openOf(id: String, def: Boolean) = a.sectionOpen.getOrDefault(id, def)
 
-        // ---- Layers ----
         val layers = section(a, content, "layers", R.drawable.ic_layers, "Layers",
             openOf("layers", true))
         a.layersHost = LinearLayout(a)
@@ -607,57 +587,44 @@ object StudioLayoutInjector {
         a.layersActionsHost.orientation = LinearLayout.VERTICAL
         layers.body.addView(a.layersActionsHost)
 
-        // ---- Source (selection) ----
         val source = section(a, content, "source", R.drawable.ic_layers, "Source",
             openOf("source", false))
         a.sourceSectionBody = LinearLayout(a)
         a.sourceSectionBody.orientation = LinearLayout.VERTICAL
         source.body.addView(a.sourceSectionBody)
 
-        // ---- Audio ----
         val audio = section(a, content, "audio", R.drawable.ic_volume, "Audio",
             openOf("audio", true))
         a.audioHost = LinearLayout(a)
         a.audioHost.orientation = LinearLayout.VERTICAL
         audio.body.addView(a.audioHost)
 
-        // ---- Record ----
         val record = section(a, content, "record", R.drawable.ic_video, "Record",
             openOf("record", true))
         a.recordSectionBody = LinearLayout(a)
         a.recordSectionBody.orientation = LinearLayout.VERTICAL
         record.body.addView(a.recordSectionBody)
 
-        // ---- Canvas ----
         val canvas = section(a, content, "canvas", R.drawable.ic_aspect, "Canvas",
             openOf("canvas", true))
         a.canvasHost = LinearLayout(a)
         a.canvasHost.orientation = LinearLayout.VERTICAL
         canvas.body.addView(a.canvasHost)
 
-        // ---- Export ----
         val export = section(a, content, "export", R.drawable.ic_export, "Export",
             openOf("export", true))
         a.exportHost = LinearLayout(a)
         a.exportHost.orientation = LinearLayout.VERTICAL
         export.body.addView(a.exportHost)
 
-        // ---- Project ----
         val project = section(a, content, "project", R.drawable.ic_settings, "Project",
             openOf("project", true))
         a.projectHost = LinearLayout(a)
         a.projectHost.orientation = LinearLayout.VERTICAL
-        actRow(a, a.projectHost, R.drawable.ic_edit, "Rename project") {
-            a.renameProject()
-        }
-        actRow(a, a.projectHost, R.drawable.ic_check, "Save now") {
-            a.saveNow()
-        }
-        actRow(a, a.projectHost, R.drawable.ic_info, "Studio diagnostics") {
-            a.openDiagnostics()
-        }
-        actRow(a, a.projectHost, R.drawable.ic_back, "Close project",
-            danger = true) { a.closeProject() }
+        actRow(a, a.projectHost, R.drawable.ic_edit, "Rename project") { a.renameProject() }
+        actRow(a, a.projectHost, R.drawable.ic_check, "Save now") { a.saveNow() }
+        actRow(a, a.projectHost, R.drawable.ic_info, "Diagnostics") { a.openDiagnostics() }
+        actRow(a, a.projectHost, R.drawable.ic_back, "Close project", danger = true) { a.closeProject() }
         project.body.addView(a.projectHost)
 
         a.sec.clear()
@@ -669,16 +636,15 @@ object StudioLayoutInjector {
         return bar
     }
 
-    /** Section header (icon · TITLE · badge · chevron) + collapsible body. */
     private fun section(a: EditorActivity, parent: LinearLayout, id: String, iconRes: Int,
                         title: String, open: Boolean): StudioSection {
         val header = LinearLayout(a)
         header.orientation = LinearLayout.HORIZONTAL
         header.gravity = Gravity.CENTER_VERTICAL
-        header.setPadding(UI.dp(a, 10), UI.dp(a, 8), UI.dp(a, 8), UI.dp(a, 8))
+        header.setPadding(UI.dp(a, 12), UI.dp(a, 10), UI.dp(a, 10), UI.dp(a, 10))
         header.isClickable = true
         header.isFocusable = true
-        header.background = box(a, Color.argb(45, 255, 255, 255), 10f, Color.TRANSPARENT)
+        header.background = box(a, Color.argb(45, 255, 255, 255), 12f, Color.TRANSPARENT)
         val icon = ImageView(a)
         icon.setImageDrawable(Ic.get(a, iconRes, UI.ACCENT2))
         header.addView(icon, LinearLayout.LayoutParams(UI.dp(a, 18), UI.dp(a, 18)))
@@ -690,7 +656,7 @@ object StudioLayoutInjector {
         t.letterSpacing = 0.08f
         val tlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT)
-        tlp.marginStart = UI.dp(a, 8)
+        tlp.marginStart = UI.dp(a, 10)
         header.addView(t, tlp)
         val badge = TextView(a)
         badge.setTextColor(UI.FG2)
@@ -698,18 +664,22 @@ object StudioLayoutInjector {
         badge.maxLines = 1
         badge.ellipsize = TextUtils.TruncateAt.END
         badge.gravity = Gravity.CENTER_VERTICAL
+        badge.letterSpacing = 0.02f
         val blp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        blp.marginStart = UI.dp(a, 8)
+        blp.marginStart = UI.dp(a, 10)
         header.addView(badge, blp)
         val chev = TextView(a)
         chev.text = if (open) "▾" else "▸"
         chev.setTextColor(UI.FG2)
-        chev.textSize = 12f
-        header.addView(chev)
+        chev.textSize = 13f
+        chev.gravity = Gravity.CENTER
+        chev.setPadding(UI.dp(a, 6), 0, 0, 0)
+        header.addView(chev, LinearLayout.LayoutParams(UI.dp(a, 24), UI.dp(a, 24)))
 
         val body = LinearLayout(a)
         body.orientation = LinearLayout.VERTICAL
-        body.setPadding(UI.dp(a, 2), UI.dp(a, 6), UI.dp(a, 2), UI.dp(a, 10))
+        body.setBackgroundColor(Color.TRANSPARENT)
+        body.setPadding(UI.dp(a, 2), UI.dp(a, 8), UI.dp(a, 2), UI.dp(a, 12))
         body.visibility = if (open) View.VISIBLE else View.GONE
 
         val sec = StudioSection(id, icon, badge, chev, body).apply { this.open = open }
@@ -718,21 +688,20 @@ object StudioLayoutInjector {
             a.sectionOpen[id] = sec.open
             body.visibility = if (sec.open) View.VISIBLE else View.GONE
             chev.text = if (sec.open) "▾" else "▸"
-            if (sec.open) a.onSectionOpened(id)
+            // subtle spring
+            if (sec.open) {
+                body.alpha = 0f
+                body.translationY = UI.dpf(a, -6f)
+                body.animate().alpha(1f).translationY(0f).setDuration(180).start()
+                a.onSectionOpened(id)
+            }
         }
-        parent.addView(header)
+        parent.addView(header, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+            UI.dp(a, 44)).apply { topMargin = UI.dp(a, 4) })
         parent.addView(body)
         return sec
     }
 
-    // ================= sidebar row kit (used by the activity too) =================
-
-    /**
-     * A 44dp (52dp with sub-line) labelled action row — the sidebar's unit.
-     * NOTE: attaches itself to [parent]. Callers must NOT wrap this in
-     * `addView(...)` — doing so crashes with "The specified child already
-     * has a parent".
-     */
     fun actRow(a: EditorActivity, parent: LinearLayout, icon: Int, label: String,
                sub: String? = null, active: Boolean = false, danger: Boolean = false,
                enabled: Boolean = true, badge: String? = null, badgeColor: Int? = null,
@@ -740,11 +709,11 @@ object StudioLayoutInjector {
         val row = LinearLayout(a)
         row.orientation = LinearLayout.HORIZONTAL
         row.gravity = Gravity.CENTER_VERTICAL
-        row.setPadding(UI.dp(a, 10), 0, UI.dp(a, 10), 0)
+        row.setPadding(UI.dp(a, 12), 0, UI.dp(a, 12), 0)
         val h = if (sub != null) 52 else 44
-        row.background = if (active) box(a, Color.argb(70, 255, 90, 44), 10f,
+        row.background = if (active) box(a, Color.argb(70, 255, 90, 44), 12f,
             Color.argb(120, 255, 90, 44))
-        else box(a, Color.TRANSPARENT, 10f, Color.TRANSPARENT)
+        else box(a, Color.TRANSPARENT, 12f, Color.TRANSPARENT)
         val tint = when {
             !enabled -> Color.argb(90, 255, 255, 255)
             danger -> UI.DANGER
@@ -756,6 +725,7 @@ object StudioLayoutInjector {
         row.addView(iconView, LinearLayout.LayoutParams(UI.dp(a, 18), UI.dp(a, 18)))
         val col = LinearLayout(a)
         col.orientation = LinearLayout.VERTICAL
+        col.setBackgroundColor(Color.TRANSPARENT)
         val lbl = TextView(a)
         lbl.text = label
         lbl.setTextColor(when {
@@ -764,6 +734,7 @@ object StudioLayoutInjector {
             else -> UI.FG
         })
         lbl.textSize = 13f
+        lbl.letterSpacing = -0.01f
         lbl.maxLines = 1
         lbl.ellipsize = TextUtils.TruncateAt.END
         lbl.typeface = Typeface.create("sans-serif",
@@ -776,10 +747,11 @@ object StudioLayoutInjector {
             s.textSize = 10.5f
             s.maxLines = 1
             s.ellipsize = TextUtils.TruncateAt.END
+            s.letterSpacing = 0.01f
             col.addView(s)
         }
         val clp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        clp.marginStart = UI.dp(a, 10)
+        clp.marginStart = UI.dp(a, 12)
         col.layoutParams = clp
         row.addView(col)
         if (badge != null) {
@@ -788,13 +760,14 @@ object StudioLayoutInjector {
             b.setTextColor(badgeColor ?: (if (active) UI.ACCENT2 else UI.FG2))
             b.textSize = 10f
             b.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-            b.setPadding(UI.dp(a, 6), UI.dp(a, 2), UI.dp(a, 6), UI.dp(a, 2))
+            b.letterSpacing = 0.04f
+            b.setPadding(UI.dp(a, 7), UI.dp(a, 2), UI.dp(a, 7), UI.dp(a, 2))
             b.background = box(a,
                 if (active) Color.argb(90, 255, 90, 44) else Color.argb(50, 255, 255, 255),
                 8f, Color.TRANSPARENT)
             val blp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT)
-            blp.marginStart = UI.dp(a, 6)
+            blp.marginStart = UI.dp(a, 8)
             row.addView(b, blp)
         }
         val rlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, UI.dp(a, h))
@@ -805,7 +778,7 @@ object StudioLayoutInjector {
         if (enabled) {
             row.isClickable = true
             row.isFocusable = true
-            row.contentDescription = label
+            row.contentDescription = if (sub != null) "$label — $sub" else label
             row.setOnClickListener {
                 row.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                 onTap()
@@ -819,12 +792,12 @@ object StudioLayoutInjector {
         val t = TextView(a)
         t.text = text.uppercase()
         t.setTextColor(UI.ACCENT2)
-        t.textSize = 9.5f
+        t.textSize = 10f
         t.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
         t.letterSpacing = 0.08f
         val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT)
-        lp.setMargins(UI.dp(a, 4), UI.dp(a, 8), UI.dp(a, 4), UI.dp(a, 4))
+        lp.setMargins(UI.dp(a, 4), UI.dp(a, 12), UI.dp(a, 4), UI.dp(a, 6))
         t.layoutParams = lp
         parent.addView(t)
         return t
@@ -835,9 +808,11 @@ object StudioLayoutInjector {
         t.text = text
         t.setTextColor(UI.FG2)
         t.textSize = 11f
+        t.letterSpacing = 0.01f
+        t.lineSpacing = UI.dpf(a, 2f), 1f
         val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT)
-        lp.setMargins(UI.dp(a, 6), UI.dp(a, 4), UI.dp(a, 6), UI.dp(a, 6))
+        lp.setMargins(UI.dp(a, 8), UI.dp(a, 6), UI.dp(a, 8), UI.dp(a, 8))
         t.layoutParams = lp
         parent.addView(t)
         return t
@@ -847,42 +822,39 @@ object StudioLayoutInjector {
         val line = View(a)
         line.setBackgroundColor(Color.argb(40, 255, 255, 255))
         val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1)
-        lp.setMargins(0, UI.dp(a, 6), 0, UI.dp(a, 6))
+        lp.setMargins(0, UI.dp(a, 10), 0, UI.dp(a, 10))
         parent.addView(line, lp)
     }
-
-    // ================= sidebar open / section state =================
 
     fun setSidebarOpen(a: EditorActivity, open: Boolean, animate: Boolean = true) {
         if (!a.chromeInitialized()) return
         a.sidebarOpen = open
         val bar = a.sidebar
         val w = if (bar.width > 0) bar.width else UI.dp(a,
-            if (a.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE)
-                244 else 256)
+            if (a.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) 244 else 256)
         if (open) {
             bar.visibility = View.VISIBLE
             if (animate) {
                 bar.translationX = -w.toFloat()
-                bar.animate().translationX(0f).setDuration(210)
-                    .setInterpolator(OvershootInterpolator(1.1f)).start()
+                bar.alpha = 0f
+                bar.animate().translationX(0f).alpha(1f).setDuration(220)
+                    .setInterpolator(OvershootInterpolator(0.9f)).start()
             } else {
                 bar.translationX = 0f
+                bar.alpha = 1f
             }
         } else if (animate) {
-            bar.animate().translationX(-w.toFloat()).setDuration(180)
+            bar.animate().translationX(-w.toFloat()).alpha(0f).setDuration(180)
                 .withEndAction { bar.visibility = View.INVISIBLE }.start()
         } else {
             bar.translationX = -w.toFloat()
+            bar.alpha = 0f
             bar.visibility = View.INVISIBLE
         }
     }
 
-    fun toggleSidebar(a: EditorActivity) {
-        setSidebarOpen(a, !a.sidebarOpen)
-    }
+    fun toggleSidebar(a: EditorActivity) { setSidebarOpen(a, !a.sidebarOpen) }
 
-    /** Open a section (and remember the state across chrome re-layouts). */
     fun setSection(a: EditorActivity, id: String, open: Boolean) {
         val s = a.sec[id] ?: return
         if (s.open == open) return
@@ -893,77 +865,82 @@ object StudioLayoutInjector {
         if (open) a.onSectionOpened(id)
     }
 
-    // ================= empty state =================
-
     private fun buildEmptyOverlay(a: EditorActivity): LinearLayout {
         val panel = LinearLayout(a)
         panel.orientation = LinearLayout.VERTICAL
         panel.gravity = Gravity.CENTER_HORIZONTAL
-        panel.setPadding(UI.dp(a, 28), UI.dp(a, 26), UI.dp(a, 28), UI.dp(a, 24))
+        panel.setPadding(UI.dp(a, 28), UI.dp(a, 28), UI.dp(a, 28), UI.dp(a, 26))
         panel.background = box(a, Color.argb(235, 18, 20, 27), 20f,
             Color.argb(90, 255, 255, 255))
         panel.elevation = UI.dpf(a, 10f)
 
         val iconTile = FrameLayout(a)
-        iconTile.background = box(a, UI.BG3, 32f, Color.argb(60, 255, 255, 255))
+        iconTile.background = box(a, UI.BG3, 24f, Color.argb(60, 255, 255, 255))
+        iconTile.elevation = UI.dpf(a, 2f)
         val icon = ImageView(a)
         icon.setImageDrawable(Ic.get(a, R.drawable.ic_layers, UI.ACCENT2))
-        icon.setPadding(UI.dp(a, 14), UI.dp(a, 14), UI.dp(a, 14), UI.dp(a, 14))
+        icon.setPadding(UI.dp(a, 18), UI.dp(a, 18), UI.dp(a, 18), UI.dp(a, 18))
         iconTile.addView(icon, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-            Gravity.CENTER))
-        panel.addView(iconTile, LinearLayout.LayoutParams(UI.dp(a, 64), UI.dp(a, 64)))
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
+        panel.addView(iconTile, LinearLayout.LayoutParams(UI.dp(a, 72), UI.dp(a, 72)))
 
         val title = TextView(a)
         title.text = "Your canvas is ready"
-        title.setTextColor(UI.FG)
-        title.textSize = 15f
+        title.setTextColor(Color.WHITE)
+        title.textSize = 16f
         title.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        title.letterSpacing = -0.01f
         title.gravity = Gravity.CENTER
         val tlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT)
-        tlp.topMargin = UI.dp(a, 14)
+        tlp.topMargin = UI.dp(a, 16)
         title.layoutParams = tlp
         panel.addView(title)
 
         val sub = TextView(a)
-        sub.text = "Add a camera, video, image or text to begin.\nEverything overlays this full-screen canvas."
+        sub.text = "Add a camera, video, image or text to begin.\nEverything overlays this full-screen canvas — what you frame is what you export."
         sub.setTextColor(UI.FG2)
-        sub.textSize = 12f
+        sub.textSize = 12.5f
         sub.gravity = Gravity.CENTER
+        sub.lineSpacing = UI.dpf(a, 2f), 1f
         val slp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT)
-        slp.topMargin = UI.dp(a, 6)
+        slp.topMargin = UI.dp(a, 8)
         sub.layoutParams = slp
         panel.addView(sub)
 
         val add = TextView(a)
         add.text = "Add a source"
-        add.setTextColor(Color.rgb(14, 14, 16))
-        add.textSize = 12.5f
+        add.setTextColor(UI.ACCENT_FG)
+        add.textSize = 13f
         add.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        add.letterSpacing = 0.02f
         add.gravity = Gravity.CENTER
         add.includeFontPadding = false
         add.background = box(a, UI.ACCENT, 20f, Color.argb(120, 255, 200, 160))
+        add.elevation = UI.dpf(a, 2f)
         add.setOnClickListener { a.openSidebarAt("layers") }
-        val alp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, UI.dp(a, 40))
-        alp.topMargin = UI.dp(a, 16)
+        add.contentDescription = "Add a source"
+        val alp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, UI.dp(a, 42))
+        alp.topMargin = UI.dp(a, 20)
         add.layoutParams = alp
         panel.addView(add)
         return panel
     }
-
-    // ================= small widgets =================
 
     private fun chip(a: EditorActivity, fill: Int, stroke: Int = Color.argb(60, 255, 255, 255)): TextView {
         val t = TextView(a)
         t.setTextColor(UI.FG2)
         t.textSize = 11f
         t.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        t.letterSpacing = 0.02f
         t.gravity = Gravity.CENTER
         t.includeFontPadding = false
-        t.setPadding(UI.dp(a, 12), 0, UI.dp(a, 12), 0)
-        t.background = box(a, fill, 14f, stroke)
+        t.setPadding(UI.dp(a, 14), 0, UI.dp(a, 14), 0)
+        t.background = box(a, fill, 16f, stroke)
+        t.elevation = UI.dpf(a, 1f)
+        t.minHeight = UI.dp(a, 32)
+        t.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, UI.dp(a, 32))
         return t
     }
 
@@ -971,7 +948,7 @@ object StudioLayoutInjector {
         val g = GradientDrawable()
         g.cornerRadius = UI.dpf(a, rDp)
         g.setColor(color)
-        if (stroke != Color.TRANSPARENT) g.setStroke(1, stroke)
+        if (stroke != Color.TRANSPARENT) g.setStroke(UI.dp(a, 1), stroke)
         return g
     }
 
@@ -980,71 +957,78 @@ object StudioLayoutInjector {
         val g = GradientDrawable()
         g.cornerRadii = floatArrayOf(0f, 0f, r, r, r, r, 0f, 0f)
         g.setColor(color)
-        g.setStroke(1, Color.argb(55, 255, 255, 255))
+        g.setStroke(UI.dp(a, 1), Color.argb(55, 255, 255, 255))
         return g
     }
-
-    // ================= snack bar / progress construction =================
 
     private fun buildSnackBar(a: EditorActivity, root: FrameLayout) {
         val bar = LinearLayout(a)
         bar.orientation = LinearLayout.HORIZONTAL
         bar.gravity = Gravity.CENTER_VERTICAL
-        bar.setPadding(UI.dp(a, 16), UI.dp(a, 10), UI.dp(a, 8), UI.dp(a, 10))
-        bar.background = box(a, Color.argb(242, 18, 20, 27), 14f,
+        bar.setPadding(UI.dp(a, 16), UI.dp(a, 12), UI.dp(a, 10), UI.dp(a, 12))
+        bar.background = box(a, Color.argb(242, 18, 20, 27), 16f,
             Color.argb(110, 255, 255, 255))
-        bar.elevation = UI.dpf(a, 8f)
+        bar.elevation = UI.dpf(a, UI.ELEV_MED)
         bar.visibility = View.GONE
         val msg = TextView(a)
         msg.setTextColor(Color.WHITE)
-        msg.textSize = 12.5f
+        msg.textSize = 13f
+        msg.letterSpacing = -0.01f
         msg.maxLines = 2
+        msg.ellipsize = TextUtils.TruncateAt.END
         msg.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         bar.addView(msg)
         val action = TextView(a)
         action.setTextColor(UI.ACCENT2)
-        action.textSize = 12.5f
+        action.textSize = 13f
         action.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-        action.setPadding(UI.dp(a, 12), UI.dp(a, 6), UI.dp(a, 12), UI.dp(a, 6))
+        action.letterSpacing = 0.02f
+        action.setPadding(UI.dp(a, 14), UI.dp(a, 8), UI.dp(a, 14), UI.dp(a, 8))
+        action.background = box(a, Color.argb(40, 255, 160, 44), 10f, Color.TRANSPARENT)
         bar.addView(action)
         snackBar = bar
         snackMsg = msg
         snackAction = action
         val lp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
-        lp.setMargins(UI.dp(a, 14), 0, UI.dp(a, 14), UI.dp(a, 76))
+        lp.setMargins(UI.dp(a, 14), 0, UI.dp(a, 14), UI.dp(a, 80))
         root.addView(bar, lp)
     }
 
     private fun buildProgOverlay(a: EditorActivity, root: FrameLayout) {
         val over = FrameLayout(a)
-        over.setBackgroundColor(Color.argb(150, 0, 0, 0))
+        over.setBackgroundColor(Color.argb(160, 0, 0, 0))
         over.visibility = View.GONE
         over.isClickable = true
+        over.isFocusable = true
         val card = LinearLayout(a)
         card.orientation = LinearLayout.VERTICAL
-        card.setPadding(UI.dp(a, 20), UI.dp(a, 18), UI.dp(a, 20), UI.dp(a, 16))
-        card.background = box(a, Color.argb(250, 20, 23, 31), 16f,
+        card.setPadding(UI.dp(a, 22), UI.dp(a, 20), UI.dp(a, 22), UI.dp(a, 18))
+        card.background = box(a, Color.argb(250, 20, 23, 31), 18f,
             Color.argb(100, 255, 255, 255))
+        card.elevation = UI.dpf(a, UI.ELEV_HIGH)
         val title = TextView(a)
         title.setTextColor(Color.WHITE)
-        title.textSize = 14f
+        title.textSize = 15f
         title.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        title.letterSpacing = -0.01f
         card.addView(title)
         val msgT = TextView(a)
         msgT.setTextColor(Color.argb(210, 235, 238, 245))
-        msgT.textSize = 12f
+        msgT.textSize = 12.5f
+        msgT.letterSpacing = 0.01f
         val mlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT)
-        mlp.topMargin = UI.dp(a, 4)
+        mlp.topMargin = UI.dp(a, 6)
         msgT.layoutParams = mlp
         card.addView(msgT)
         val barP = android.widget.ProgressBar(a, null, android.R.attr.progressBarStyleHorizontal)
         barP.max = 100
         barP.progressTintList = android.content.res.ColorStateList.valueOf(UI.ACCENT)
+        barP.progressBackgroundTintList = android.content.res.ColorStateList.valueOf(Color.argb(60, 255, 255, 255))
         val blp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT)
-        blp.topMargin = UI.dp(a, 12)
+        blp.topMargin = UI.dp(a, 16)
         barP.layoutParams = blp
         card.addView(barP)
         val cancel = TextView(a)
@@ -1053,13 +1037,14 @@ object StudioLayoutInjector {
         cancel.setTextColor(UI.DANGER)
         cancel.textSize = 13f
         cancel.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-        cancel.setPadding(0, UI.dp(a, 10), 0, UI.dp(a, 2))
-        cancel.contentDescription = "Cancel"
+        cancel.letterSpacing = 0.02f
+        cancel.setPadding(0, UI.dp(a, 14), 0, UI.dp(a, 4))
+        cancel.contentDescription = "Cancel operation"
         cancel.setOnClickListener { progOnCancel?.invoke() }
         card.addView(cancel)
         val clp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER)
-        clp.setMargins(UI.dp(a, 36), 0, UI.dp(a, 36), 0)
+        clp.setMargins(UI.dp(a, 32), 0, UI.dp(a, 32), 0)
         over.addView(card, clp)
         progOverlay = over
         progTitle = title

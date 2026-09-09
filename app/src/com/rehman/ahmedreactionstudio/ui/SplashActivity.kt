@@ -24,12 +24,18 @@ import android.widget.TextView
 import com.rehman.ahmedreactionstudio.util.UI
 
 /**
- * Animated launcher screen.
+ * Polished launcher — gradient window bg (no white flash) + badge with
+ * dual pulse rings + wordmark + tagline + version. Timings aligned to
+ * 1.2s intro from frontend ref blueprint 00-launch-and-shell.
  *
- * A soft gradient window background (drawn by the theme before the first
- * frame, so there is never a white flash), then a springy brand badge with
- * expanding pulse rings, a letter-spaced wordmark and a tagline. Once the
- * intro plays (~2.3 s) the whole block cross-fades out and HomeActivity opens.
+ * - Badge 96dp, radius 26dp, gradient orange-red, stroke white 35%, elevation 8dp.
+ * - Rings: 128dp, stroke 2dp, expanding 0.4→1.9×, alpha 0.55→0.
+ * - Wordmark: "Ahmed" FG + " Reaction Studio" accent, 27sp Bold, 0.02 spacing.
+ * - Tagline: 10.5sp muted, 0.26 spacing, 10dp top.
+ * - Version: 10sp muted bottom 26dp.
+ * - Motion: badge pop 900ms overshoot 2.4, brand rise 650ms decelerate 1.6
+ *   delay 420ms, tagline fade 500ms delay 620ms, version fade 500ms delay 900ms.
+ * - Exit: alpha 1→0 + scale 1→1.08 320ms, then Home with no transition.
  */
 class SplashActivity : Activity() {
 
@@ -56,13 +62,14 @@ class SplashActivity : Activity() {
         box.gravity = Gravity.CENTER_HORIZONTAL
         box.clipChildren = false
         box.clipToPadding = false
+        box.setBackgroundColor(Color.TRANSPARENT)
 
-        // ---- animated brand block ----
+        // ---- brand block ----
         val ringHost = FrameLayout(this)
         ringHost.clipChildren = false
         ringHost.clipToPadding = false
-        val ring1 = makeRing(Color.rgb(255, 90, 44))
-        val ring2 = makeRing(Color.rgb(255, 160, 44))
+        val ring1 = makeRing(UI.ACCENT)
+        val ring2 = makeRing(UI.ACCENT2)
         ringHost.addView(ring1)
         ringHost.addView(ring2)
 
@@ -75,7 +82,7 @@ class SplashActivity : Activity() {
         val wordmark = LinearLayout(this)
         wordmark.orientation = LinearLayout.HORIZONTAL
         wordmark.gravity = Gravity.CENTER_HORIZONTAL
-        wordmark.setPadding(0, UI.dp(this, 6), 0, 0)
+        wordmark.setPadding(0, UI.dp(this, 8), 0, 0)
 
         fun word(text: String, color: Int, space: Float): TextView {
             val t = TextView(this)
@@ -92,50 +99,58 @@ class SplashActivity : Activity() {
         word(" Reaction Studio", Color.rgb(255, 122, 60), 0.02f)
         box.addView(wordmark)
 
-        val tagline = UI.label(this, "RECORD  \u00b7  LAYER  \u00b7  REACT  \u00b7  EXPORT", dim = true, size = 10.5f)
+        val tagline = TextView(this)
+        tagline.text = "RECORD  ·  LAYER  ·  REACT  ·  EXPORT"
+        tagline.setTextColor(UI.FG2)
+        tagline.textSize = 10.5f
         tagline.letterSpacing = 0.26f
         tagline.gravity = Gravity.CENTER_HORIZONTAL
         tagline.setPadding(0, UI.dp(this, 10), 0, 0)
+        tagline.includeFontPadding = false
+        tagline.typeface = Typeface.create("sans-serif", Typeface.NORMAL)
         box.addView(tagline)
 
         root.addView(box, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
 
-        val version = UI.label(this, "v$VERSION", dim = true, size = 10f)
+        val version = TextView(this)
+        version.text = "v$VERSION  ·  Local-first · No cloud"
+        version.setTextColor(UI.TEXT_MUTED)
+        version.textSize = 10f
+        version.letterSpacing = 0.04f
         version.gravity = Gravity.CENTER_HORIZONTAL
+        version.includeFontPadding = false
         root.addView(version, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
             Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
-                bottomMargin = UI.dp(this@SplashActivity, 26)
+                bottomMargin = UI.dp(this@SplashActivity, 28)
             })
 
         setContentView(root)
 
-        val brand = wordmark
-        val block = box
-        // initial hidden states
+        // initial hidden
         badge.alpha = 0f
-        badge.scaleX = 0.3f
-        badge.scaleY = 0.3f
-        brand.alpha = 0f
-        brand.translationY = UI.dp(this, 26).toFloat()
+        badge.scaleX = 0.32f
+        badge.scaleY = 0.32f
+        wordmark.alpha = 0f
+        wordmark.translationY = UI.dp(this, 28).toFloat()
         tagline.alpha = 0f
         version.alpha = 0f
 
-        // 1) springy badge pop-in
+        // badge pop
         ObjectAnimator.ofPropertyValuesHolder(badge,
-            PropertyValuesHolder.ofFloat("scaleX", 0.3f, 1f),
-            PropertyValuesHolder.ofFloat("scaleY", 0.3f, 1f),
+            PropertyValuesHolder.ofFloat("scaleX", 0.32f, 1f),
+            PropertyValuesHolder.ofFloat("scaleY", 0.32f, 1f),
             PropertyValuesHolder.ofFloat("alpha", 0f, 1f)
         ).apply {
             duration = 900L
             interpolator = OvershootInterpolator(2.4f)
             start()
         }
-        // 2) wordmark + tagline rise in
-        ObjectAnimator.ofPropertyValuesHolder(brand,
+        // wordmark rise
+        ObjectAnimator.ofPropertyValuesHolder(wordmark,
             PropertyValuesHolder.ofFloat("alpha", 0f, 1f),
-            PropertyValuesHolder.ofFloat("translationY", brand.translationY, 0f)
+            PropertyValuesHolder.ofFloat("translationY", wordmark.translationY, 0f)
         ).apply {
             duration = 650L
             startDelay = 420L
@@ -156,7 +171,6 @@ class SplashActivity : Activity() {
             startDelay = 900L
             start()
         }
-        // 3) infinite expanding pulse rings behind the badge
         pulse(ring1, 150L, 1900L)
         pulse(ring2, 1000L, 1900L)
 
@@ -183,6 +197,7 @@ class SplashActivity : Activity() {
         t.setTextColor(Color.WHITE)
         t.textSize = 34f
         t.setPadding(UI.dp(this, 4), 0, 0, 0)
+        t.elevation = UI.dpf(this, UI.ELEV_MED)
         val g = GradientDrawable(GradientDrawable.Orientation.TL_BR,
             intArrayOf(Color.rgb(255, 145, 60), Color.rgb(238, 60, 28)))
         g.cornerRadius = UI.dpf(this, 26f)
@@ -212,8 +227,8 @@ class SplashActivity : Activity() {
         val block = findViewById<View>(android.R.id.content)
         ObjectAnimator.ofPropertyValuesHolder(block,
             PropertyValuesHolder.ofFloat("alpha", 1f, 0f),
-            PropertyValuesHolder.ofFloat("scaleX", 1f, 1.08f),
-            PropertyValuesHolder.ofFloat("scaleY", 1f, 1.08f)
+            PropertyValuesHolder.ofFloat("scaleX", 1f, 1.06f),
+            PropertyValuesHolder.ofFloat("scaleY", 1f, 1.06f)
         ).apply {
             duration = 320L
             addListener(object : AnimatorListenerAdapter() {
