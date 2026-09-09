@@ -809,7 +809,7 @@ object StudioLayoutInjector {
         t.setTextColor(UI.FG2)
         t.textSize = 11f
         t.letterSpacing = 0.01f
-        t.lineSpacing = UI.dpf(a, 2f), 1f
+        t.setLineSpacing(UI.dpf(a, 2f), 1f)
         val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT)
         lp.setMargins(UI.dp(a, 8), UI.dp(a, 6), UI.dp(a, 8), UI.dp(a, 8))
@@ -902,7 +902,7 @@ object StudioLayoutInjector {
         sub.setTextColor(UI.FG2)
         sub.textSize = 12.5f
         sub.gravity = Gravity.CENTER
-        sub.lineSpacing = UI.dpf(a, 2f), 1f
+        sub.setLineSpacing(UI.dpf(a, 2f), 1f)
         val slp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT)
         slp.topMargin = UI.dp(a, 8)
